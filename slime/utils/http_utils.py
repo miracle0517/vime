@@ -114,11 +114,24 @@ def _wrap_ipv6(host):
         return host
 
 
-def run_router(args):
-    try:
-        from sglang_router.launch_router import launch_router
+def run_router(payload):
+    """Start the HTTP router gateway in a child process.
 
-        router = launch_router(args)
+    ``payload`` is either ``(impl, router_args)`` with ``impl`` in ``{"sglang","vllm"}``,
+    or a legacy single ``router_args`` object (treated as ``sglang``).
+    """
+    try:
+        if isinstance(payload, tuple) and len(payload) == 2:
+            impl, router_args = payload
+        else:
+            impl, router_args = "sglang", payload
+
+        if impl == "vllm":
+            from vllm_router.launch_router import launch_router
+        else:
+            from sglang_router.launch_router import launch_router
+
+        router = launch_router(router_args)
         if router is None:
             return 1
         return 0

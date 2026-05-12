@@ -909,11 +909,13 @@ def _allocate_rollout_engine_addr_and_ports_normal(
 
 
 def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool = False) -> tuple[str, int]:
-    """Start sglang_router and return (router_ip, router_port).
+    """Start the HTTP router gateway (sglang-router or vllm-router) and return ``(router_ip, router_port)``.
 
     If ``args.sglang_router_ip`` is already set (e.g. by the user) and
     ``force_new`` is False, skip launching and return the existing values.
     When ``force_new`` is True (multi-model), always allocate a fresh port.
+
+    The implementation is selected by ``--router-impl`` (default: ``sglang``).
     """
     if not force_new and args.sglang_router_ip is not None:
         return args.sglang_router_ip, args.sglang_router_port
@@ -926,15 +928,15 @@ def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool 
         if router_port is None:
             router_port = find_available_port(random.randint(3000, 4000))
 
-    from sglang_router.launch_router import RouterArgs
-
     from slime.utils.http_utils import run_router
+    from slime.utils.router import router_args_from_cli
 
-    router_args = RouterArgs.from_cli_args(args, use_router_prefix=True)
+    impl = getattr(args, "router_impl", "sglang")
+    router_args = router_args_from_cli(impl, args)
     router_args.host = router_ip
     router_args.port = router_port
     router_args.prometheus_port = find_available_port(random.randint(4000, 5000))
-    router_args.log_level = "warn"
+    router_args.log_level = "warning" if impl == "vllm" else "warn"  # vllm log choices omit "warn"
     router_args.request_timeout_secs = args.sglang_router_request_timeout_secs
 
     if has_pd_disaggregation:
@@ -944,14 +946,14 @@ def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool 
         # contention under high load) and do not indicate a dead server.
         router_args.disable_circuit_breaker = True
 
-    # We will not use the health check from router.
-    router_args.disable_health_check = True
+    if any(f.name == "disable_health_check" for f in dataclasses.fields(type(router_args))):
+        router_args.disable_health_check = True  # vllm-router may omit this field
 
-    logger.info(f"Launch router with args: {router_args}")
+    logger.info(f"Launch HTTP router (impl={impl}) with args: {router_args}")
 
     process = multiprocessing.Process(
         target=run_router,
-        args=(router_args,),
+        args=((impl, router_args),),
     )
     process.daemon = True  # Set the process as a daemon
     process.start()

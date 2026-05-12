@@ -6,11 +6,11 @@ import os
 from typing import Any
 
 import yaml
-from sglang_router.launch_router import RouterArgs
 
 from slime.backends.sglang_utils.arguments import sglang_parse_args
 from slime.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from slime.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from slime.utils.router import assert_router_backend_available
 from slime.utils.logging_utils import configure_logger
 
 logger = logging.getLogger(__name__)
@@ -1020,7 +1020,23 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help="Whether to use SlimeRouter for text-based routing instead of SGLang token-based routing",
             )
-            RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
+            parser.add_argument(
+                "--router-impl",
+                type=str,
+                choices=["sglang", "vllm"],
+                default="sglang",
+                dest="router_impl",
+                help=(
+                    "Which HTTP gateway to spawn when slime starts an internal router: "
+                    "sglang-router (sgl-model-gateway) or vllm-router "
+                    "(https://github.com/sgl-project/sglang/tree/main/sgl-model-gateway vs "
+                    "https://github.com/vllm-project/router ). "
+                    "External routers via --sglang-router-ip/--sglang-router-port are unchanged."
+                ),
+            )
+            from slime.utils.router import register_router_cli_args
+
+            register_router_cli_args(parser)
             return parser
 
         # wandb
@@ -1597,6 +1613,8 @@ def slime_validate_args(args):
             "built from https://github.com/zhuzilin/sgl-router."
         )
         args.use_slime_router = False
+
+    assert_router_backend_available(getattr(args, "router_impl", "sglang"))
 
     if args.kl_coef != 0 or args.use_kl_loss:
         if not os.path.exists(args.ref_load):
