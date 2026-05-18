@@ -1,8 +1,8 @@
 ARG BASE_IMAGE=vllm/vllm-openai:v0.21.0
 FROM ${BASE_IMAGE}
 
-# vLLM is the inference/runtime dependency source of truth for this image.
-# SGLang is intentionally not installed in this build path.
+# ======================================== Arguments =============================================
+
 ARG VLLM_VERSION=0.21.0
 ARG MEGATRON_COMMIT=3714d81d418c9f1bca4594fc35f9e8289f652862
 ARG PATCH_VERSION=v0.5.9
