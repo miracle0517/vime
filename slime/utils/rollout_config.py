@@ -1,4 +1,30 @@
-"""Configuration dataclasses for SGLang engine deployment."""
+"""Deployment configuration dataclasses for the rollout engine.
+
+Formerly ``slime/backends/sglang_utils/sglang_config.py``; renamed so that
+the runtime no longer carries SGLang-specific terminology.
+
+YAML format (new canonical key is ``rollout:``)::
+
+    rollout:
+      - name: actor
+        model_path: /path/to/actor
+        update_weights: true
+        num_gpus_per_engine: 2
+        server_groups:
+          - worker_type: prefill
+            num_gpus: 4
+          - worker_type: decode
+            num_gpus: 8
+      - name: ref
+        model_path: /path/to/ref
+        update_weights: false
+        server_groups:
+          - worker_type: regular
+            num_gpus: 4
+
+The legacy top-level key ``sglang:`` is still accepted for backward
+compatibility with existing YAML files.
+"""
 
 import dataclasses
 import logging
@@ -23,9 +49,7 @@ class ServerGroupConfig:
         num_gpus: Total number of GPUs for this group.
         num_gpus_per_engine: GPUs per engine for this group.  Overrides the
                              model-level or global ``--rollout-num-gpus-per-engine``.
-        overrides: Optional dict of SGLang ``ServerArgs`` field overrides.
-                   These are applied on top of the base CLI ``--sglang-*``
-                   arguments in ``_compute_server_args``.
+        overrides: Optional dict of vLLM engine argument field overrides.
     """
 
     worker_type: str
@@ -72,11 +96,9 @@ class ModelConfig:
         for g in self.server_groups:
             if g.num_gpus_per_engine is None:
                 g.num_gpus_per_engine = default_gpus_per_engine
-            # Inject model_path into overrides so _compute_server_args picks it up.
             if "model_path" not in g.overrides:
                 g.overrides["model_path"] = default_model_path
 
-        # Validate: all server groups within a model must share the same model_path.
         if self.server_groups:
             model_paths = {g.overrides["model_path"] for g in self.server_groups}
             assert len(model_paths) == 1, (
@@ -87,7 +109,6 @@ class ModelConfig:
         else:
             effective_model_path = default_model_path
 
-        # Auto-infer update_weights when not explicitly set.
         if self.update_weights is None:
             if effective_model_path != args.hf_checkpoint:
                 logger.warning(
@@ -113,59 +134,38 @@ class ModelConfig:
 
 
 @dataclasses.dataclass
-class SglangConfig:
-    """Configuration for SGLang engine deployment.
+class RolloutConfig:
+    """Configuration for rollout engine deployment.
 
-    Loaded from ``--sglang-config`` YAML file.
+    Loaded from ``--rollout-config`` YAML file.  Supports multi-model
+    serving, PD disaggregation, and heterogeneous server groups.
 
-    **Config format**::
-
-        sglang:
-          - name: actor
-            model_path: /path/to/actor
-            update_weights: true          # receives training weight updates (default)
-            num_gpus_per_engine: 2
-            server_groups:
-              - worker_type: prefill
-                num_gpus: 4
-                num_gpus_per_engine: 2
-              - worker_type: decode
-                num_gpus: 8
-                num_gpus_per_engine: 4
-          - name: ref
-            model_path: /path/to/ref
-            update_weights: false          # frozen, no weight updates
-            server_groups:
-              - worker_type: regular
-                num_gpus: 4
-
-    Each model gets its own router.  ``placeholder`` groups reserve GPU
-    slots without creating engines.  ``overrides`` are ``ServerArgs``
-    field names applied on top of the base ``--sglang-*`` CLI args.
-
-    Set ``update_weights: false`` for frozen models (reference, reward,
-    etc.) that should not receive weight updates from training.
-
-    .. note::
-
-       ``engine_groups`` is accepted as a backward-compatible alias for
-       ``server_groups`` in the YAML config.
+    See module docstring for the YAML format.
     """
 
     models: list[ModelConfig]
 
     @staticmethod
-    def from_yaml(path: str) -> "SglangConfig":
+    def from_yaml(path: str) -> "RolloutConfig":
         with open(path) as f:
             data = yaml.safe_load(f)
 
-        assert "sglang" in data, (
-            f"sglang config must have a 'sglang' key, got {list(data.keys())}. "
-            f"Wrap your server_groups inside a model entry under 'sglang'."
-        )
+        # Accept both the new "rollout:" key and the legacy "sglang:" key.
+        if "rollout" in data:
+            models_raw = data["rollout"]
+        elif "sglang" in data:
+            logger.warning(
+                "rollout config YAML uses legacy 'sglang:' key; rename it to 'rollout:' to suppress this warning."
+            )
+            models_raw = data["sglang"]
+        else:
+            raise ValueError(
+                f"rollout config must have a 'rollout' key, got {list(data.keys())}. "
+                "Wrap your server_groups inside a model entry under 'rollout'."
+            )
+
         models = []
-        for m in data["sglang"]:
-            # Accept both "server_groups" and legacy "engine_groups".
+        for m in models_raw:
             raw_groups = m.get("server_groups") or m.get("engine_groups") or []
             groups = [ServerGroupConfig(**g) for g in raw_groups]
             models.append(
@@ -177,16 +177,16 @@ class SglangConfig:
                     update_weights=m.get("update_weights"),
                 )
             )
-        return SglangConfig(models=models)
+        return RolloutConfig(models=models)
 
     @staticmethod
-    def from_prefill_num_servers(args) -> "SglangConfig":
+    def from_prefill_num_servers(args) -> "RolloutConfig":
         """Build a config equivalent to the legacy --prefill-num-servers flag."""
         total_gpus = args.rollout_num_gpus
         prefill_gpus = args.prefill_num_servers * args.rollout_num_gpus_per_engine
         decode_gpus = total_gpus - prefill_gpus
         assert decode_gpus > 0, f"No decode GPUs: total {total_gpus}, prefill {prefill_gpus}"
-        return SglangConfig(
+        return RolloutConfig(
             models=[
                 ModelConfig(
                     name="default",

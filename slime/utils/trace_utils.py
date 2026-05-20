@@ -14,7 +14,7 @@ from typing import Any
 from slime.utils.types import Sample
 
 TRACE_VERSION = 1
-SGLANG_TRACE_META_KEYS = (
+ROLLOUT_TRACE_META_KEYS = (
     "prompt_tokens",
     "completion_tokens",
     "cached_tokens",
@@ -121,8 +121,8 @@ def _new_span_id() -> str:
     return uuid.uuid4().hex
 
 
-def build_sglang_meta_trace_attrs(meta: dict[str, Any]) -> dict[str, Any]:
-    attrs = {key: meta[key] for key in SGLANG_TRACE_META_KEYS if key in meta and meta[key] is not None}
+def build_rollout_meta_trace_attrs(meta: dict[str, Any]) -> dict[str, Any]:
+    attrs = {key: meta[key] for key in ROLLOUT_TRACE_META_KEYS if key in meta and meta[key] is not None}
     attrs["finish_reason"] = meta["finish_reason"]["type"]
     return attrs
 

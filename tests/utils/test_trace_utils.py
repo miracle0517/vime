@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from slime.utils.trace_utils import build_sglang_meta_trace_attrs, trace_span
+from slime.utils.trace_utils import build_rollout_meta_trace_attrs, trace_span
 from slime.utils.types import Sample
 
 
@@ -23,7 +23,7 @@ def _load_trace_timeline_viewer_module():
 
 
 @pytest.mark.unit
-def test_build_sglang_meta_trace_attrs_keeps_standard_and_pd_fields():
+def test_build_rollout_meta_trace_attrs_keeps_standard_and_pd_fields():
     meta = {
         "prompt_tokens": 12,
         "completion_tokens": 7,
@@ -34,7 +34,7 @@ def test_build_sglang_meta_trace_attrs_keeps_standard_and_pd_fields():
         "unused_field": "ignored",
     }
 
-    assert build_sglang_meta_trace_attrs(meta) == {
+    assert build_rollout_meta_trace_attrs(meta) == {
         "prompt_tokens": 12,
         "completion_tokens": 7,
         "cached_tokens": 3,
@@ -48,9 +48,9 @@ def test_trace_timeline_viewer_omits_virtual_pd_lanes_without_pd_attrs(tmp_path:
     viewer = _load_trace_timeline_viewer_module()
     sample = Sample(index=0, prompt="hello")
 
-    with trace_span(sample, "sglang_generate", attrs={"max_new_tokens": 8}) as span:
+    with trace_span(sample, "vllm_generate", attrs={"max_new_tokens": 8}) as span:
         span.update(
-            build_sglang_meta_trace_attrs(
+            build_rollout_meta_trace_attrs(
                 {
                     "prompt_tokens": 4,
                     "completion_tokens": 2,
@@ -72,7 +72,7 @@ def test_trace_timeline_viewer_omits_virtual_pd_lanes_without_pd_attrs(tmp_path:
     assert row["closed_span_count"] == 1
 
     item = row["items"][0]
-    assert item["name"] == "sglang_generate"
+    assert item["name"] == "vllm_generate"
     assert item["attrs"]["end_attrs"] == {
         "prompt_tokens": 4,
         "completion_tokens": 2,

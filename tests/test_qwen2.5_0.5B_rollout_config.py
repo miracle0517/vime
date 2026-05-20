@@ -9,23 +9,22 @@ MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 8
 
-# Inline sglang config: same model, 3 engine groups with different parallelism.
-# Non-colocated (decoupled training and rollout): actor uses 4 GPUs, rollout uses 4 GPUs.
-# Group 1: 2 GPUs, 2 GPUs/engine (tp=2) → 1 engine
-# Group 2: 1 GPU,  1 GPU/engine  (tp=1) → 1 engine
-# Group 3: 1 GPU,  placeholder   → reserves 1 GPU slot, no engine created
-SGLANG_CONFIG_YAML = """\
-sglang:
+# Inline rollout config: same model, 3 engine groups with different parallelism.
+# Group 1: 4 GPUs, 2 GPUs/engine (tp=2) → 2 engines
+# Group 2: 2 GPUs, 1 GPU/engine  (tp=1) → 2 engines
+# Group 3: 2 GPUs, placeholder   → reserves 2 GPU slots, no engine created
+ROLLOUT_CONFIG_YAML = """\
+rollout:
   - name: default
     server_groups:
       - worker_type: regular
-        num_gpus: 2
+        num_gpus: 4
         num_gpus_per_engine: 2
       - worker_type: regular
-        num_gpus: 1
+        num_gpus: 2
         num_gpus_per_engine: 1
       - worker_type: placeholder
-        num_gpus: 1
+        num_gpus: 2
 """
 
 
@@ -36,9 +35,9 @@ def prepare():
 
 
 def execute():
-    # Write inline sglang config to a temp file
-    config_file = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", prefix="sglang_config_", delete=False)
-    config_file.write(SGLANG_CONFIG_YAML)
+    # Write inline rollout config to a temp file
+    config_file = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", prefix="rollout_config_", delete=False)
+    config_file.write(ROLLOUT_CONFIG_YAML)
     config_file.flush()
     config_path = config_file.name
 
@@ -99,17 +98,15 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = (
+    rollout_engine_args = (
         "--rollout-num-gpus-per-engine 1 "
-        f"--sglang-mem-fraction-static {0.6 if TIGHT_DEVICE_MEMORY else 0.7} "
-        "--sglang-enable-metrics "
-        "--sglang-cuda-graph-max-bs 32 "
-        f"--sglang-config {config_path} "
+        f"--vllm-gpu-memory-utilization {0.6 if TIGHT_DEVICE_MEMORY else 0.7} "
+        "--vllm-max-num-seqs 32 "
+        f"--rollout-config {config_path} "
     )
 
     ci_args = "--ci-test "
 
-    # Non-colocated: actor 4 GPUs, rollout 4 GPUs (separate)
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
@@ -117,8 +114,8 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 4 "
-        "--rollout-num-gpus 4 "
+        "--actor-num-gpus-per-node 8 "
+        "--colocate "
         "--megatron-to-hf-mode bridge "
     )
 
@@ -130,7 +127,7 @@ def execute():
         f"{U.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{eval_args} "
-        f"{sglang_args} "
+        f"{rollout_engine_args} "
         f"{ci_args} "
         f"{misc_args} "
     )

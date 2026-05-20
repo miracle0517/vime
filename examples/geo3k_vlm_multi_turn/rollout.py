@@ -10,7 +10,7 @@ import torch
 from examples.geo3k_vlm_multi_turn.base_env import BaseInteractionEnv
 
 # When executed as a module: python -m examples.vlm_multi_turn.rollout
-from slime.rollout.sglang_rollout import GenerateState
+from slime.rollout.vllm_rollout import GenerateState
 from slime.utils.http_utils import post
 from slime.utils.processing_utils import encode_image_for_rollout_engine
 from slime.utils.types import Sample
@@ -144,7 +144,7 @@ def _initialize_resources(args: Any, sample: Sample):
     if max_turns is None:
         raise ValueError("max_turns must be set via --custom-config-path in the custom config file.")
     state = GenerateState(args)
-    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+    url = f"http://{args.router_ip}:{args.router_port}/v1/completions"
     sample.metadata = sample.metadata or {}
     env = _build_env(env_module, sample, args)
     config = {"max_turns": max_turns}
