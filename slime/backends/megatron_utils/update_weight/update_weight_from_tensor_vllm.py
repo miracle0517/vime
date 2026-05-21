@@ -38,6 +38,7 @@ from ray.actor import ActorHandle
 from slime.utils.distributed_utils import get_gloo_group
 
 from .hf_weight_iterator_base import HfWeightIteratorBase
+from .torch_patch import monkey_patch_torch_reductions
 from .update_weight_from_distributed import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
@@ -46,6 +47,31 @@ from .update_weight_from_distributed import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _patch_ipc_engine_once() -> None:
+    """Monkey-patch IPCWeightTransferEngine.receive_weights with the vime version.
+
+    Idempotent – safe to call on every ``update_weights`` iteration.
+    Only affects the current process; for remote Ray worker actors the patch
+    must also be applied there (e.g. via a ``vllm.general_plugins`` entry
+    point in setup.py using ``slime.backends.megatron_utils.update_weight
+    .vllm_ipc_patch:register``).
+    """
+    from vllm.distributed.weight_transfer.ipc_engine import IPCWeightTransferEngine
+
+    if getattr(IPCWeightTransferEngine, "_slime_receive_patched", False):
+        return
+
+    _orig = IPCWeightTransferEngine.receive_weights
+
+    def _slime_receive_weights(self, update_info, load_weights, _orig=_orig):
+        monkey_patch_torch_reductions()
+        _orig(self, update_info, load_weights)
+
+    IPCWeightTransferEngine.receive_weights = _slime_receive_weights
+    IPCWeightTransferEngine._slime_receive_patched = True  # type: ignore[attr-defined]
+
 
 
 class UpdateVLLMWeightFromTensor:
@@ -232,6 +258,7 @@ class UpdateVLLMWeightFromTensor:
             IPCTrainerSendWeightsArgs,
             IPCWeightTransferEngine,
         )
+        _patch_ipc_engine_once()
 
         # ── 4. Iterate HF weight chunks and send ─────────────────────────────
         megatron_local_weights = self.weights_getter()
