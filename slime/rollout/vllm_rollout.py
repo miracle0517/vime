@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
-import vllm_router  # noqa: F401 — same side-effect as ``import sglang_router`` in sglang rollout
+import vllm_router  # noqa: F401 — ensures vllm-router is importable on startup
 from tqdm import tqdm
 
 from slime.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
@@ -84,7 +84,7 @@ def _prepare_prompt_ids(sample: Sample, tokenizer, processor: Any) -> list[int]:
 def _base_dataset_prompt_ids(sample: Sample, tokenizer, processor: Any) -> list[int]:
     """Token ids for the dataset prompt only (never reuse ``sample.tokens``).
 
-    Used for partial-continuation budgeting to match ``dev_vllm`` ``sglang_rollout``:
+    Used for partial-continuation budgeting:
     ``max_new_tokens -= len(sample.tokens) - len(base_prompt_ids)`` when ``sample.response`` is non-empty.
     """
     raw_multimodal_inputs = sample.multimodal_inputs or {}
@@ -100,15 +100,15 @@ def get_model_url(args: Namespace, model_name: str, endpoint: str = "/v1/complet
     """Return the router URL for a named model.
 
     Use this in custom rollout functions to route requests to a specific
-    model when multiple models are deployed via ``--sglang-config``::
+    model when multiple models are deployed via ``--rollout-config``::
 
         url = get_model_url(args, "ref", "/v1/completions")
         resp = await post(url, json=payload)
 
     Falls back to the default router if *model_name* is not found or
-    ``sglang_model_routers`` is not set.
+    ``model_routers`` is not set.
     """
-    routers = getattr(args, "sglang_model_routers", None)
+    routers = getattr(args, "model_routers", None)
     if routers and model_name in routers:
         ip, port = routers[model_name]
         return f"http://{ip}:{port}{endpoint}"
@@ -116,7 +116,7 @@ def get_model_url(args: Namespace, model_name: str, endpoint: str = "/v1/complet
 
 
 async def _router_worker_urls(args: Namespace) -> list[str]:
-    """Resolve worker base URLs from the vLLM router (same HTTP shape as SGLang router)."""
+    """Resolve worker base URLs from the vLLM router."""
     base = f"http://{args.router_ip}:{args.router_port}"
     try:
         response = await get(f"{base}/workers")
@@ -305,7 +305,7 @@ def _vllm_engine_tokens_and_logprobs(
 def _align_engine_tokens_and_logprobs(
     new_response_tokens: list[int], new_response_log_probs: list[float]
 ) -> tuple[list[int], list[float]]:
-    """Pad or truncate logprobs so ``len(.) == len(new_response_tokens)`` (SGLang always has matched OTL pairs)."""
+    """Pad or truncate logprobs so ``len(.) == len(new_response_tokens)``."""
     n = len(new_response_tokens)
     if n == 0:
         return [], []
@@ -342,10 +342,6 @@ class GenerateState(metaclass=SingletonMeta):
             no_stop_trim=True,
             spaces_between_special_tokens=False,
         )
-
-        if getattr(args, "sglang_enable_deterministic_inference", False):
-            sampling_seed_base = args.rollout_seed
-            self.group_sampling_seeds = [sampling_seed_base + i for i in range(args.n_samples_per_prompt)]
 
         # dp rank balancing
         self.dp_counts = [0] * (args.vllm_dp_size or 1)
@@ -551,7 +547,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     else:
         url = f"{base}/v1/completions"
         # vLLM OpenAI ``prompt``: JSON string or flat array of integers. On partial continuation, send full
-        # ``sample.tokens`` as integer ids (aligned with dev_vllm ``sglang_rollout`` + vLLM backend).
+        # ``sample.tokens`` as integer ids.
         if len(sample.response) > 0:
             prompt_field = _coerce_flat_int_token_ids(sample.tokens)
         elif isinstance(sample.prompt, str):
@@ -687,11 +683,8 @@ async def generate_and_rm_group(
             sample.session_id = str(uuid.uuid4())
 
     tasks = []
-    for idx, sample in enumerate(group):
+    for _idx, sample in enumerate(group):
         current_sampling_params = sampling_params.copy()
-        if getattr(args, "sglang_enable_deterministic_inference", False):
-            seed = state.group_sampling_seeds[idx]
-            current_sampling_params["seed"] = seed
         tasks.append(
             asyncio.create_task(generate_and_rm(args, sample, current_sampling_params, evaluation=evaluation))
         )
@@ -912,7 +905,7 @@ async def eval_rollout_single_dataset(
     # do multiple samples for eval prompts
     sample_index = 0
     for _i, prompt_sample in enumerate(dataset.samples):
-        for j in range(dataset_cfg.n_samples_per_eval_prompt):
+        for _j in range(dataset_cfg.n_samples_per_eval_prompt):
             # use the same prompt for multiple samples
             sample = copy.deepcopy(prompt_sample)
             sample.index = sample_index
@@ -920,9 +913,6 @@ async def eval_rollout_single_dataset(
             sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
             sample.generate_function_path = getattr(dataset_cfg, "custom_generate_function_path", None)
             sampling_params = base_sampling_params
-            if getattr(args, "sglang_enable_deterministic_inference", False):
-                sampling_params = base_sampling_params.copy()
-                sampling_params["seed"] = args.rollout_seed + j
             tasks.append(
                 asyncio.create_task(
                     generate_and_rm(

@@ -18,7 +18,7 @@ async def generate_response(args, prompt, key):
         max_context_length = args.rollout_max_context_len
         sample = deepcopy(args.sample)
 
-        url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+        url = f"http://{args.router_ip}:{args.router_port}/v1/completions"
 
         sample.prompt = prompt
         prompt_token_ids = tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]

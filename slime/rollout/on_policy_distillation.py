@@ -33,7 +33,7 @@ def post_process_rewards(args, samples: list[Sample], **kwargs):
     """Process rewards from teacher model and extract teacher log probabilities.
 
     This function:
-    1. Extracts teacher log-probs from the reward response (which contains sglang's logprob output)
+    1. Extracts teacher log-probs from the reward response (token-level logprob output)
     2. Trims them to match the response length
     3. Stores them in sample.teacher_log_probs for OPD KL penalty computation
     4. Returns scalar rewards (0.0 for pure distillation) compatible with GRPO/PPO
@@ -45,7 +45,7 @@ def post_process_rewards(args, samples: list[Sample], **kwargs):
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
     response_lengths = [sample.response_length for sample in samples]
 
-    # Extract teacher log-probs from the sglang response
+    # Extract teacher log-probs from the response
     teacher_log_probs = [
         torch.tensor([item[0] for item in reward["meta_info"]["input_token_logprobs"][1:]], dtype=torch.float32)
         for reward in raw_rewards
