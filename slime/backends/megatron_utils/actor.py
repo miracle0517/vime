@@ -131,6 +131,7 @@ class MegatronTrainRayActor(TrainRayActor):
             update_weight_cls = UpdateVLLMWeightFromTensor
         else:
             update_weight_cls = UpdateWeightFromDistributed
+        print(f"=============================================================== update weight cls is {update_weight_cls}")
         self.weight_updater = update_weight_cls(
             self.args,
             self.model,
