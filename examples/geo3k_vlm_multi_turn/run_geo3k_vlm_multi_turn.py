@@ -96,11 +96,7 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
-        "--sglang-mem-fraction-static 0.6 "
-        f"--sglang-cuda-graph-bs {' '.join(map(str, [1, 2, 4, 8] + list(range(16, 257, 8))))} "
-    )
+    rollout_engine_args = "--rollout-num-gpus-per-engine 1 " "--vllm-gpu-memory-utilization 0.6 "
 
     backend_args = (
         "--train-backend megatron "
@@ -136,7 +132,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{sglang_args} "
+        f"{rollout_engine_args} "
         f"{backend_args} "
         f"{misc_args} "
         f"{wandb_args} "

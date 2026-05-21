@@ -11,9 +11,9 @@ from slime.utils.distributed_utils import get_gloo_group
 from slime.utils.types import ParamInfo
 
 from ..megatron_to_hf import convert_to_hf
-from ..sglang import monkey_patch_torch_reductions
 from .common import all_gather_params_async, named_params_and_buffers
 from .hf_weight_iterator_base import HfWeightIteratorBase
+from .torch_patch import monkey_patch_torch_reductions
 
 
 class HfWeightIteratorDirect(HfWeightIteratorBase):

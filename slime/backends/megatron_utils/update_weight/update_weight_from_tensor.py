@@ -10,9 +10,10 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 
 from slime.utils.distributed_utils import get_gloo_group
+from slime.utils.multiproc_utils import MultiprocessingSerializer
 
-from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .hf_weight_iterator_base import HfWeightIteratorBase
+from .tensor_bucket import FlattenedTensorBucket
 from .update_weight_from_distributed import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,

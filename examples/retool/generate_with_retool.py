@@ -7,7 +7,7 @@ try:
 except ImportError as e:
     raise ImportError("Jinja2 is required. Please install it with: pip install jinja2") from e
 
-from slime.rollout.sglang_rollout import GenerateState
+from slime.rollout.vllm_rollout import GenerateState
 from slime.utils.http_utils import post
 from slime.utils.types import Sample
 
@@ -217,7 +217,7 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
     assert not args.partial_rollout, "Partial rollout is not supported for " "this function at the moment."
 
     state = GenerateState(args)
-    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+    url = f"http://{args.router_ip}:{args.router_port}/v1/completions"
 
     # Set up the initial prompt with system prompt and tools (outside the loop)
     tool_specs = tool_registry.get_tool_specs()

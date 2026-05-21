@@ -6,7 +6,7 @@ import re
 
 from qa_em_format import compute_score_em
 
-from slime.rollout.sglang_rollout import GenerateState
+from slime.rollout.vllm_rollout import GenerateState
 from slime.utils.http_utils import post
 from slime.utils.types import Sample
 
@@ -91,7 +91,7 @@ async def search(query: str) -> str:
 
 
 # IMPORTANT: When we need to collect log probabilities (logp), we CANNOT do any postprocessing
-# on the strings returned from the inference engine (sglang). This is because:
+# on the strings returned from the inference engine. This is because:
 # 1. We don't know how to truncate the corresponding tokens/logp arrays to match the modified string
 # 2. Re-tokenizing the postprocessed string may produce different tokens than what the engine generated,
 #    leading to misalignment between tokens and their log probabilities
@@ -147,7 +147,7 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
 
     state = GenerateState(args)
 
-    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+    url = f"http://{args.router_ip}:{args.router_port}/v1/completions"
 
     # Handle partial rollout samples: continue generation from existing response
     prompt_text = sample.prompt
