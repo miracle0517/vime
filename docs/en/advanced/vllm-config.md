@@ -8,7 +8,7 @@
 
 In the default setup (without `--vllm-config`), slime deploys a single model behind a single router with uniform server groups:
 
-![architecture overview](../../_static/image/arch.png)
+![architecture overview](../../../imgs/arch.png)
 
 With `--vllm-config`, the vLLM deployment expands into a multi-model, multi-router topology:
 

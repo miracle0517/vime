@@ -8,7 +8,7 @@
 
 在默认配置（不使用 `--vllm-config`）下，slime 部署单个模型，放在单个 router 后面，使用统一的服务器组：
 
-![架构概览](../../_static/image/arch.png)
+![架构概览](../../../imgs/arch.png)
 
 使用 `--vllm-config` 后，vLLM 部署扩展为多模型、多 router 拓扑：
 
