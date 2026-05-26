@@ -3,7 +3,7 @@ slime Documentation
 
 slime is an LLM post-training framework for RL scaling, providing two core capabilities:
 
-- High-Performance Training: Supports efficient training in various modes by connecting Megatron with SGLang;
+- High-Performance Training: Supports efficient training in various modes by connecting Megatron with vLLM;
 - Flexible Data Generation: Enables arbitrary training data generation workflows through custom data generation interfaces and server-based engines.
 
 slime is the RL-framework behind GLM-4.7, GLM-4.6 and GLM-4.5. Apart from models from Z.ai, we also supports the following models:
@@ -47,7 +47,7 @@ slime is the RL-framework behind GLM-4.7, GLM-4.6 and GLM-4.5. Apart from models
    advanced/reproducibility.md
    advanced/fault-tolerance.md
    advanced/pd-disaggregation.md
-   advanced/sglang-config.md
+   advanced/vllm-config.md
    advanced/megatron-config.md
    advanced/arch-support-beyond-megatron.md
 

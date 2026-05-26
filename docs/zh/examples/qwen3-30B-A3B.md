@@ -55,23 +55,22 @@ bash scripts/run-qwen3-30B-A3B.sh
    )
    ```
 
-3. 开启 sglang 支持的 moe 优化，当前配置为 ep8：
+3. 在 vLLM 侧开启 MoE expert parallelism。vLLM 中 EP size 由
+   `tensor_parallel_size × data_parallel_size` 自动推导，所以 8 卡 engine 只需
+   `--vllm-enable-expert-parallel` 就是 EP=8：
 
    ```bash
-   SGLANG_ARGS=(
+   VLLM_ARGS=(
       --rollout-num-gpus-per-engine 8
-      --sglang-mem-fraction-static 0.7
-      --sglang-ep-size 8
-      --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
+      --vllm-gpu-memory-utilization 0.7
+      --vllm-enable-expert-parallel
+      --vllm-cudagraph-capture-sizes 1 2 4 8 $(seq 16 8 256)
    )
    ```
 
-   类似地，也可以加入 dp attention，例如配置上：
-
-   ```bash
-      --sglang-enable-dp-attention
-      --sglang-dp-size 8
-   ```
+   如果想在非 MLA 模型上模拟 sglang 的 dp-attention 效果，可以加 `--vllm-data-parallel-size N`
+   把 attention 拆 DP，同时保留 expert parallel。Qwen3-MoE 是非 MLA，vLLM 没有
+   sglang `--enable-dp-attention` 的直接等价；最近似的配置就是 DP + EP。
 
 ### bf16 训练 fp8 推理
 
@@ -101,18 +100,15 @@ hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/Qwen3-30B-A3B-FP8
 
 除此之外，还可以进行如下的修改：
 
-- 当总卡数并不能被 expert 总数乘除时，可以使用 `--sglang-ep-num-redundant-experts` 来增加冗余的 expert，例如对于 24 卡的场景，可以配置：
+- 当总卡数并不能被 expert 总数整除时，可以开启 vLLM 的 EPLB（Expert Parallelism Load Balancer），通过 `--vllm-eplb-config` 配置冗余 expert。例如对于 24 卡的场景：
 
    ```bash
-   SGLANG_ARGS=(
+   VLLM_ARGS=(
       --rollout-num-gpus-per-engine 24
-      --sglang-mem-fraction-static 0.7
-      --sglang-ep-size 24
-      --sglang-enable-dp-attention
-      --sglang-dp-size 3
-
-      --sglang-moe-dense-tp-size 1
-      --sglang-enable-dp-lm-head
-      --sglang-ep-num-redundant-experts 16   
+      --vllm-gpu-memory-utilization 0.7
+      --vllm-data-parallel-size 3
+      --vllm-enable-expert-parallel
+      --vllm-enable-eplb
+      --vllm-eplb-config '{"num_redundant_experts": 16}'
    )
    ```
