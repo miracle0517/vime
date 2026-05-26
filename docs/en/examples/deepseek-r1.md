@@ -7,8 +7,6 @@ We will use bf16 for training, and an fp8 format with 128x128 blockwise quantiza
 
 Regarding parallelism, for vLLM we will enable expert parallelism with DP. For the Megatron part, we will use TP8, PP4, EP32, and CP4.
 
-> ⚠️ This example was originally written for an SGLang backend; some inference flags (EP/DP-attention/DeepEP) have direct vLLM equivalents and others do not. Verify the `VLLM_ARGS` flags against `slime/backends/vllm_utils/arguments.py` before running.
-
 ⚠️ To save GPU memory, we will use CPU Adam. Each node (8xH100) will occupy 1.4\~1.5TB of host memory. If a single machine's host memory is insufficient, this can be resolved by adding more GPUs to expand the parallelism.
 
 ## Environment Setup
@@ -171,7 +169,7 @@ OPTIMIZER_ARGS=(
 
 #### VLLM\_ARGS
 
-These are the parameters required by vLLM. Here, `--rollout-num-gpus-per-engine` corresponds to vLLM's `tp_size`. Other vLLM parameters are passed to slime by adding a `--vllm-` prefix. The original SGLang version of this example used large-EP inference (EP64, DP attention, DeepEP); confirm flag availability in vLLM before reproducing.
+These are the parameters required by vLLM. Here, `--rollout-num-gpus-per-engine` corresponds to vLLM's `tp_size`. Other vLLM parameters are passed to slime by adding a `--vllm-` prefix.
 
 `--vllm-server-concurrency` is a parameter specific to slime. It is used to prevent the vLLM engine's concurrent requests from becoming too large and crashing the HTTP server. The default is 512. However, since we now have one server for 8 nodes, we have adjusted it to 1024 to ensure that each dp rank can have a concurrency of 128.
 

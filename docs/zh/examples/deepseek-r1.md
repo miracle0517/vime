@@ -6,8 +6,6 @@
 
 在并行上，vLLM 方面我们会启用 expert parallelism 与 data parallelism；megatron 部分我们采用 tp8、pp4、ep32、cp4。
 
-> ⚠️ 本示例最初为 SGLang 后端编写，部分推理 flag（EP/DP-attention/DeepEP）在 vLLM 上有等价项也有缺失项。运行前请对照 `slime/backends/vllm_utils/arguments.py` 核对 `VLLM_ARGS` 中的 flag。
-
 ⚠️  为了节省 GPU 显存，我们会使用 CPU Adam，每个 node（8xH100）会占用 1.4~1.5B 内存。如果单机的内存不够，可以通过增加 GPU，扩大并行的方式解决。
 
 ## 环境准备
@@ -171,7 +169,7 @@ OPTIMIZER_ARGS=(
 
 #### VLLM_ARGS
 
-vLLM 所需的参数，这里 `--rollout-num-gpus-per-engine` 对应 vLLM 的 `tp_size`，除此之外的 vLLM 参数均通过添加 `--vllm-` 的前缀来传给 slime。原 SGLang 版本使用了大 EP 推理（EP64、DP attention、DeepEP）；重现前请确认 vLLM 上有对应可用的 flag。
+vLLM 所需的参数，这里 `--rollout-num-gpus-per-engine` 对应 vLLM 的 `tp_size`，除此之外的 vLLM 参数均通过添加 `--vllm-` 的前缀来传给 slime。
 
 `--vllm-server-concurrency` 是 slime 的特有参数，用于防止同时发给 vLLM 引擎的并发太大打爆 HTTP server，默认为 512。但是我们现在是 8 机一个 server，为了保证每个 dp rank 能有 128 的并发，我们调整为 1024。
 

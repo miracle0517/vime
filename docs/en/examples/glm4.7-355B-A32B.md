@@ -83,10 +83,9 @@ GLM-4.7 is a Mixture-of-Experts (MoE) model with 160 routed experts (top-8 activ
    )
    ```
 
-3. Enable MoE expert parallelism in vLLM. GLM-4.7 is non-MLA, so vLLM has no
-   direct equivalent for SGLang's `--enable-dp-attention`; we use 4-way data
-   parallelism on the attention block with expert parallelism on the experts
-   (EP size is auto-derived as `tensor_parallel_size × data_parallel_size`):
+3. Enable MoE expert parallelism in vLLM. GLM-4.7 is non-MLA, so we use 4-way
+   data parallelism on the attention block with expert parallelism on the
+   experts (EP size is auto-derived as `tensor_parallel_size × data_parallel_size`):
 
    ```bash
    VLLM_ARGS=(

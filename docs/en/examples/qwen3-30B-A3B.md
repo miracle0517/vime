@@ -69,10 +69,8 @@ Here, we will briefly introduce the MoE-related parts in the [run-qwen3-30B-A3B.
     )
     ```
 
-    To go to DP-attention-on-non-MLA you'd combine `--vllm-data-parallel-size N`
-    with `--vllm-enable-expert-parallel`. Qwen3-MoE is non-MLA, so vLLM has no
-    direct equivalent for SGLang's `--enable-dp-attention`; the closest
-    configuration is just DP on the attention block, with EP on the experts.
+    For DP on the attention block plus EP on the experts, combine
+    `--vllm-data-parallel-size N` with `--vllm-enable-expert-parallel`.
 
 ### BF16 Training with FP8 Inference
 

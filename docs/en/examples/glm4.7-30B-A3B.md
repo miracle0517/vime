@@ -68,9 +68,8 @@ GLM-4.7-Flash is a Mixture-of-Experts (MoE) model with 64 routed experts (top-4 
     ```
 
 3.  Enable MoE expert parallelism in vLLM. GLM-4.7-Flash is a non-MLA model,
-    so vLLM doesn't have a direct equivalent for SGLang's `--enable-dp-attention`
-    on attention; we use 8-way data parallelism on the attention block with
-    expert parallelism on the experts:
+    so we use 8-way data parallelism on the attention block with expert
+    parallelism on the experts:
 
     ```bash
     VLLM_ARGS=(

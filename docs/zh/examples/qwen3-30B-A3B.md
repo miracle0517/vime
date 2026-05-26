@@ -68,9 +68,8 @@ bash scripts/run-qwen3-30B-A3B.sh
    )
    ```
 
-   如果想在非 MLA 模型上模拟 sglang 的 dp-attention 效果，可以加 `--vllm-data-parallel-size N`
-   把 attention 拆 DP，同时保留 expert parallel。Qwen3-MoE 是非 MLA，vLLM 没有
-   sglang `--enable-dp-attention` 的直接等价；最近似的配置就是 DP + EP。
+   如果要在 attention 上做 DP 同时在 expert 上做 EP，可以加 `--vllm-data-parallel-size N`
+   配合 `--vllm-enable-expert-parallel`。
 
 ### bf16 训练 fp8 推理
 

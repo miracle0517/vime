@@ -45,7 +45,7 @@ $$
 --opd-kl-coef 1.0
 --custom-rm-path slime.rollout.on_policy_distillation.reward_func
 --custom-reward-post-process-path slime.rollout.on_policy_distillation.post_process_rewards
---rm-url http://<TEACHER_IP>:<TEACHER_PORT>/v1/completions
+--rm-url http://<TEACHER_IP>:<TEACHER_PORT>/inference/v1/generate
 ```
 
 ### Megatron 模式 (`--opd-type megatron`)

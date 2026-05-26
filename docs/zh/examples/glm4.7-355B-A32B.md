@@ -83,9 +83,9 @@ GLM-4.7 是一个 MoE（混合专家）模型，包含 160 个路由专家（top
    )
    ```
 
-3. 在 vLLM 侧开启 MoE expert parallelism。GLM-4.7 是非 MLA 模型，vLLM 没有
-   sglang `--enable-dp-attention` 的直接等价；这里用 attention 上 4 路 data parallel
-   + expert 上 expert parallel（EP size 由 `tensor_parallel_size × data_parallel_size` 自动推导）：
+3. 在 vLLM 侧开启 MoE expert parallelism。GLM-4.7 是非 MLA 模型，
+   这里用 attention 上 4 路 data parallel + expert 上 expert parallel
+   （EP size 由 `tensor_parallel_size × data_parallel_size` 自动推导）：
 
    ```bash
    VLLM_ARGS=(

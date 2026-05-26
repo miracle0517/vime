@@ -1,6 +1,6 @@
 # slime: A vLLM-Native Post-Training Framework for RL Scaling
 
-> This article was first released in [lmsys.org](https://lmsys.org/blog/2025-07-09-slime/) (originally as an SGLang-native framework; this fork has been adapted to vLLM).
+> This article was first released in [lmsys.org](https://lmsys.org/blog/2025-07-09-slime/).
 
 ## Vision That Drives slime
 
@@ -72,7 +72,7 @@ Megatron can be notoriously complex, so we also provide checkpoint conversion to
 
 vLLM evolves rapidly. Megatron, on the other hand, is often heavily customized, with every organization maintaining its own fork. slime is designed to keep pace with upstream changes in vLLM and adapt to optimizations in in-house Megatron variants. This is another reason why we pursue native support for vLLM and Megatron. The parameter pass-through makes upgrading effortless.
 
-Beyond optimizing inference and training frameworks, we also tackled RL-specific workloads. The original SGLang version of slime upstreamed a number of RL-specific patches (weight updates for MoE under various parallelism strategies, bucketed parameter updates, `/abort_request` for dynamic sampling, etc.). The vLLM port replays the same set of capabilities on top of vLLM's `/inference/v1/generate` disaggregated entrypoint, vllm-router's worker pause/abort APIs, and IPC-based weight sync.
+Beyond optimizing inference and training frameworks, we also tackled RL-specific workloads. slime builds on vLLM's `/inference/v1/generate` disaggregated entrypoint, vllm-router's worker pause/abort APIs, and IPC-based weight sync to support MoE weight updates under various parallelism strategies, bucketed parameter updates, and dynamic sampling with request abort.
 
 ## Lightweight and Extensible
 
