@@ -1,0 +1,57 @@
+diff --git a/vllm/entrypoints/serve/disagg/protocol.py b/vllm/entrypoints/serve/disagg/protocol.py
+index 633696824..c18215bab 100644
+--- a/vllm/entrypoints/serve/disagg/protocol.py
++++ b/vllm/entrypoints/serve/disagg/protocol.py
+@@ -121,6 +121,9 @@ class GenerateResponseChoice(BaseModel):
+     # per OpenAI spec this is the default
+     finish_reason: str | None = "stop"
+     token_ids: list[int] | None = None
++    # Generation routing only; shape [gen_len, num_layers, top_k].
++    # Requires --enable-return-routed-experts. None when disabled or aborted.
++    routed_experts: list[list[list[int]]] | None = None
+ 
+ 
+ class GenerateResponseStreamChoice(BaseModel):
+@@ -153,6 +156,8 @@ class GenerateResponse(BaseModel):
+         ),
+     )
+     choices: list[GenerateResponseChoice]
++    # Prompt routing shared across choices; shape [prompt_len, num_layers, top_k].
++    prompt_routed_experts: list[list[list[int]]] | None = None
+ 
+     prompt_logprobs: list[dict[int, Logprob] | None] | None = None
+ 
+diff --git a/vllm/entrypoints/serve/disagg/serving.py b/vllm/entrypoints/serve/disagg/serving.py
+index d510125fd..cead5c4ab 100644
+--- a/vllm/entrypoints/serve/disagg/serving.py
++++ b/vllm/entrypoints/serve/disagg/serving.py
+@@ -234,6 +234,11 @@ class ServingTokens(OpenAIServing):
+                 logprobs=logprobs,
+                 finish_reason=output.finish_reason if output.finish_reason else "stop",
+                 token_ids=as_list(output.token_ids),
++                routed_experts=(
++                    output.routed_experts.tolist()
++                    if output.routed_experts is not None
++                    else None
++                ),
+             )
+ 
+             choices.append(choice_data)
+@@ -257,12 +262,17 @@ class ServingTokens(OpenAIServing):
+ 
+         request_metadata.final_usage_info = usage
+ 
++        prompt_routed_experts = None
++        if final_res.prompt_routed_experts is not None:
++            prompt_routed_experts = final_res.prompt_routed_experts.tolist()
++
+         response = GenerateResponse(
+             id=request_id,
+             created=created_time,
+             model=model_name,
+             choices=choices,
+             usage=usage,
++            prompt_routed_experts=prompt_routed_experts,
+             prompt_logprobs=clamp_prompt_logprobs(final_res.prompt_logprobs),
+             kv_transfer_params=final_res.kv_transfer_params,
+         )

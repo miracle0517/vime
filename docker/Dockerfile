@@ -106,6 +106,32 @@ RUN rm -rf /root/.cache/pip
 
 # ====================================== Patches ============================================
 
+# vLLM 0.21.0: expose MoE routing on /inference/v1/generate (same fields as
+# /v1/completions: prompt_routed_experts + choices[].routed_experts).
+COPY docker/patch/${PATCH_VERSION}/vllm.patch /tmp/vllm.patch
+RUN python3 - <<'PY'
+import pathlib
+import subprocess
+import sys
+
+import vllm
+
+pkg_parent = pathlib.Path(vllm.__file__).resolve().parent.parent
+patch_file = pathlib.Path("/tmp/vllm.patch")
+subprocess.run(
+    ["patch", "-p1", "--forward", "-i", str(patch_file)],
+    cwd=pkg_parent,
+    check=True,
+)
+pkg = pathlib.Path(vllm.__file__).resolve().parent
+for path in pkg.rglob("*.py"):
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    if "<<<<<<<" in text:
+        print(f"Patch conflict marker in {path}", file=sys.stderr)
+        sys.exit(1)
+print("Applied vllm.patch under", pkg_parent)
+PY
+
 # Patch megatron BEFORE pip install -e . so any patch hunks that touch setup.py
 # or C++/CUDA extensions are picked up by the build.
 COPY docker/patch/${PATCH_VERSION}/megatron.patch /root/Megatron-LM/
