@@ -15,7 +15,7 @@ hf download THUDM/GLM-4.7-Flash --local-dir /root/GLM-4.7-Flash
 可以用如下方法把 Hugging Face checkpoint 转化为 torch_dist 格式：
 
 ```bash
-cd /root/slime
+cd /root/vime
 pip install -e . --no-deps
 source scripts/models/glm4.7-30B-A3B.sh
 PYTHONPATH=/root/Megatron-LM/ torchrun --nproc-per-node 8 \
@@ -30,13 +30,13 @@ PYTHONPATH=/root/Megatron-LM/ torchrun --nproc-per-node 8 \
 执行训练：
 
 ```bash
-cd /root/slime
+cd /root/vime
 bash scripts/run-glm4.7-30B-A3B-8gpus.sh
 ```
 
 ### 参数简介
 
-这里我们简单介绍一下脚本 [run-glm4.7-30B-A3B-8gpus.sh](https://github.com/THUDM/slime/blob/main/scripts/run-glm4.7-30B-A3B-8gpus.sh) 中的关键部分。
+这里我们简单介绍一下脚本 [run-glm4.7-30B-A3B-8gpus.sh](https://github.com/vllm-project/vime/blob/main/scripts/run-glm4.7-30B-A3B-8gpus.sh) 中的关键部分。
 
 #### MoE 配置
 
@@ -97,7 +97,7 @@ VLLM_ARGS=(
 
 #### MTP 训练
 
-slime 也支持将 MTP 层与主模型联合训练，适用于已实现 MTP 权重转换的模型（如 MiMo、GLM-4.7）。启用时，相关参数如下：
+vime 也支持将 MTP 层与主模型联合训练，适用于已实现 MTP 权重转换的模型（如 MiMo、GLM-4.7）。启用时，相关参数如下：
 
 ```bash
 # 在模型配置中添加 MTP 层数
@@ -114,7 +114,7 @@ SPEC_ARGS=(
 - `--enable-mtp-training`：启用 MTP 层的梯度计算。不设置此标志时，MTP 层会被加载但冻结。
 - `--mtp-loss-scaling-factor 0.2`：MTP loss 相对于主策略 loss 的权重，默认为 0.2。
 
-> **注意**：MTP 训练需要 MTP checkpoint bridge 正确转换 HuggingFace 和 Megatron 格式之间的权重。`GLM4MoELiteBridge`（位于 `slime_plugins/mbridge/glm4moe_lite.py`）扩展了 DeepSeek V3 bridge，实现了动态 MTP 层索引以支持 GLM-4.7-Flash 的 47 层架构。
+> **注意**：MTP 训练需要 MTP checkpoint bridge 正确转换 HuggingFace 和 Megatron 格式之间的权重。`GLM4MoELiteBridge`（位于 `vime_plugins/mbridge/glm4moe_lite.py`）扩展了 DeepSeek V3 bridge，实现了动态 MTP 层索引以支持 GLM-4.7-Flash 的 47 层架构。
 >
 > 对于其他支持 MTP 训练的模型（如 MiMo），可参考 `scripts/run-mimo-7B-rl-eagle.sh`。
 
@@ -123,7 +123,7 @@ SPEC_ARGS=(
 对于多机训练（例如 2×8 H100），使用多机脚本：
 
 ```bash
-cd /root/slime
+cd /root/vime
 export BASE_DIR=/shared/path  # 所有节点都可以访问的路径
 bash scripts/run-glm4.7-30B-A3B.sh
 ```

@@ -21,8 +21,8 @@ source "${SCRIPT_DIR}/../../scripts/models/qwen2.5-3B.sh"
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen2.5-3B/
    --ref-load /root/Qwen2.5-3B_torch_dist/
-   # --load /root/Qwen2.5-3B_slime/
-   # --save /root/Qwen2.5-3B_slime/
+   # --load /root/Qwen2.5-3B_vime/
+   # --save /root/Qwen2.5-3B_vime/
    # --save-interval 20
 )
 
@@ -91,7 +91,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group search-r1_qwen2.5-3B-test
    # --wandb-key ${WANDB_KEY}
 )

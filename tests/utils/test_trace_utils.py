@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from slime.utils.trace_utils import build_sglang_meta_trace_attrs, trace_span
-from slime.utils.types import Sample
+from vime.utils.trace_utils import build_sglang_meta_trace_attrs, trace_span
+from vime.utils.types import Sample
 
 
 def _load_trace_timeline_viewer_module():

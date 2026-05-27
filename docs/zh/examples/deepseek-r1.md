@@ -21,14 +21,14 @@ hf download deepseek-ai/DeepSeek-R1 --local-dir $BASE_DIR/DeepSeek-R1
 DeepSeek-R1 的 huggingface ckpt 为 block-quant 的 fp8 格式，为了转换一个 Megatron 可以加载的 torch dist 格式，需要先转化一个 bf16 的 huggingface ckpt：
 
 ```bash
-cd slime/
+cd vime/
 python tools/fp8_cast_bf16.py --input-fp8-hf-path $BASE_DIR/DeepSeek-R1 --output-bf16-hf-path $BASE_DIR/DeepSeek-R1-bf16/
 ```
 
 之后我们需要将 bf16 版本的 DeepSeek-R1 转换为 torch dist 格式。具体为在 4 台机器上分别执行：
 
 ```bash
-cd slime/
+cd vime/
 source scripts/models/deepseek-v3.sh
 PYTHONPATH=/root/Megatron-LM/ torchrun \
    --nproc-per-node 8 \
@@ -53,7 +53,7 @@ PYTHONPATH=/root/Megatron-LM/ torchrun \
 在 node0 运行：
 
 ```bash
-cd slime/
+cd vime/
 bash scripts/run-deepseek-r1.sh
 ```
 
@@ -84,7 +84,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/deepseek-v3.sh"
 ```
 
-从 [scripts/models/deepseek-v3.sh](https://github.com/THUDM/slime/blob/main/scripts/models/deepseek-v3.sh) 读取模型的 config。这些 config 都是 megatron 的参数。在使用 megatron 进行训练的时候，megatron 无法从 ckpt 中读取模型 config，需要我们自行配置。我们在 [scripts/models](https://github.com/THUDM/slime/tree/main/scripts/models/) 中提供了一些样例。
+从 [scripts/models/deepseek-v3.sh](https://github.com/vllm-project/vime/blob/main/scripts/models/deepseek-v3.sh) 读取模型的 config。这些 config 都是 megatron 的参数。在使用 megatron 进行训练的时候，megatron 无法从 ckpt 中读取模型 config，需要我们自行配置。我们在 [scripts/models](https://github.com/vllm-project/vime/tree/main/scripts/models/) 中提供了一些样例。
 
 
 #### CKPT_ARGS
@@ -96,17 +96,17 @@ CKPT_ARGS=(
    #--hf-checkpoint $BASE_DIR/DeepSeek-R1-bf16/
    --ref-load $BASE_DIR/DeepSeek-R1_torch_dist/
    # actor 的 load dir，如果是空的，会从 `ref_load` 里面读
-   --load $BASE_DIR/DeepSeek-R1_slime/
-   --save $BASE_DIR/DeepSeek-R1_slime/
+   --load $BASE_DIR/DeepSeek-R1_vime/
+   --save $BASE_DIR/DeepSeek-R1_vime/
    --save-interval 20
 )
 ```
 
-slime 会根据 `hf_checkpoint` 中的量化配置从而在训练中进行在线量化。例如当前的例子中，我们使用的是 DeepSeek R1 的 fp8 ckpt，那么在进行参数更新的时候，我们会首先将参数进行 blockwise quant，再传至 vLLM。
+vime 会根据 `hf_checkpoint` 中的量化配置从而在训练中进行在线量化。例如当前的例子中，我们使用的是 DeepSeek R1 的 fp8 ckpt，那么在进行参数更新的时候，我们会首先将参数进行 blockwise quant，再传至 vLLM。
 
 #### PERF_ARGS
 
-一堆 megatron 的并行参数，只有 `--use-dynamic-batch-size` 与 `--max-tokens-per-gpu` 是 slime 添加的。
+一堆 megatron 的并行参数，其中 `--use-dynamic-batch-size` 与 `--max-tokens-per-gpu` 是框架提供并继承自 slime 的选项。
 
 megatron 的部分，我们配置了 tp8、pp4、cp4、ep32，由于 DeepSeek-R1 有 61 层，不能被 4 整除，所以我们专门配置最后一个 pp stage 为 13 层。
 
@@ -114,7 +114,7 @@ megatron 的部分，我们配置了 tp8、pp4、cp4、ep32，由于 DeepSeek-R1
 
 在开启 dynamic_batch_size，会忽略传统的 `micro_batch_size`。
 
-⚠️  slime 总是会通过 data packing 的方法训练模型，并且严格保证 per sample loss 或 per token loss，也就是开启 dynamic batch size 不会对 loss 计算有影响，推荐开启。
+⚠️  vime 总是会通过 data packing 的方法训练模型，并且严格保证 per sample loss 或 per token loss，也就是开启 dynamic batch size 不会对 loss 计算有影响，推荐开启。
 
 ```bash
 PERF_ARGS=(
@@ -137,7 +137,7 @@ PERF_ARGS=(
 
 #### GRPO_ARGS
 
-目前 slime 这是一些 grpo 相关的参数：
+目前 vime 这是一些 grpo 相关的参数：
 
 ```bash
 GRPO_ARGS=(
@@ -169,9 +169,9 @@ OPTIMIZER_ARGS=(
 
 #### VLLM_ARGS
 
-vLLM 所需的参数，这里 `--rollout-num-gpus-per-engine` 对应 vLLM 的 `tp_size`，除此之外的 vLLM 参数均通过添加 `--vllm-` 的前缀来传给 slime。
+vLLM 所需的参数，这里 `--rollout-num-gpus-per-engine` 对应 vLLM 的 `tp_size`，除此之外的 vLLM 参数均通过添加 `--vllm-` 的前缀来传给 vime。
 
-`--vllm-server-concurrency` 是 slime 的特有参数，用于防止同时发给 vLLM 引擎的并发太大打爆 HTTP server，默认为 512。但是我们现在是 8 机一个 server，为了保证每个 dp rank 能有 128 的并发，我们调整为 1024。
+`--vllm-server-concurrency` 是 vime 的特有参数，用于防止同时发给 vLLM 引擎的并发太大打爆 HTTP server，默认为 512。但是我们现在是 8 机一个 server，为了保证每个 dp rank 能有 128 的并发，我们调整为 1024。
 
 ```bash
 VLLM_ARGS=(

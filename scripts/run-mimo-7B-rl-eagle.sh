@@ -31,8 +31,8 @@ source "${SCRIPT_DIR}/models/mimo-7B-rl.sh"
    --hf-checkpoint /root/MiMo-7B-RL
    #--hf-checkpoint /root/Qwen3-4B-FP8
    --ref-load /root/MiMo-7B-RL_torch_dist
-   --load /root/MiMo-7B-RL-mtp_slime/
-   --save /root/MiMo-7B-RL-mtp_slime/
+   --load /root/MiMo-7B-RL-mtp_vime/
+   --save /root/MiMo-7B-RL-mtp_vime/
    --save-interval 2000
 )
 
@@ -99,7 +99,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group mimo-7B-rl-test
    # --wandb-key ${WANDB_API_KEY}
 )

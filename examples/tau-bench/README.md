@@ -1,27 +1,27 @@
-# Tau bench 
-This example shows slime training in an agentic multi-turn tool use environment. 
+# Tau bench
+This example shows vime training in an agentic multi-turn tool use environment.
 
 
-## Environment Setup 
-Use the `zhuzilin/slime:latest` image and initialize the environment required for Search-R1:
+## Environment Setup
+Use the `zhuzilin/vime:latest` image and initialize the environment required for Search-R1:
 
 ```bash
 cd /root/
-git clone https://github.com/THUDM/slime.git
-cd slime
+git clone https://github.com/vllm-project/vime.git
+cd vime
 pip install -e . --no-deps
-# for tau bench 
+# for tau bench
 cd /root/
 git clone https://github.com/JD-ETH/tau-bench.git
 cd tau-bench
 git checkout feature/litellm-retry
-pip install -e . --no-deps 
+pip install -e . --no-deps
 ```
 
-Use the following script to generate mock data for slime training. 
+Use the following script to generate mock data for vime training.
 
 ```bash
-cd /root/slime/examples/tau-bench
+cd /root/vime/examples/tau-bench
 python tau1_mock.py --local_dir /root/tau-bench/
 ```
 
@@ -32,7 +32,7 @@ Initialize the Qwen3-4B-Instruct-2507 model needed for tool use:
 hf download Qwen/Qwen3-4B-Instruct-2507 --local-dir /root/Qwen3-4B-Instruct-2507
 
 # mcore checkpoint
-cd /root/slime
+cd /root/vime
 source scripts/models/qwen3-4B-Instruct-2507.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
@@ -63,6 +63,6 @@ And run:
 
 
 ```bash
-cd /root/slime
+cd /root/vime
 bash examples/tau-bench/run_qwen3_4B.sh
 ```

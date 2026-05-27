@@ -34,8 +34,8 @@ $$
 
 **工作流程**：
 1. 外部 vLLM 服务器运行教师模型。
-2. 在 rollout 阶段，自定义 reward 函数（`slime.rollout.on_policy_distillation.reward_func`）将每个样本发送到教师服务器以获取 token 级 log-probs。
-3. 自定义后处理函数（`slime.rollout.on_policy_distillation.post_process_rewards`）将教师 log-probs 裁剪到 response 范围并存储到 `sample.teacher_log_probs` 中。
+2. 在 rollout 阶段，自定义 reward 函数（`vime.rollout.on_policy_distillation.reward_func`）将每个样本发送到教师服务器以获取 token 级 log-probs。
+3. 自定义后处理函数（`vime.rollout.on_policy_distillation.post_process_rewards`）将教师 log-probs 裁剪到 response 范围并存储到 `sample.teacher_log_probs` 中。
 4. 在训练阶段，从存储的教师 log-probs 计算 KL 惩罚并应用到 advantages 上。
 
 **配置**：
@@ -43,8 +43,8 @@ $$
 --use-opd
 --opd-type vllm
 --opd-kl-coef 1.0
---custom-rm-path slime.rollout.on_policy_distillation.reward_func
---custom-reward-post-process-path slime.rollout.on_policy_distillation.post_process_rewards
+--custom-rm-path vime.rollout.on_policy_distillation.reward_func
+--custom-reward-post-process-path vime.rollout.on_policy_distillation.post_process_rewards
 --rm-url http://<TEACHER_IP>:<TEACHER_PORT>/inference/v1/generate
 ```
 
@@ -82,7 +82,7 @@ hf download Qwen/Qwen3-8B --local-dir /root/Qwen3-8B
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
 
 # 2. 转换学生模型
-cd /root/slime
+cd /root/vime
 source scripts/models/qwen3-8B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \

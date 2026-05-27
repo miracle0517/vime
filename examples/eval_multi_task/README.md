@@ -9,4 +9,4 @@
   - `n_samples_per_eval_prompt`: how many candidate completions to generate per prompt.
 
 ## IFBench Notes
-- When `ifbench` is used, `slime/rollout/rm_hub/ifbench.py` will automatically prepares the scoring environment, so no additional manual setup is required beyond providing the dataset path.
+- When `ifbench` is used, `vime/rollout/rm_hub/ifbench.py` will automatically prepares the scoring environment, so no additional manual setup is required beyond providing the dataset path.

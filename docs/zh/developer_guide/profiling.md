@@ -1,16 +1,16 @@
 # 性能分析 (Profiling)
 
-在 slime 中，我们可以通过 vLLM 提供的 profiling 接口对 rollout 过程进行详细的性能分析。
+在 vime 中，我们可以通过 vLLM 提供的 profiling 接口对 rollout 过程进行详细的性能分析。
 
 ## 1. 使 Rollout 进程进入等待状态 (Sleep Rollout)
 
-为了更自由地进行压力测试和性能分析，我们通常需要让 slime 的 rollout 进程在初始化完成后进入等待状态，而不是立即开始生成。
+为了更自由地进行压力测试和性能分析，我们通常需要让 vime 的 rollout 进程在初始化完成后进入等待状态，而不是立即开始生成。
 
 你可以通过在启动参数中替换 `rollout_function_path` 来实现，而无需修改代码：
 
 ```bash
 python train.py \
-    --rollout-function-path slime.rollout.sleep_rollout.sleep \
+    --rollout-function-path vime.rollout.sleep_rollout.sleep \
     ... (其他参数)
 ```
 

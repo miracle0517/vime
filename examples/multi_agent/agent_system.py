@@ -4,9 +4,9 @@ import time
 import traceback
 from copy import deepcopy
 
-from slime.rollout.rm_hub import batched_async_rm
-from slime.utils.http_utils import post
-from slime.utils.types import Sample
+from vime.rollout.rm_hub import batched_async_rm
+from vime.utils.http_utils import post
+from vime.utils.types import Sample
 
 from .prompts import SOLVER_PROMPT_TEMPLATE, generate_rewriter_template, generate_select_template
 

@@ -41,7 +41,7 @@ index f54c882cc2..03832002f0 100644
 +    apply_prefill_timing_payload,
      get_kv_class,
      is_mla_backend,
-+    is_slime_profiling_enabled,
++    is_vime_profiling_enabled,
      kv_to_page_indices,
      poll_and_all_reduce,
      poll_and_all_reduce_with_staging,
@@ -132,7 +132,7 @@ index f54c882cc2..03832002f0 100644
 +        # Inject prefill-side PD timing forwarded from the P instance.
 +        # Layout: [bootstrap_queue, forward, transfer_queue, bootstrap,
 +        #          alloc_waiting, transfer_speed, transfer_mb, retry_count]
-+        if is_slime_profiling_enabled():
++        if is_vime_profiling_enabled():
 +            apply_prefill_timing_payload(
 +                decode_req.req.time_stats, output_prefill_timing
 +            )
@@ -603,7 +603,7 @@ index d7956a6048..0ced278713 100644
 +        ts = req.time_stats
 +        timing = self.prefill_timing[req.metadata_buffer_index]
 +        self.clear_profiling_buf(req.metadata_buffer_index)
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return
 +        for idx, value in enumerate(
 +            build_prefill_timing_payload(ts, now=time.perf_counter())
@@ -612,8 +612,8 @@ index d7956a6048..0ced278713 100644
 +                timing[idx] = value
 +
 +
-+def is_slime_profiling_enabled() -> bool:
-+    return envs.SLIME_ENABLE_PROFILING.get()
++def is_vime_profiling_enabled() -> bool:
++    return envs.VIME_ENABLE_PROFILING.get()
 +
 +
 +def build_prefill_timing_payload(time_stats, now: float) -> tuple[float, ...]:
@@ -677,7 +677,7 @@ index d7956a6048..0ced278713 100644
 +    prefill_aux_index: int,
 +    dst_aux_index: int,
 +):
-+    profiling_enabled = is_slime_profiling_enabled()
++    profiling_enabled = is_vime_profiling_enabled()
 +    for i, (buffer_name, dst_aux_ptr) in enumerate(zip(aux_buffer_names, dst_aux_ptrs)):
 +        if not profiling_enabled and buffer_name == PREFILL_TIMING_AUX_BUFFER_NAME:
 +            continue
@@ -807,7 +807,7 @@ index dfc5507de0..be9501b05a 100644
      SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE = EnvInt(2)
      SGLANG_DISAGGREGATION_WAITING_TIMEOUT = EnvInt(300)
      SGLANG_DISAGGREGATION_NIXL_BACKEND = EnvStr("UCX")
-+    SLIME_ENABLE_PROFILING = EnvBool(False)
++    VIME_ENABLE_PROFILING = EnvBool(False)
      SGLANG_DISAGGREGATION_ALL_CP_RANKS_TRANSFER = EnvBool(False)
      # Extra slots in req_to_token_pool for decode workers (only effective when
      # max_num_reqs > 32). Increases pool capacity so more KV cache transfers
@@ -1927,7 +1927,7 @@ index 8caf21c320..51d1edc584 100644
 -from sglang.srt.disaggregation.utils import DisaggregationMode
 +from sglang.srt.disaggregation.utils import (
 +    DisaggregationMode,
-+    is_slime_profiling_enabled,
++    is_vime_profiling_enabled,
 +)
  from sglang.srt.model_executor.forward_batch_info import ForwardMode
  from sglang.srt.observability.metrics_collector import (
@@ -1986,7 +1986,7 @@ index 8caf21c320..51d1edc584 100644
          return None
  
 +    def get_pd_prefill_bootstrap_queue_duration(self) -> Optional[float]:
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return None
 +        if self.fwd_prefill_bootstrap_queue_duration is not None:
 +            return self.fwd_prefill_bootstrap_queue_duration
@@ -1999,7 +1999,7 @@ index 8caf21c320..51d1edc584 100644
 +        return None
 +
 +    def get_pd_prefill_forward_duration(self) -> Optional[float]:
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return None
 +        if self.fwd_prefill_forward_duration is not None:
 +            return self.fwd_prefill_forward_duration
@@ -2012,7 +2012,7 @@ index 8caf21c320..51d1edc584 100644
 +        return None
 +
 +    def get_pd_prefill_transfer_queue_duration(self) -> Optional[float]:
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return None
 +        if self.fwd_prefill_transfer_queue_duration is not None:
 +            return self.fwd_prefill_transfer_queue_duration
@@ -2025,7 +2025,7 @@ index 8caf21c320..51d1edc584 100644
 +        return None
 +
 +    def get_pd_decode_prealloc_duration(self) -> Optional[float]:
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return None
 +        if (
 +            self.disagg_mode == DisaggregationMode.DECODE
@@ -2039,7 +2039,7 @@ index 8caf21c320..51d1edc584 100644
 +        return None
 +
 +    def get_pd_decode_transfer_duration(self) -> Optional[float]:
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return None
 +        if (
 +            self.disagg_mode == DisaggregationMode.DECODE
@@ -2050,7 +2050,7 @@ index 8caf21c320..51d1edc584 100644
 +        return None
 +
 +    def get_pd_decode_forward_duration(self) -> Optional[float]:
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return None
 +        if (
 +            self.disagg_mode == DisaggregationMode.DECODE
@@ -2061,7 +2061,7 @@ index 8caf21c320..51d1edc584 100644
 +        return None
 +
 +    def get_pd_bootstrap_duration(self) -> Optional[float]:
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return None
 +        if self.fwd_bootstrap_duration is not None:
 +            return self.fwd_bootstrap_duration
@@ -2080,7 +2080,7 @@ index 8caf21c320..51d1edc584 100644
 +        return None
 +
 +    def get_pd_alloc_waiting_duration(self) -> Optional[float]:
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return None
 +        if self.fwd_alloc_waiting_duration is not None:
 +            return self.fwd_alloc_waiting_duration
@@ -2099,7 +2099,7 @@ index 8caf21c320..51d1edc584 100644
 +        return None
 +
 +    def get_pd_transfer_speed_gb_s(self) -> Optional[float]:
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return None
 +        if self.fwd_transfer_speed_gb_s is not None:
 +            return self.fwd_transfer_speed_gb_s
@@ -2111,7 +2111,7 @@ index 8caf21c320..51d1edc584 100644
 +        return None
 +
 +    def get_pd_transfer_total_mb(self) -> Optional[float]:
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return None
 +        if self.fwd_transfer_total_mb is not None:
 +            return self.fwd_transfer_total_mb
@@ -2120,7 +2120,7 @@ index 8caf21c320..51d1edc584 100644
 +        return None
 +
 +    def get_pd_prefill_retry_count(self) -> Optional[int]:
-+        if not is_slime_profiling_enabled():
++        if not is_vime_profiling_enabled():
 +            return None
 +        if self.fwd_prefill_retry_count is not None:
 +            return self.fwd_prefill_retry_count
@@ -2135,7 +2135,7 @@ index 8caf21c320..51d1edc584 100644
                  "prefill_launch_latency": self.get_prefill_launch_latency(),
              }
          )
-+        if is_slime_profiling_enabled():
++        if is_vime_profiling_enabled():
 +            for key, value in {
 +                "pd_prefill_bootstrap_queue_duration": (
 +                    self.get_pd_prefill_bootstrap_queue_duration()
@@ -2309,7 +2309,7 @@ index b0be70d751..44a78d684e 100644
          "sglang.srt.layers.",
          "sglang.srt.utils.",
          "torch_npu.",
-+        "slime.",
++        "vime.",
      }
  
      DENY_CLASSES = {

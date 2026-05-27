@@ -6,9 +6,9 @@ import re
 
 from qa_em_format import compute_score_em
 
-from slime.rollout.sglang_rollout import GenerateState
-from slime.utils.http_utils import post
-from slime.utils.types import Sample
+from vime.rollout.sglang_rollout import GenerateState
+from vime.utils.http_utils import post
+from vime.utils.types import Sample
 
 # Configuration for Search-R1
 SEARCH_R1_CONFIGS = {

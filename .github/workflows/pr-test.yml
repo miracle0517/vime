@@ -42,10 +42,10 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      SLIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      SLIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      SLIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      SLIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
+      VIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      VIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
+      VIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
+      VIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
 
     steps:
       - name: Checkout repository
@@ -75,19 +75,19 @@ jobs:
             -e HTTPS_PROXY \
             -e GITHUB_COMMIT_NAME \
             -e WANDB_API_KEY \
-            -e SLIME_TEST_ENABLE_INFINITE_RUN \
-            -e SLIME_TEST_USE_DEEPEP \
-            -e SLIME_TEST_USE_FP8_ROLLOUT \
-            -e SLIME_TEST_ENABLE_EVAL \
+            -e VIME_TEST_ENABLE_INFINITE_RUN \
+            -e VIME_TEST_USE_DEEPEP \
+            -e VIME_TEST_USE_FP8_ROLLOUT \
+            -e VIME_TEST_ENABLE_EVAL \
             -e TEST_FILE="${{ matrix.info.test_file }}" \
             -e TEST_ARGS="${{ matrix.info.test_args || '' }}" \
             -e NUM_GPUS="${{ matrix.info.num_gpus }}" \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
-            -v /mnt/nvme0n1/slime_ci:/data/slime_ci \
-            -v /mnt/nvme0n1/slime_ci/models:/root/models \
-            -v /mnt/nvme0n1/slime_ci/datasets:/root/datasets \
+            -v /mnt/nvme0n1/vime_ci:/data/vime_ci \
+            -v /mnt/nvme0n1/vime_ci/models:/root/models \
+            -v /mnt/nvme0n1/vime_ci/datasets:/root/datasets \
             -w "$GITHUB_WORKSPACE" \
-            slimerl/slime:latest \
+            vimerl/vime:latest \
             bash -lc '
               set -euo pipefail
               pip install -e . --no-deps --break-system-packages
@@ -125,10 +125,10 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      SLIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      SLIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      SLIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      SLIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
+      VIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      VIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
+      VIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
+      VIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
 
     steps:
       - name: Checkout repository
@@ -158,19 +158,19 @@ jobs:
             -e HTTPS_PROXY \
             -e GITHUB_COMMIT_NAME \
             -e WANDB_API_KEY \
-            -e SLIME_TEST_ENABLE_INFINITE_RUN \
-            -e SLIME_TEST_USE_DEEPEP \
-            -e SLIME_TEST_USE_FP8_ROLLOUT \
-            -e SLIME_TEST_ENABLE_EVAL \
+            -e VIME_TEST_ENABLE_INFINITE_RUN \
+            -e VIME_TEST_USE_DEEPEP \
+            -e VIME_TEST_USE_FP8_ROLLOUT \
+            -e VIME_TEST_ENABLE_EVAL \
             -e TEST_FILE="${{ matrix.info.test_file }}" \
             -e TEST_ARGS="${{ matrix.info.test_args || '' }}" \
             -e NUM_GPUS="${{ matrix.info.num_gpus }}" \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
-            -v /mnt/nvme0n1/slime_ci:/data/slime_ci \
-            -v /mnt/nvme0n1/slime_ci/models:/root/models \
-            -v /mnt/nvme0n1/slime_ci/datasets:/root/datasets \
+            -v /mnt/nvme0n1/vime_ci:/data/vime_ci \
+            -v /mnt/nvme0n1/vime_ci/models:/root/models \
+            -v /mnt/nvme0n1/vime_ci/datasets:/root/datasets \
             -w "$GITHUB_WORKSPACE" \
-            slimerl/slime:latest \
+            vimerl/vime:latest \
             bash -lc '
               set -euo pipefail
               pip install -e . --no-deps --break-system-packages
@@ -208,10 +208,10 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      SLIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      SLIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      SLIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      SLIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
+      VIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      VIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
+      VIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
+      VIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
 
     steps:
       - name: Checkout repository
@@ -241,19 +241,19 @@ jobs:
             -e HTTPS_PROXY \
             -e GITHUB_COMMIT_NAME \
             -e WANDB_API_KEY \
-            -e SLIME_TEST_ENABLE_INFINITE_RUN \
-            -e SLIME_TEST_USE_DEEPEP \
-            -e SLIME_TEST_USE_FP8_ROLLOUT \
-            -e SLIME_TEST_ENABLE_EVAL \
+            -e VIME_TEST_ENABLE_INFINITE_RUN \
+            -e VIME_TEST_USE_DEEPEP \
+            -e VIME_TEST_USE_FP8_ROLLOUT \
+            -e VIME_TEST_ENABLE_EVAL \
             -e TEST_FILE="${{ matrix.info.test_file }}" \
             -e TEST_ARGS="${{ matrix.info.test_args || '' }}" \
             -e NUM_GPUS="${{ matrix.info.num_gpus }}" \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
-            -v /mnt/nvme0n1/slime_ci:/data/slime_ci \
-            -v /mnt/nvme0n1/slime_ci/models:/root/models \
-            -v /mnt/nvme0n1/slime_ci/datasets:/root/datasets \
+            -v /mnt/nvme0n1/vime_ci:/data/vime_ci \
+            -v /mnt/nvme0n1/vime_ci/models:/root/models \
+            -v /mnt/nvme0n1/vime_ci/datasets:/root/datasets \
             -w "$GITHUB_WORKSPACE" \
-            slimerl/slime:latest \
+            vimerl/vime:latest \
             bash -lc '
               set -euo pipefail
               pip install -e . --no-deps --break-system-packages
@@ -291,10 +291,10 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      SLIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      SLIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      SLIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      SLIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
+      VIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      VIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
+      VIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
+      VIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
 
     steps:
       - name: Checkout repository
@@ -324,19 +324,19 @@ jobs:
             -e HTTPS_PROXY \
             -e GITHUB_COMMIT_NAME \
             -e WANDB_API_KEY \
-            -e SLIME_TEST_ENABLE_INFINITE_RUN \
-            -e SLIME_TEST_USE_DEEPEP \
-            -e SLIME_TEST_USE_FP8_ROLLOUT \
-            -e SLIME_TEST_ENABLE_EVAL \
+            -e VIME_TEST_ENABLE_INFINITE_RUN \
+            -e VIME_TEST_USE_DEEPEP \
+            -e VIME_TEST_USE_FP8_ROLLOUT \
+            -e VIME_TEST_ENABLE_EVAL \
             -e TEST_FILE="${{ matrix.info.test_file }}" \
             -e TEST_ARGS="${{ matrix.info.test_args || '' }}" \
             -e NUM_GPUS="${{ matrix.info.num_gpus }}" \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
-            -v /mnt/nvme0n1/slime_ci:/data/slime_ci \
-            -v /mnt/nvme0n1/slime_ci/models:/root/models \
-            -v /mnt/nvme0n1/slime_ci/datasets:/root/datasets \
+            -v /mnt/nvme0n1/vime_ci:/data/vime_ci \
+            -v /mnt/nvme0n1/vime_ci/models:/root/models \
+            -v /mnt/nvme0n1/vime_ci/datasets:/root/datasets \
             -w "$GITHUB_WORKSPACE" \
-            slimerl/slime:latest \
+            vimerl/vime:latest \
             bash -lc '
               set -euo pipefail
               pip install -e . --no-deps --break-system-packages
@@ -374,10 +374,10 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      SLIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      SLIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      SLIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      SLIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
+      VIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      VIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
+      VIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
+      VIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
 
     steps:
       - name: Checkout repository
@@ -407,19 +407,19 @@ jobs:
             -e HTTPS_PROXY \
             -e GITHUB_COMMIT_NAME \
             -e WANDB_API_KEY \
-            -e SLIME_TEST_ENABLE_INFINITE_RUN \
-            -e SLIME_TEST_USE_DEEPEP \
-            -e SLIME_TEST_USE_FP8_ROLLOUT \
-            -e SLIME_TEST_ENABLE_EVAL \
+            -e VIME_TEST_ENABLE_INFINITE_RUN \
+            -e VIME_TEST_USE_DEEPEP \
+            -e VIME_TEST_USE_FP8_ROLLOUT \
+            -e VIME_TEST_ENABLE_EVAL \
             -e TEST_FILE="${{ matrix.info.test_file }}" \
             -e TEST_ARGS="${{ matrix.info.test_args || '' }}" \
             -e NUM_GPUS="${{ matrix.info.num_gpus }}" \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
-            -v /mnt/nvme0n1/slime_ci:/data/slime_ci \
-            -v /mnt/nvme0n1/slime_ci/models:/root/models \
-            -v /mnt/nvme0n1/slime_ci/datasets:/root/datasets \
+            -v /mnt/nvme0n1/vime_ci:/data/vime_ci \
+            -v /mnt/nvme0n1/vime_ci/models:/root/models \
+            -v /mnt/nvme0n1/vime_ci/datasets:/root/datasets \
             -w "$GITHUB_WORKSPACE" \
-            slimerl/slime:latest \
+            vimerl/vime:latest \
             bash -lc '
               set -euo pipefail
               pip install -e . --no-deps --break-system-packages
@@ -457,10 +457,10 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      SLIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      SLIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      SLIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      SLIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
+      VIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      VIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
+      VIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
+      VIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
 
     steps:
       - name: Checkout repository
@@ -522,10 +522,10 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      SLIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      SLIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      SLIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      SLIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
+      VIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      VIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
+      VIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
+      VIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
 
     steps:
       - name: Checkout repository
@@ -555,19 +555,19 @@ jobs:
             -e HTTPS_PROXY \
             -e GITHUB_COMMIT_NAME \
             -e WANDB_API_KEY \
-            -e SLIME_TEST_ENABLE_INFINITE_RUN \
-            -e SLIME_TEST_USE_DEEPEP \
-            -e SLIME_TEST_USE_FP8_ROLLOUT \
-            -e SLIME_TEST_ENABLE_EVAL \
+            -e VIME_TEST_ENABLE_INFINITE_RUN \
+            -e VIME_TEST_USE_DEEPEP \
+            -e VIME_TEST_USE_FP8_ROLLOUT \
+            -e VIME_TEST_ENABLE_EVAL \
             -e TEST_FILE="${{ matrix.info.test_file }}" \
             -e TEST_ARGS="${{ matrix.info.test_args || '' }}" \
             -e NUM_GPUS="${{ matrix.info.num_gpus }}" \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
-            -v /mnt/nvme0n1/slime_ci:/data/slime_ci \
-            -v /mnt/nvme0n1/slime_ci/models:/root/models \
-            -v /mnt/nvme0n1/slime_ci/datasets:/root/datasets \
+            -v /mnt/nvme0n1/vime_ci:/data/vime_ci \
+            -v /mnt/nvme0n1/vime_ci/models:/root/models \
+            -v /mnt/nvme0n1/vime_ci/datasets:/root/datasets \
             -w "$GITHUB_WORKSPACE" \
-            slimerl/slime-test:latest \
+            vimerl/vime-test:latest \
             bash -lc '
               set -euo pipefail
               pip install -e . --no-deps --break-system-packages
@@ -641,10 +641,10 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      SLIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      SLIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      SLIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      SLIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
+      VIME_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      VIME_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
+      VIME_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
+      VIME_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
 
     steps:
       - name: Checkout repository
@@ -671,19 +671,19 @@ jobs:
             -e HTTPS_PROXY \
             -e GITHUB_COMMIT_NAME \
             -e WANDB_API_KEY \
-            -e SLIME_TEST_ENABLE_INFINITE_RUN \
-            -e SLIME_TEST_USE_DEEPEP \
-            -e SLIME_TEST_USE_FP8_ROLLOUT \
-            -e SLIME_TEST_ENABLE_EVAL \
+            -e VIME_TEST_ENABLE_INFINITE_RUN \
+            -e VIME_TEST_USE_DEEPEP \
+            -e VIME_TEST_USE_FP8_ROLLOUT \
+            -e VIME_TEST_ENABLE_EVAL \
             -e TEST_FILE="${{ matrix.info.test_file }}" \
             -e TEST_ARGS="${{ matrix.info.test_args || '' }}" \
             -e NUM_GPUS="${{ matrix.info.num_gpus }}" \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
-            -v /mnt/nvme0n1/slime_ci:/data/slime_ci \
-            -v /mnt/nvme0n1/slime_ci/models:/root/models \
-            -v /mnt/nvme0n1/slime_ci/datasets:/root/datasets \
+            -v /mnt/nvme0n1/vime_ci:/data/vime_ci \
+            -v /mnt/nvme0n1/vime_ci/models:/root/models \
+            -v /mnt/nvme0n1/vime_ci/datasets:/root/datasets \
             -w "$GITHUB_WORKSPACE" \
-            slimerl/slime:latest \
+            vimerl/vime:latest \
             bash -lc '
               set -euo pipefail
               pip install -e . --no-deps --break-system-packages

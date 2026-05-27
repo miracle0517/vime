@@ -40,13 +40,13 @@ source "${SCRIPT_DIR}/models/qwen3-235B-A22B.sh"
 CKPT_ARGS=(
    --hf-checkpoint ${BASE_FOLDER}/Qwen3-235B-A22B
    --ref-load ${BASE_FOLDER}/Qwen3-235B-A22B_torch_dist
-   --load ${BASE_FOLDER}/Qwen3-235B-A22B_slime/
-   --save ${BASE_FOLDER}/Qwen3-235B-A22B_slime/
+   --load ${BASE_FOLDER}/Qwen3-235B-A22B_vime/
+   --save ${BASE_FOLDER}/Qwen3-235B-A22B_vime/
    --save-interval 1000
 )
 
 SFT_ARGS=(
-   --rollout-function-path slime.rollout.sft_rollout.generate_rollout
+   --rollout-function-path vime.rollout.sft_rollout.generate_rollout
    --prompt-data ${BASE_FOLDER}/openhermes2_5.parquet
    --input-key messages
    # --apply-chat-template
@@ -95,7 +95,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group qwen3-235B-sft
 )
 

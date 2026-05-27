@@ -24,12 +24,12 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "/root/slime/scripts/models/qwen3-4B.sh"
+source "/root/vime/scripts/models/qwen3-4B.sh"
 
 CKPT_ARGS=(
    --hf-checkpoint /root/font-info/qwen3-4b-sft
    --ref-load /root/font-info/qwen3-4b-sft_torch_dist
-   # --load /root/Qwen3-4B_slime/
+   # --load /root/Qwen3-4B_vime/
    --save /root/font-info/qwen3-4b-sft/qwen3-4b-sft-multi-turn/
    --save-interval 20
    --rotary-base 5000000
@@ -98,7 +98,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project slime-dapo
+   --wandb-project vime-dapo
    --wandb-group qwen3-4B-test-multi-turn
    --wandb-key ${WANDB_KEY}
 )
@@ -131,7 +131,7 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 4 --disable-usage-s
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/slime\",
+    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/vime\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
   }

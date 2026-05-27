@@ -16,7 +16,7 @@ from tqdm import tqdm
 from transformers import AutoConfig
 from typing_extensions import override
 
-from slime.backends.megatron_utils.megatron_to_hf import convert_to_hf, remove_padding
+from vime.backends.megatron_utils.megatron_to_hf import convert_to_hf, remove_padding
 
 
 class DummyClass:
@@ -272,7 +272,7 @@ def process_param(args, model_name, name, param, vocab_size=None):
 
 
 def save_tensors(args, model_name, state_dict, output_dir, chunk_size, vocab_size=None, max_workers=1, worker_id=None):
-    # for slime update_weight compatible
+    # for vime update_weight compatible
     args.sglang_enable_ep_moe = False
 
     print(f"start saving to {output_dir}")

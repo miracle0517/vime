@@ -1,4 +1,4 @@
-"""Unit tests for ``slime.backends.vllm_utils.vllm_engine``."""
+"""Unit tests for ``vime.backends.vllm_utils.vllm_engine``."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 import requests
 import torch
 
-from slime.backends.vllm_utils import vllm_engine as mod
+from vime.backends.vllm_utils import vllm_engine as mod
 
 
 class _MockResponse:
@@ -132,7 +132,7 @@ def test_update_weights_from_distributed_posts_update_weights_without_checkpoint
         names,
         dtypes,
         shapes,
-        group_name="slime-pp_0",
+        group_name="vime-pp_0",
         weight_version="7",
         packed=True,
     )
@@ -166,14 +166,14 @@ def test_post_vllm_update_weights_http_wraps_update_info(vllm_engine, monkeypatc
 
 @pytest.mark.unit
 def test_weight_transfer_http_timeout_reads_env(vllm_engine, monkeypatch):
-    monkeypatch.setenv("SLIME_VLLM_WEIGHT_TRANSFER_UPDATE_TIMEOUT_SEC", "123.5")
+    monkeypatch.setenv("VIME_VLLM_WEIGHT_TRANSFER_UPDATE_TIMEOUT_SEC", "123.5")
     assert vllm_engine._weight_transfer_http_timeout() == 123.5
 
 
 @pytest.mark.unit
 def test_weight_transfer_http_timeout_fallback_to_legacy_env(vllm_engine, monkeypatch):
-    monkeypatch.delenv("SLIME_VLLM_WEIGHT_TRANSFER_UPDATE_TIMEOUT_SEC", raising=False)
-    monkeypatch.setenv("SLIME_VLLM_WEIGHT_TRANSFER_HTTP_TIMEOUT_SEC", "42")
+    monkeypatch.delenv("VIME_VLLM_WEIGHT_TRANSFER_UPDATE_TIMEOUT_SEC", raising=False)
+    monkeypatch.setenv("VIME_VLLM_WEIGHT_TRANSFER_HTTP_TIMEOUT_SEC", "42")
     assert vllm_engine._weight_transfer_http_timeout() == 42.0
 
 
@@ -207,7 +207,7 @@ def test_response_json_or_fallback_invalid_json():
 
 @pytest.mark.unit
 def test_http_base_requires_init(vllm_args):
-    from slime.backends.vllm_utils.vllm_engine import VLLMEngine
+    from vime.backends.vllm_utils.vllm_engine import VLLMEngine
 
     engine = VLLMEngine(vllm_args, rank=0)
     with pytest.raises(RuntimeError, match="init\\(\\)"):

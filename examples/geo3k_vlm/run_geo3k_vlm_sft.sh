@@ -1,7 +1,7 @@
 TRAIN_BACKEND="megatron"
-MODEL_NAME=${SLIME_SCRIPT_MODEL_NAME:-"Qwen3-VL-8B-Instruct"}
-DATASET_NAME=${SLIME_SCRIPT_DATASET_NAME:-"chenhegu/geo3k_imgurl"}
-NUM_GPUS=${SLIME_SCRIPT_NUM_GPUS:-8}
+MODEL_NAME=${VIME_SCRIPT_MODEL_NAME:-"Qwen3-VL-8B-Instruct"}
+DATASET_NAME=${VIME_SCRIPT_DATASET_NAME:-"chenhegu/geo3k_imgurl"}
+NUM_GPUS=${VIME_SCRIPT_NUM_GPUS:-8}
 DATASET_LOCAL_NAME=$(basename "$DATASET_NAME")
 
 # Validate MODEL_NAME
@@ -29,7 +29,7 @@ fi
 MODEL_NAME_LOWER=$(echo "$MODEL_NAME" | tr '[:upper:]' '[:lower:]')
 
 # External Ray flag
-if [ -z "$SLIME_SCRIPT_EXTERNAL_RAY" ] || [ "$SLIME_SCRIPT_EXTERNAL_RAY" = "0" ]; then
+if [ -z "$VIME_SCRIPT_EXTERNAL_RAY" ] || [ "$VIME_SCRIPT_EXTERNAL_RAY" = "0" ]; then
    USE_EXTERNAL_RAY=0
 else
    USE_EXTERNAL_RAY=1
@@ -42,12 +42,12 @@ if [ "$USE_EXTERNAL_RAY" = "0" ]; then
    ray stop --force
    pkill -9 ray
 fi
-pkill -9 slime
+pkill -9 vime
 sleep 3
 if [ "$USE_EXTERNAL_RAY" = "0" ]; then
    pkill -9 ray
 fi
-pkill -9 slime
+pkill -9 vime
 pkill -9 redis
 
 set -ex
@@ -79,7 +79,7 @@ CKPT_ARGS=(
 )
 
 SFT_ARGS=(
-   --rollout-function-path slime.rollout.sft_rollout.generate_rollout
+   --rollout-function-path vime.rollout.sft_rollout.generate_rollout
    --prompt-data /root/datasets/${DATASET_LOCAL_NAME}/train_formatted.parquet
    --input-key messages
    --rollout-shuffle
@@ -111,7 +111,7 @@ OPTIMIZER_ARGS=(
 if [ -n "$WANDB_API_KEY" ]; then
     WANDB_ARGS=(
         --use-wandb
-        --wandb-project slime-geo3k-vlm-sft
+        --wandb-project vime-geo3k-vlm-sft
         --wandb-group ${MODEL_NAME_LOWER}-${TRAIN_BACKEND}
         --wandb-key ${WANDB_API_KEY}
         --disable-wandb-random-suffix
@@ -144,10 +144,10 @@ BACKEND_ARGS=(
 )
 
 # get MODEL_ARGS from scripts/models for megatron backend
-SLIME_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." &>/dev/null && pwd)"
+VIME_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." &>/dev/null && pwd)"
 MODEL_ARGS_FILE=$(echo "$MODEL_NAME" | sed 's/-Instruct//g; s/-Thinking//g; s/Qwen3-VL-/qwen3-/g; s/-2B/-1.7B/g')
 # VL models require rotary-base 5000000
-MODEL_ARGS_ROTARY_BASE=5000000 source "${SLIME_DIR}/scripts/models/${MODEL_ARGS_FILE}.sh"
+MODEL_ARGS_ROTARY_BASE=5000000 source "${VIME_DIR}/scripts/models/${MODEL_ARGS_FILE}.sh"
 
 # Start Ray if not using external Ray
 if [ "$USE_EXTERNAL_RAY" = "0" ]; then

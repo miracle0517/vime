@@ -10,10 +10,10 @@ import torch
 from examples.geo3k_vlm_multi_turn.base_env import BaseInteractionEnv
 
 # When executed as a module: python -m examples.vlm_multi_turn.rollout
-from slime.rollout.sglang_rollout import GenerateState
-from slime.utils.http_utils import post
-from slime.utils.processing_utils import encode_image_for_rollout_engine
-from slime.utils.types import Sample
+from vime.rollout.sglang_rollout import GenerateState
+from vime.utils.http_utils import post
+from vime.utils.processing_utils import encode_image_for_rollout_engine
+from vime.utils.types import Sample
 
 DEFAULT_ENV_MODULE = "examples.vlm_multi_turn.env_geo3k"
 

@@ -6,7 +6,7 @@ The environment setup and dataset download are the same as for the Qwen3-4B mode
 
 ### Prerequisites
 
-GLM-4.7 follows the standard slime Docker environment. For multi-node launches, make sure all nodes can access the same `$BASE_DIR` path and unset proxy variables before starting Ray workers:
+GLM-4.7 follows the standard vime Docker environment. For multi-node launches, make sure all nodes can access the same `$BASE_DIR` path and unset proxy variables before starting Ray workers:
 
 ```bash
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
@@ -23,7 +23,7 @@ hf download zai-org/GLM-4.7 --local-dir $BASE_DIR/GLM-4.7-355B-A32B
 To convert the Hugging Face checkpoint to torch_dist format, use 2 nodes x 8 GPUs:
 
 ```bash
-cd /root/slime
+cd /root/vime
 pip install -e . --no-deps
 source scripts/models/glm4.5-355B-A32B.sh
 PYTHONPATH=/root/Megatron-LM/ torchrun \
@@ -43,14 +43,14 @@ Here, `MASTER_ADDR` is the IP of node0, and `NODE_RANK` is the node index, confi
 Execute the training script from node0:
 
 ```bash
-cd /root/slime
+cd /root/vime
 export BASE_DIR=/shared/path  # accessible by all nodes
 bash scripts/run-glm4.7-355B-A32B.sh
 ```
 
 ### Parameter Introduction
 
-Here, we briefly introduce the key parts in the [run-glm4.7-355B-A32B.sh](https://github.com/THUDM/slime/blob/main/scripts/run-glm4.7-355B-A32B.sh) script.
+Here, we briefly introduce the key parts in the [run-glm4.7-355B-A32B.sh](https://github.com/vllm-project/vime/blob/main/scripts/run-glm4.7-355B-A32B.sh) script.
 
 #### MoE Configuration
 
@@ -115,7 +115,7 @@ This lets vLLM use the model's MTP layer as the draft model for EAGLE-style spec
 
 #### MTP Training
 
-slime also supports training the MTP layers jointly with the main model for GLM-4.7. When enabled, the relevant arguments are:
+vime also supports training the MTP layers jointly with the main model for GLM-4.7. When enabled, the relevant arguments are:
 
 ```bash
 # Add MTP layer count to model config
@@ -132,7 +132,7 @@ MTP_ARGS=(
 - `--enable-mtp-training`: Enables gradient computation for MTP layers. Without this flag, the MTP layer is loaded but frozen.
 - `--mtp-loss-scaling-factor 0.2`: Weight of the MTP loss relative to the main policy loss. Default is 0.2.
 
-> **Note**: MTP training for GLM-4.7 relies on `GLM4MoEBridge` (in `slime_plugins/mbridge/glm4moe.py`) to map regular and MTP weights between HuggingFace and Megatron formats.
+> **Note**: MTP training for GLM-4.7 relies on `GLM4MoEBridge` (in `vime_plugins/mbridge/glm4moe.py`) to map regular and MTP weights between HuggingFace and Megatron formats.
 
 #### Multi-Node Support
 
@@ -153,10 +153,10 @@ If your rollout GPU count does not divide the expert count cleanly, enable vLLM'
 
 ## FP8 Rollout
 
-The open-source FP8 checkpoint of GLM-4.7 uses per-channel quantization, which cannot currently enable DeepEP in vLLM. You can convert it to a 128x128 per-block FP8 checkpoint with the tool provided in slime:
+The open-source FP8 checkpoint of GLM-4.7 uses per-channel quantization, which cannot currently enable DeepEP in vLLM. You can convert it to a 128x128 per-block FP8 checkpoint with the tool provided in vime:
 
 ```bash
-cd /root/slime
+cd /root/vime
 python tools/convert_hf_to_fp8.py \
     --model-dir $BASE_DIR/GLM-4.7-355B-A32B/ \
     --save-dir $BASE_DIR/GLM-4.7-355B-A32B-FP8/ \

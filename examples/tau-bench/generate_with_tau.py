@@ -1,9 +1,9 @@
 """
-Tau-Bench Integration for slime Training
+Tau-Bench Integration for vime Training
 
 This module provides the main interface for training agents in tau-bench environments
-using the slime framework. It handles agent-environment interactions and converts
-results to the format expected by slime's training pipeline.
+using the vime framework. It handles agent-environment interactions and converts
+results to the format expected by vime's training pipeline.
 """
 
 import logging
@@ -14,7 +14,7 @@ from tau_bench.envs import get_env
 from tau_bench.types import RunConfig
 from trainable_agents import InteractionResult, Status, agent_factory
 
-from slime.utils.types import Sample
+from vime.utils.types import Sample
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
@@ -38,10 +38,10 @@ tau_config = RunConfig(**TAU_CONFIGS)
 
 def res_to_sample(res: InteractionResult, task_index: int) -> Sample:
     """
-    Convert InteractionResult to Sample format for slime training.
+    Convert InteractionResult to Sample format for vime training.
 
     This function transforms the tau-bench interaction result into the format
-    expected by slime's training pipeline, handling status mapping and response
+    expected by vime's training pipeline, handling status mapping and response
     length calculation.
 
     Args:
@@ -49,9 +49,9 @@ def res_to_sample(res: InteractionResult, task_index: int) -> Sample:
         task_index: Index of the task being processed
 
     Returns:
-        Sample object for slime training
+        Sample object for vime training
     """
-    # Map tau-bench status to slime status
+    # Map tau-bench status to vime status
     status_mapping = {
         Status.COMPLETED: "completed",
         Status.TRUNCATED: "truncated",
@@ -101,12 +101,12 @@ async def generate(args: dict[str, Any], sample: Sample, sampling_params: dict) 
     """
     Generate a complete agent-environment interaction trajectory for tau-bench.
 
-    This is the main entry point for slime training. It creates a tau-bench
+    This is the main entry point for vime training. It creates a tau-bench
     environment, initializes a trainable agent, and executes a full interaction
-    trajectory. The result is converted to slime's Sample format for training.
+    trajectory. The result is converted to vime's Sample format for training.
 
     Args:
-        args: Rollout arguments from slime training pipeline
+        args: Rollout arguments from vime training pipeline
         sample: Sample containing task index in prompt field
         sampling_params: LLM sampling parameters
 
@@ -146,7 +146,7 @@ async def generate(args: dict[str, Any], sample: Sample, sampling_params: dict) 
     # Note: The sample.prompt field contains the task index for repeatability
     interaction_result = await agent.asolve(env, agent.rollout_args, agent.sampling_params, task_index)
 
-    # Convert to slime Sample format
+    # Convert to vime Sample format
     result_sample = res_to_sample(interaction_result, task_index)
 
     logger.info(f"Finished agent-environment interaction for task {task_index}")

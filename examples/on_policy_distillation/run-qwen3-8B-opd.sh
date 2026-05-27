@@ -44,14 +44,14 @@ else
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-source "/root/slime/scripts/models/qwen3-8B.sh"
+source "/root/vime/scripts/models/qwen3-8B.sh"
 
 
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-8B
    --ref-load /root/Qwen3-8B_torch_dist
-   --load /root/Qwen3-8B_slime/
-   --save /root/Qwen3-8B_slime/
+   --load /root/Qwen3-8B_vime/
+   --save /root/Qwen3-8B_vime/
    --save-interval 20
 )
 
@@ -71,8 +71,8 @@ ROLLOUT_ARGS=(
 )
 
 RM_ARGS=(
-   --custom-rm-path slime.rollout.on_policy_distillation.reward_func
-   --custom-reward-post-process-path slime.rollout.on_policy_distillation.post_process_rewards
+   --custom-rm-path vime.rollout.on_policy_distillation.reward_func
+   --custom-reward-post-process-path vime.rollout.on_policy_distillation.post_process_rewards
    --rm-url http://$TEACHER_IP:$TEACHER_PORT/generate
 )
 
@@ -123,7 +123,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    #--use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group qwen3-8B-test
    # --wandb-key ${WANDB_KEY}
 )

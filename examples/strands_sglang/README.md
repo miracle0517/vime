@@ -1,6 +1,6 @@
-# slime x Strands-SGLang
+# vime x Strands-SGLang
 
-This example connects `slime` with [`strands-sglang`](https://github.com/horizon-rl/strands-sglang) (SGLang extension for the agentic scaffolding [`strands`](https://github.com/strands-agents/sdk-python)) for agentic RL training.
+This example connects `vime` with [`strands-sglang`](https://github.com/horizon-rl/strands-sglang) (SGLang extension for the agentic scaffolding [`strands`](https://github.com/strands-agents/sdk-python)) for agentic RL training.
 
 ## Why `strands-sglang`?
 
@@ -18,10 +18,10 @@ This example connects `slime` with [`strands-sglang`](https://github.com/horizon
 
 ## Install Dependencies
 
-1. Pull the `slimerl/slime:latest` image and enter it
-2. Go to slime folder: `cd /root/slime`
-3. Install slime: `pip install -e . --no-deps`
-4. Go to the example folder: `cd /root/slime/examples/strands_sglang`
+1. Pull the `vimerl/vime:latest` image and enter it
+2. Go to vime folder: `cd /root/vime`
+3. Install vime: `pip install -e . --no-deps`
+4. Go to the example folder: `cd /root/vime/examples/strands_sglang`
 5. Install other dependencies: `pip install -r requirements.txt`
 
 > NOTE: `strands-sglang` is under rapid development, so we recommend using the GitHub repo version: `strands-sglang @ git+https://github.com/horizon-rl/strands-sglang.git`
@@ -35,7 +35,7 @@ This example connects `slime` with [`strands-sglang`](https://github.com/horizon
 hf download Qwen/Qwen3-8B --local-dir /root/models/Qwen/Qwen3-8B
 
 # mcore checkpoint
-cd /root/slime
+cd /root/vime
 source scripts/models/qwen3-8B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
@@ -64,7 +64,7 @@ ds.to_json("/root/data/aime-2024.jsonl", orient="records", lines=True)
 ## Run Training
 
 ```bash
-cd /root/slime
+cd /root/vime
 export WANDB_KEY=$your_wandb_key
 bash examples/strands_sglang/strands_qwen3_8b.sh
 ```

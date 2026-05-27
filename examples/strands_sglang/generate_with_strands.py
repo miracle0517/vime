@@ -3,12 +3,12 @@ import logging
 
 from camel.interpreters import SubprocessInterpreter
 from strands import Agent, tool
-from strands_sglang import SGLangModel, ToolLimiter, get_client_from_slime_args
+from strands_sglang import SGLangModel, ToolLimiter, get_client_from_vime_args
 from strands_sglang.tool_parsers import HermesToolParser
 
-from slime.rollout.rm_hub.math_dapo_utils import compute_score as math_dapo_compute_score
-from slime.rollout.sglang_rollout import GenerateState
-from slime.utils.types import Sample
+from vime.rollout.rm_hub.math_dapo_utils import compute_score as math_dapo_compute_score
+from vime.rollout.sglang_rollout import GenerateState
+from vime.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
     state = GenerateState(args)
     model = SGLangModel(
         tokenizer=state.tokenizer,
-        client=get_client_from_slime_args(args, timeout=300.0),
+        client=get_client_from_vime_args(args, timeout=300.0),
         tool_parser=HermesToolParser(),  # tool parsing for wrapped JSON tool calls
         sampling_params=sampling_params,
     )

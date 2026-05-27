@@ -29,8 +29,8 @@ source "${SCRIPT_DIR}/../../scripts/models/qwen3-4B-Instruct-2507.sh"
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-4B-Instruct-2507/
    --ref-load /root/Qwen3-4B-Instruct-2507_torch_dist/
-   --load /root/Qwen3-4B-Instruct-2507_slime/
-   --save /root/Qwen3-4B-Instruct-2507_slime/
+   --load /root/Qwen3-4B-Instruct-2507_vime/
+   --save /root/Qwen3-4B-Instruct-2507_vime/
    --save-interval 20
 )
 
@@ -44,7 +44,7 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 1024
    --rollout-temperature 1
    --global-batch-size 256
-   --dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
+   --dynamic-sampling-filter-path vime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
    --balance-data
 )
 
@@ -91,7 +91,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-tau-bench
+   # --wandb-project vime-tau-bench
    # --wandb-group qwen3-4B
    # --wandb-key ${WANDB_KEY}
 )

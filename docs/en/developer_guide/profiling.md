@@ -1,16 +1,16 @@
 # Profiling
 
-In slime, we can perform detailed performance analysis of the rollout process using the profiling interface provided by vLLM.
+In vime, we can perform detailed performance analysis of the rollout process using the profiling interface provided by vLLM.
 
 ## 1. Sleeping the Rollout Process
 
-For more flexible stress testing and profiling, it is often useful to make the slime rollout process enter a waiting state after initialization, instead of starting generation immediately.
+For more flexible stress testing and profiling, it is often useful to make the vime rollout process enter a waiting state after initialization, instead of starting generation immediately.
 
 You can achieve this by replacing the `rollout_function_path` in your startup arguments without modifying the source code:
 
 ```bash
 python train.py \
-    --rollout-function-path slime.rollout.sleep_rollout.sleep \
+    --rollout-function-path vime.rollout.sleep_rollout.sleep \
     ... (other arguments)
 ```
 

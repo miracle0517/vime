@@ -29,8 +29,8 @@ source "${SCRIPT_DIR}/models/glm4-9B.sh"
 CKPT_ARGS=(
    --hf-checkpoint /root/GLM-Z1-9B-0414/
    --ref-load /root/GLM-Z1-9B-0414_torch_dist
-   --load /root/GLM-Z1-9B-0414_slime/
-   --save /root/GLM-Z1-9B-0414_slime/
+   --load /root/GLM-Z1-9B-0414_vime/
+   --save /root/GLM-Z1-9B-0414_vime/
    --save-interval 20
 )
 
@@ -99,7 +99,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    #--use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group qwen3-4B-test
    # --wandb-key ${WANDB_KEY}
 )

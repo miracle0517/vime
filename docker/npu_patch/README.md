@@ -1,13 +1,13 @@
-# Slime NPU Patch Installation Guide
+# Vime NPU Patch Installation Guide
 
-This guide provides instructions for installing Slime with NPU support, including all required dependencies and patches.
+This guide provides instructions for installing Vime with NPU support, including all required dependencies and patches.
 
 ## Component Version Mapping
 
 | Component       | Version/Commit                           | Source                                                                                                              |
 | --------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Slime           | v0.2.2                                   | [GitHub](https://github.com/THUDM/slime/tree/v0.2.2)                                                                |
-| SGLang          | dce8b0606c06d3a191a24c7b8cbe8e238ab316c9 | [GitHub](https://github.com/sgl-project/sglang/tree/sglang-slime)                                             |
+| Vime           | v0.2.2                                   | [GitHub](https://github.com/vllm-project/vime/tree/v0.2.2)                                                                |
+| SGLang          | dce8b0606c06d3a191a24c7b8cbe8e238ab316c9 | [GitHub](https://github.com/sgl-project/sglang/tree/sglang-vime)                                             |
 | SGL Kernel NPU  | 2026.02.01                               | [GitHub](https://github.com/sgl-project/sgl-kernel-npu/releases/tag/2026.02.01)                                     |
 | Megatron-Bridge | 35b4ebfc486fb15dcc0273ceea804c3606be948a | [GitHub](https://github.com/fzyzcjy/Megatron-Bridge)                                                                |
 | Megatron-LM     | 3714d81d418c9f1bca4594fc35f9e8289f652862 | [GitHub](https://github.com/NVIDIA/Megatron-LM)                                                                     |
@@ -22,8 +22,8 @@ This guide provides instructions for installing Slime with NPU support, includin
 Only `python==3.11` is supported currently.
 
 ```shell
-conda create -n slime_release python=3.11
-conda activate slime_release
+conda create -n vime_release python=3.11
+conda activate vime_release
 ```
 
 ### Working Directory Setup
@@ -34,7 +34,7 @@ mkdir <WORKSPACE> && cd <WORKSPACE>
 
 ### CANN Environment
 
-Prior to start work with Slime on Ascend you need to install CANN Toolkit, Kernels operator package and NNAL version 8.5.0, check the [installation guide](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1/softwareinst/instg/instg_0008.html?Mode=PmIns\&InstallType=local\&OS=openEuler\&Software=cannToolKit)
+Prior to start work with Vime on Ascend you need to install CANN Toolkit, Kernels operator package and NNAL version 8.5.0, check the [installation guide](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1/softwareinst/instg/instg_0008.html?Mode=PmIns\&InstallType=local\&OS=openEuler\&Software=cannToolKit)
 
 ```shell
 source <CANN_PATH>/ascend-toolkit/set_env.sh
@@ -98,11 +98,11 @@ git clone https://gitcode.com/Ascend/MindSpeed.git && \
   pip install -e .
 ```
 
-### Slime
+### Vime
 
 ```shell
 cd <WORKSPACE>
-git clone https://github.com/ascend-slime/slime.git && cd slime
+git clone https://github.com/ascend-vime/vime.git && cd vime
 cp -r docker/npu_patch ../npu_patch
 git checkout v0.2.2
 pip install -e .
@@ -111,15 +111,15 @@ pip install -e .
 ## Applying Patches
 
 ```shell
-cd <WORKSPACE>/slime
-git apply ../npu_patch/slime.patch
+cd <WORKSPACE>/vime
+git apply ../npu_patch/vime.patch
 
 cd <WORKSPACE>/sglang
-git apply ../slime/docker/patch/v0.5.7/sglang.patch
+git apply ../vime/docker/patch/v0.5.7/sglang.patch
 git apply ../npu_patch/sglang.patch
 
 cd <WORKSPACE>/Megatron-LM
-git apply ../slime/docker/patch/v0.5.7/megatron.patch
+git apply ../vime/docker/patch/v0.5.7/megatron.patch
 git apply ../npu_patch/megatron.patch
 
 cd <WORKSPACE>/Megatron-Bridge
@@ -132,7 +132,7 @@ git apply ../npu_patch/mindspeed.patch
 ## Additional Dependencies
 
 ```shell
-cd <WORKSPACE>/slime
+cd <WORKSPACE>/vime
 pip install triton-ascend
 pip install torch-npu==2.8.0
 pip install torchvision==0.23.0
@@ -147,7 +147,7 @@ Modify the paths in the following files according to your environment (note to u
 
 **Common (both GRPO and PPO):**
 
-- `slime/utils/external_utils/command_utils.py`
+- `vime/utils/external_utils/command_utils.py`
 
 **GRPO:**
 
@@ -166,7 +166,7 @@ Download the dataset from [HuggingFace](https://huggingface.co/datasets/VeraIsHe
 ### Execute Training
 
 ```shell
-cd <WORKSPACE>/slime
+cd <WORKSPACE>/vime
 # GRPO
 bash examples/geo3k_vlm_multi_turn/run_grpo_npu.sh
 # PPO
@@ -186,7 +186,7 @@ bash examples/geo3k_vlm_multi_turn/run_ppo_npu.sh 2>&1 | tee -a <LOG_FILE>
 
 | Placeholder   | Description                          | Example               |
 | ------------- | ------------------------------------ | --------------------- |
-| `<WORKSPACE>` | Root directory for all installations | `/root/slime-release` |
+| `<WORKSPACE>` | Root directory for all installations | `/root/vime-release` |
 | `<CANN_PATH>` | Path to CANN installation directory  | `/usr/local/ascend`   |
 | `<LOG_FILE>`  | Path to log file for training output | `training.log`        |
 

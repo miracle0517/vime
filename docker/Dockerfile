@@ -63,7 +63,7 @@ RUN NVCC_APPEND_FLAGS="--threads 4" \
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
     cd Megatron-LM && git checkout ${MEGATRON_COMMIT}
 
-# Pinned to d64a639 (older than slime upstream's a193d9d); the newer commit
+# Pinned to d64a639 (older than vime upstream's a193d9d); the newer commit
 # requires TMS_CUDA_MAJOR env var to build a multi-CUDA wheel.
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
@@ -93,7 +93,7 @@ RUN pip install nvidia-cudnn-cu12==9.16.0.29
 # reinstall numpy 1.x for megatron
 RUN pip install "numpy<2"
 
-# vime's slime/utils/arguments.py + slime/ray/rollout.py top-level import sglang_router;
+# vime's vime/utils/arguments.py + vime/ray/rollout.py top-level import sglang_router;
 # the cu129 vllm base does not ship sglang, so install --no-deps stubs here.
 RUN pip install --no-deps "sglang==${SGLANG_VERSION}" sglang-router==0.3.2 && \
     pip install IPython
@@ -122,12 +122,12 @@ RUN cd Megatron-LM && \
 # ====================================== Install main package ============================================
 
 ARG VIME_COMMIT=main
-RUN git clone https://github.com/vllm-project/vime.git /root/slime && \
-    cd /root/slime && \
+RUN git clone https://github.com/vllm-project/vime.git /root/vime && \
+    cd /root/vime && \
     git checkout ${VIME_COMMIT} && \
     pip install -e . --no-deps
 
-RUN cd /root/slime/slime/backends/megatron_utils/kernels/int4_qat && \
+RUN cd /root/vime/vime/backends/megatron_utils/kernels/int4_qat && \
     pip install . --no-build-isolation
 
 # ====================================== Build-time smoke ============================================
@@ -135,8 +135,8 @@ RUN cd /root/slime/slime/backends/megatron_utils/kernels/int4_qat && \
 # Fail-fast import smoke + flashinfer version pin check. Catches ABI / version
 # regressions at build time instead of first GPU run.
 RUN python3 -c "\
-import vllm, sglang, slime, flashinfer; \
-from slime.backends.vllm_utils.vllm_engine import VLLMEngine; \
+import vllm, sglang, vime, flashinfer; \
+from vime.backends.vllm_utils.vllm_engine import VLLMEngine; \
 print('vllm', vllm.__version__); \
 print('sglang', sglang.__version__); \
 print('flashinfer', flashinfer.__version__); \

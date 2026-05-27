@@ -34,8 +34,8 @@ The teacher runs on an external vLLM server. Teacher log-probs are obtained duri
 
 **How it works**:
 1. An external vLLM server runs the teacher model.
-2. During rollout, the custom reward function (`slime.rollout.on_policy_distillation.reward_func`) sends each sample to the teacher server to obtain token-level log-probs.
-3. The custom post-processing function (`slime.rollout.on_policy_distillation.post_process_rewards`) trims the teacher log-probs to the response span and stores them in `sample.teacher_log_probs`.
+2. During rollout, the custom reward function (`vime.rollout.on_policy_distillation.reward_func`) sends each sample to the teacher server to obtain token-level log-probs.
+3. The custom post-processing function (`vime.rollout.on_policy_distillation.post_process_rewards`) trims the teacher log-probs to the response span and stores them in `sample.teacher_log_probs`.
 4. During training, the KL penalty is computed from the stored teacher log-probs and applied to advantages.
 
 **Configuration**:
@@ -43,8 +43,8 @@ The teacher runs on an external vLLM server. Teacher log-probs are obtained duri
 --use-opd
 --opd-type vllm
 --opd-kl-coef 1.0
---custom-rm-path slime.rollout.on_policy_distillation.reward_func
---custom-reward-post-process-path slime.rollout.on_policy_distillation.post_process_rewards
+--custom-rm-path vime.rollout.on_policy_distillation.reward_func
+--custom-reward-post-process-path vime.rollout.on_policy_distillation.post_process_rewards
 --rm-url http://<TEACHER_IP>:<TEACHER_PORT>/inference/v1/generate
 ```
 
@@ -82,7 +82,7 @@ hf download Qwen/Qwen3-8B --local-dir /root/Qwen3-8B
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
 
 # 2. Convert student model
-cd /root/slime
+cd /root/vime
 source scripts/models/qwen3-8B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \

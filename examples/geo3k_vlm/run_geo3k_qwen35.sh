@@ -4,24 +4,24 @@
 
 pip install -U transformers
 
-# IMPORTANT: This branch is specially modified for slime's current Megatron
+# IMPORTANT: This branch is specially modified for vime's current Megatron
 # version and Qwen3.5 from the main Megatron Bridge. Other models are not verified!
 # To restore the original Megatron Bridge, run:
 #   pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
 # TODO: Remove this once Megatron & Megatron Bridge are upgraded upstream.
-pip install git+https://github.com/coding-famer/Megatron-Bridge-slime.git@qwen35 --no-build-isolation
+pip install git+https://github.com/coding-famer/Megatron-Bridge-vime.git@qwen35 --no-build-isolation
 
 # Configuration
 TRAIN_BACKEND="megatron"
 MODEL_NAME="Qwen3_5-35B-A3B"
-DATASET_NAME=${SLIME_SCRIPT_DATASET_NAME:-"chenhegu/geo3k_imgurl"}
-NUM_GPUS=${SLIME_SCRIPT_NUM_GPUS:-8}
+DATASET_NAME=${VIME_SCRIPT_DATASET_NAME:-"chenhegu/geo3k_imgurl"}
+NUM_GPUS=${VIME_SCRIPT_NUM_GPUS:-8}
 DATASET_LOCAL_NAME=$(basename "$DATASET_NAME")
 
 MODEL_NAME_LOWER=$(echo "$MODEL_NAME" | tr '[:upper:]' '[:lower:]')
 
 # External Ray flag
-if [ -z "$SLIME_SCRIPT_EXTERNAL_RAY" ] || [ "$SLIME_SCRIPT_EXTERNAL_RAY" = "0" ]; then
+if [ -z "$VIME_SCRIPT_EXTERNAL_RAY" ] || [ "$VIME_SCRIPT_EXTERNAL_RAY" = "0" ]; then
    USE_EXTERNAL_RAY=0
 else
    USE_EXTERNAL_RAY=1
@@ -34,12 +34,12 @@ if [ "$USE_EXTERNAL_RAY" = "0" ]; then
    ray stop --force
    pkill -9 ray
 fi
-pkill -9 slime
+pkill -9 vime
 sleep 3
 if [ "$USE_EXTERNAL_RAY" = "0" ]; then
    pkill -9 ray
 fi
-pkill -9 slime
+pkill -9 vime
 pkill -9 redis
 
 set -ex
@@ -134,7 +134,7 @@ SGLANG_ARGS=(
 if [ -n "$WANDB_API_KEY" ]; then
    WANDB_ARGS=(
       --use-wandb
-      --wandb-project slime-geo3k-vlm
+      --wandb-project vime-geo3k-vlm
       --wandb-group ${MODEL_NAME_LOWER}-${TRAIN_BACKEND}
       --wandb-key ${WANDB_API_KEY}
       --disable-wandb-random-suffix
@@ -172,8 +172,8 @@ BACKEND_ARGS=(
    --micro-batch-size 1
 )
 
-SLIME_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." &>/dev/null && pwd)"
-source "${SLIME_DIR}/scripts/models/qwen3.5-35B-A3B.sh"
+VIME_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." &>/dev/null && pwd)"
+source "${VIME_DIR}/scripts/models/qwen3.5-35B-A3B.sh"
 
 # Start Ray if not using external Ray
 if [ "$USE_EXTERNAL_RAY" = "0" ]; then

@@ -26,7 +26,7 @@ jobs:
 
       - name: Construct Conda
         run: |
-          echo "📦 Installing slime..."
+          echo "📦 Installing vime..."
           cd $GITHUB_WORKSPACE
           echo "Current directory: $(pwd)"
 
@@ -57,7 +57,7 @@ jobs:
           echo "Current directory: $(pwd)"
 
           source ~/.bashrc
-          micromamba activate slime
+          micromamba activate vime
           export CUDA_HOME="$CONDA_PREFIX"
 
           source scripts/models/qwen3-30B-A3B.sh
@@ -74,10 +74,10 @@ jobs:
           echo "Current directory: $(pwd)"
 
           source ~/.bashrc
-          micromamba activate slime
+          micromamba activate vime
           export CUDA_HOME="$CONDA_PREFIX"
 
-          SLIME_TEST_USE_DEEPEP=0 SLIME_TEST_USE_FP8_ROLLOUT=0 python tests/test_qwen3_30B_A3B.py
+          VIME_TEST_USE_DEEPEP=0 VIME_TEST_USE_FP8_ROLLOUT=0 python tests/test_qwen3_30B_A3B.py
         shell: bash
           
       - name: Cleanup

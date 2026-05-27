@@ -1,6 +1,6 @@
 # On-Policy Distillation Example
 
-This example shows how to run **on-policy distillation (OPD)** using slime. A small student (Qwen3-8B) is aligned to imitate a larger teacher (Qwen3-32B) by training only on the student's own rollouts and matching the teacher's token-level log-probabilities.
+This example shows how to run **on-policy distillation (OPD)** using vime. A small student (Qwen3-8B) is aligned to imitate a larger teacher (Qwen3-32B) by training only on the student's own rollouts and matching the teacher's token-level log-probabilities.
 
 ## Key Features
 
@@ -28,7 +28,7 @@ This example shows how to run **on-policy distillation (OPD)** using slime. A sm
 
 ## Components
 
-- `slime/rollout/on_policy_distillation.py` implements (for SGLang mode):
+- `vime/rollout/on_policy_distillation.py` implements (for SGLang mode):
   - `reward_func` calls the teacher server (via `args.rm_url`) with every sample to obtain token-level logprobs.
   - `post_process_rewards` trims the teacher logprobs to the generated response span and writes the tensors back to each `Sample` to compute advantages.
 - `run-qwen3-8B-opd.sh` launches an SGLang teacher server, then submits a Ray job that runs `train.py`.
@@ -47,7 +47,7 @@ hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-ma
 
 2. Run the hf to mcore for student model conversion:
 ```bash
-cd /root/slime
+cd /root/vime
 source scripts/models/qwen3-8B.sh
 
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
@@ -69,7 +69,7 @@ bash examples/on_policy_distillation/run-qwen3-8B-opd.sh
 ```bash
 # This example uses the same model as both student and teacher (for demonstration only)
 # In practice, use a different (stronger) model as the teacher!
-cd /root/slime
+cd /root/vime
 source scripts/models/qwen3-8B.sh  # Or your teacher model config
 
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \

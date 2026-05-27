@@ -1283,8 +1283,8 @@ index 8560246c6..13db860dc 100644
          "sglang.srt.model_executor.model_runner.",
          "sglang.srt.layers.",
          "sglang.srt.utils.",
-+        # --- slime ---
-+        "slime.",
++        # --- vime ---
++        "vime.",
      }
  
      DENY_CLASSES = {

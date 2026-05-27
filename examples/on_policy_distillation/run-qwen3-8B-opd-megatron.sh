@@ -21,14 +21,14 @@ else
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-source "/root/slime/scripts/models/qwen3-8B.sh"
+source "/root/vime/scripts/models/qwen3-8B.sh"
 
 
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-8B
    --ref-load /root/Qwen3-8B_torch_dist
-   --load /root/Qwen3-8B_slime/
-   --save /root/Qwen3-8B_slime/
+   --load /root/Qwen3-8B_vime/
+   --save /root/Qwen3-8B_vime/
    --save-interval 20
 )
 
@@ -103,7 +103,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    #--use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group qwen3-8B-opd-megatron
    # --wandb-key ${WANDB_KEY}
 )

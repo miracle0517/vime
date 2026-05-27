@@ -29,9 +29,9 @@ REFERENCE_CUSTOM_GENERATE_WITH_EVAL_PATH = (
     "plugin_contracts.test_plugin_generate_contracts.custom_generate_with_evaluation"
 )
 
-from slime.rollout.sglang_rollout import generate_and_rm
-from slime.utils.misc import load_function
-from slime.utils.types import Sample
+from vime.rollout.sglang_rollout import generate_and_rm
+from vime.utils.misc import load_function
+from vime.utils.types import Sample
 
 
 def run_contract_test_file() -> None:
@@ -117,7 +117,7 @@ class _PatchedGenerateState(FakeGenerateState):
 @pytest.fixture
 def patch_generate_state(monkeypatch):
     """Patch GenerateState with a test-safe variant; returns the sglang_rollout module."""
-    from slime.rollout import sglang_rollout
+    from vime.rollout import sglang_rollout
 
     monkeypatch.setattr(sglang_rollout, "GenerateState", _PatchedGenerateState)
     return sglang_rollout
