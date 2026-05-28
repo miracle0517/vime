@@ -160,6 +160,8 @@ class MegatronTrainRayActor(TrainRayActor):
     def sleep(self) -> None:
         assert self.args.offload_train
 
+        if self.args.use_routing_replay:
+            RoutingReplay.clear_all()
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
         if (
@@ -169,7 +171,7 @@ class MegatronTrainRayActor(TrainRayActor):
             and hasattr(self.weight_updater, "disconnect_rollout_engines")
         ):
             self.weight_updater.disconnect_rollout_engines()
-        destroy_process_groups()
+            destroy_process_groups()
 
         torch_memory_saver.pause()
 
@@ -184,6 +186,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory()
         reload_process_groups()
+        if self.role == "actor":
+            self._switch_model("actor")
         print_memory("after wake_up model")
 
     def _get_rollout_data(self, rollout_data_ref: Box) -> RolloutBatch:
