@@ -97,6 +97,13 @@ SKIPPED_DESTS = [
     # data_parallel_size remain user-controllable and auto-forward to the vllm
     # subprocess when set.
     "tensor_parallel_size",
+    # multi-node logical engine (orchestrator-owned)
+    "nnodes",
+    "node_rank",
+    "master_addr",
+    "master_port",
+    "data_parallel_backend",
+    "distributed_executor_backend",
     # network: engine launcher decides per-engine port/host
     "port",
     "host",

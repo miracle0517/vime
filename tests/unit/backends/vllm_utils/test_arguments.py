@@ -1,4 +1,4 @@
-"""Unit tests for ``slime.backends.vllm_utils.arguments``."""
+﻿"""Unit tests for ``slime.backends.vllm_utils.arguments``."""
 
 from __future__ import annotations
 
@@ -79,10 +79,17 @@ def test_wrapper_skips_dest_listed_in_SKIPPED_DESTS(args_mod):
 
 
 @pytest.mark.unit
-def test_SKIPPED_DESTS_only_tp(args_mod):
+def test_SKIPPED_DESTS_orchestrator_parallel_dims(args_mod):
+    """TP/multi-node dims are orchestrator-owned; PP/DP remain CLI-forwardable."""
     assert "tensor_parallel_size" in args_mod.SKIPPED_DESTS
     assert "pipeline_parallel_size" not in args_mod.SKIPPED_DESTS
     assert "data_parallel_size" not in args_mod.SKIPPED_DESTS
+    assert "nnodes" in args_mod.SKIPPED_DESTS
+    assert "node_rank" in args_mod.SKIPPED_DESTS
+    assert "master_addr" in args_mod.SKIPPED_DESTS
+    assert "master_port" in args_mod.SKIPPED_DESTS
+    assert "data_parallel_backend" in args_mod.SKIPPED_DESTS
+    assert "distributed_executor_backend" in args_mod.SKIPPED_DESTS
 
 
 @pytest.mark.unit

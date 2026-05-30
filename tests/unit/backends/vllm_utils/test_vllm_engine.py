@@ -62,6 +62,90 @@ def test_to_local_gpu_id_maps_physical_id(monkeypatch):
 
 
 @pytest.mark.unit
+def test_compute_vllm_engine_topology_single_node(vllm_args):
+    vllm_args.num_gpus_per_node = 8
+    vllm_args.rollout_num_gpus_per_engine = 4
+    vllm_args.vllm_pipeline_parallel_size = 1
+    vllm_args.vllm_tp_size = 4
+    topo = mod.compute_vllm_engine_topology(vllm_args, global_rank=0)
+    assert topo.nnodes == 1
+    assert topo.node_rank == 0
+    assert topo.local_num_gpus == 4
+    assert not topo.multi_node
+    assert not topo.headless
+
+
+@pytest.mark.unit
+def test_compute_vllm_engine_topology_multi_node_ranks(vllm_args):
+    vllm_args.num_gpus_per_node = 8
+    vllm_args.rollout_num_gpus_per_engine = 16
+    vllm_args.vllm_pipeline_parallel_size = 2
+    vllm_args.vllm_tp_size = 8
+    topo0 = mod.compute_vllm_engine_topology(vllm_args, global_rank=0)
+    topo1 = mod.compute_vllm_engine_topology(vllm_args, global_rank=1)
+    assert topo0.nnodes == 2
+    assert topo0.node_rank == 0
+    assert topo1.node_rank == 1
+    assert topo0.local_num_gpus == 8
+    assert topo0.headless is False
+    assert topo1.headless is True
+
+
+@pytest.mark.unit
+def test_append_distributed_flags_only_when_multi_node(vllm_args):
+    cmd: list[str] = ["vllm", "serve"]
+    single = mod.VllmEngineTopology(
+        nnodes=1,
+        node_rank=0,
+        local_num_gpus=4,
+        tensor_parallel_size=4,
+        pipeline_parallel_size=1,
+    )
+    mod._append_vllm_distributed_launch_flags(cmd, single, ("10.0.0.1", 15000), vllm_args)
+    assert cmd == ["vllm", "serve"]
+
+    cmd_multi: list[str] = ["vllm", "serve"]
+    multi = mod.VllmEngineTopology(
+        nnodes=2,
+        node_rank=1,
+        local_num_gpus=8,
+        tensor_parallel_size=8,
+        pipeline_parallel_size=2,
+    )
+    mod._append_vllm_distributed_launch_flags(cmd_multi, multi, ("10.0.0.2", 16000), vllm_args)
+    assert "--nnodes" in cmd_multi
+    assert "--node-rank" in cmd_multi
+    assert "1" in cmd_multi
+    assert "--headless" in cmd_multi
+    assert "--master-addr" in cmd_multi
+    assert "10.0.0.2" in cmd_multi
+    assert cmd_multi[cmd_multi.index("--data-parallel-backend") + 1] == "mp"
+    assert cmd_multi[cmd_multi.index("--distributed-executor-backend") + 1] == "mp"
+
+
+@pytest.mark.unit
+def test_parse_dist_init_addr_ipv6():
+    host, port = mod.parse_dist_init_addr("[2001:db8::1]:15000")
+    assert host == "2001:db8::1"
+    assert port == 15000
+
+
+@pytest.mark.unit
+def test_build_vllm_subprocess_env_colocate(vllm_args, monkeypatch):
+    vllm_args.colocate = True
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    env = mod.build_vllm_subprocess_env(
+        {
+            "args": vllm_args,
+            "visible_devices": "0,1",
+        }
+    )
+    assert "VLLM_ALLOW_INSECURE_SERIALIZATION" in env
+    assert env["VLLM_ALLOW_INSECURE_SERIALIZATION"] == "1"
+    assert "PYTHONPATH" in env
+
+
+@pytest.mark.unit
 def test_get_base_gpu_id_colocate(vllm_args):
     vllm_args.colocate = True
     vllm_args.num_gpus_per_node = 8
@@ -275,6 +359,12 @@ def test_init_weights_update_group_uses_config_timeout(vllm_engine, monkeypatch)
 def test_response_json_parses_dict():
     response = _MockResponse(json_data={"status": "ready"})
     assert mod._response_json(response) == {"status": "ready"}
+
+
+@pytest.mark.unit
+def test_response_json_empty_body_returns_ok():
+    response = _MockResponse(text="")
+    assert mod._response_json(response) == {"ok": True}
 
 
 @pytest.mark.unit
