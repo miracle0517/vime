@@ -13,10 +13,25 @@ from slime.backends.vllm_utils import vllm_engine as mod
 
 
 class _MockResponse:
-    def __init__(self, *, json_data: dict | None = None, text: str = "", status_code: int = 200):
+    def __init__(
+        self,
+        *,
+        json_data: dict | None = None,
+        text: str = "",
+        status_code: int = 200,
+        content: bytes | None = None,
+    ):
         self._json_data = json_data
-        self.text = text
+        self.text = text if text or json_data is None else "{}"
         self.status_code = status_code
+        if content is not None:
+            self.content = content
+        elif text:
+            self.content = text.encode()
+        elif json_data is not None:
+            self.content = self.text.encode()
+        else:
+            self.content = b""
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -275,6 +290,12 @@ def test_init_weights_update_group_uses_config_timeout(vllm_engine, monkeypatch)
 def test_response_json_parses_dict():
     response = _MockResponse(json_data={"status": "ready"})
     assert mod._response_json(response) == {"status": "ready"}
+
+
+@pytest.mark.unit
+def test_response_json_empty_body_returns_empty_dict():
+    response = _MockResponse()
+    assert mod._response_json(response) == {}
 
 
 @pytest.mark.unit
