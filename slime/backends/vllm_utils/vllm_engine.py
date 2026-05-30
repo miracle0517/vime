@@ -38,6 +38,13 @@ def _response_json(response: requests.Response) -> dict:
     except requests.exceptions.HTTPError as e:
         e.add_note(f"{response.text=}")
         raise
+    # Some vLLM control-plane endpoints (e.g. POST /sleep, /wake_up) return an
+    # HTTP 200 with an EMPTY body. response.json() would then raise
+    # JSONDecodeError("Expecting value: line 1 column 1 (char 0)") and break
+    # colocate memory offload (release_memory_occupation / resume_memory_occupation).
+    # Treat an empty body as an empty result.
+    if not response.content or not response.text.strip():
+        return {}
     return response.json()
 
 
