@@ -50,8 +50,6 @@ class VllmEngineTopology:
     local_num_gpus: int
     tensor_parallel_size: int
     pipeline_parallel_size: int
-    master_host: str | None = None
-    master_port: int | None = None
 
     @property
     def headless(self) -> bool:
@@ -123,11 +121,26 @@ def _get_vllm_dp_size(args) -> int:
 
 
 def _resolve_vllm_parallel_sizes(args, *, gpus_per_engine: int) -> tuple[int, int]:
+    # Derive TP per-engine from THIS engine's GPU count (matches upstream slime's
+    # sglang_engine: tp = _gpus_per_engine // pp). Deliberately does NOT consult a global
+    # ``args.vllm_tp_size``: validate_args used to set that from the *global*
+    # rollout_num_gpus_per_engine, which shadowed this per-engine value and made a
+    # heterogeneous per-group engine (e.g. a tp=2 group) launch with the global TP —
+    # desyncing the weight-transfer rendezvous (the 300s "3/4 clients joined" hang).
     pp = _get_vllm_pp_size(args)
-    if getattr(args, "vllm_tp_size", None) is not None:
-        tp = int(args.vllm_tp_size)
-    else:
-        tp = gpus_per_engine // pp
+    dp = _get_vllm_dp_size(args)
+    if dp != 1:
+        raise NotImplementedError(
+            "vLLM data parallelism (vllm_data_parallel_size>1) is not wired in this base: TP is "
+            "computed as gpus_per_engine // pp (no DP term) and --data-parallel-size is not "
+            "forwarded. DP/EP support lands in a follow-up PR."
+        )
+    if gpus_per_engine % pp != 0:
+        raise ValueError(
+            f"num_gpus_per_engine ({gpus_per_engine}) must be divisible by "
+            f"vllm_pipeline_parallel_size ({pp})"
+        )
+    tp = gpus_per_engine // pp
     return tp, pp
 
 
@@ -193,9 +206,6 @@ def append_vllm_distributed_launch_flags(
         cmd += ["--distributed-executor-backend", "mp"]
     if topology.headless:
         cmd.append("--headless")
-
-
-_append_vllm_distributed_launch_flags = append_vllm_distributed_launch_flags
 
 
 def _user_overrode(args, dest: str) -> bool:
@@ -303,9 +313,6 @@ def redact_cmd_for_log(cmd: list[str]) -> str:
     return " ".join(parts)
 
 
-_redact_cmd_for_log = redact_cmd_for_log
-
-
 def build_vllm_subprocess_env(server_args: dict[str, Any]) -> dict[str, str]:
     """Child-process environment for ``vllm serve``."""
     args = server_args["args"]
@@ -358,9 +365,6 @@ def serialize_for_cli(value) -> str | None:
             logger.debug("JSON serialization failed for %r: %s", type(value).__name__, exc)
             return None
     return None
-
-
-_serialize_for_cli = serialize_for_cli
 
 
 def _serialize_weight_transfer_config(value) -> str:
@@ -479,11 +483,9 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
     if getattr(args, "use_rollout_routing_replay", False):
         cmd += ["--enable-return-routed-experts"]
 
-    if _user_overrode(args, "vllm_gpu_memory_utilization"):
-        gpu_mem = args.vllm_gpu_memory_utilization
-    else:
-        gpu_mem = 0.55
-    cmd += ["--gpu-memory-utilization", str(gpu_mem)]
+    # gpu_memory_utilization: no vime-forced default. In colocate, training and rollout do not
+    # occupy the GPU simultaneously (sleep/offload cycles), so vLLM's own default is fine. A user
+    # value passed via --vllm-gpu-memory-utilization is auto-forwarded by _forward_vllm_cli_args.
 
     # 2) logprobs_mode: vllm's raw_logprobs are pre-temperature, while Megatron
     #    replay compares against rollout-temperature-scaled logprobs.
@@ -636,8 +638,10 @@ class VLLMEngine(RayActor):
         self._topology = self._server_args["topology"]
         self.node_rank = self._topology.node_rank
 
-        self.router_ip = router_ip if router_ip is not None else self.args.vllm_router_ip
-        self.router_port = router_port if router_port is not None else self.args.vllm_router_port
+        # rollout always passes the resolved router (engine.init(router_ip=self.router_ip, ...))
+        # and _start_router always returns a real address, so no fallback to args is needed.
+        self.router_ip = router_ip
+        self.router_port = router_port
         self.server_host = self._server_args["host"]
         self.server_port = port
 
@@ -648,7 +652,18 @@ class VLLMEngine(RayActor):
             )
 
         if self.args.rollout_external:
-            self._init_external()
+            # Only the HTTP-owning head node (node_rank 0) can hit /health and
+            # /server_info. Headless workers (node_rank>0) expose no HTTP endpoint,
+            # so skip the check for them — mirrors the head/worker split in _init_normal.
+            if self.node_rank == 0:
+                self._init_external()
+            else:
+                logger.info(
+                    "External vLLM headless worker (rank=%s node_rank=%s): skip HTTP health/config "
+                    "check (only node_rank 0 owns HTTP).",
+                    self.rank,
+                    self.node_rank,
+                )
         else:
             self._init_normal()
 
@@ -687,29 +702,45 @@ class VLLMEngine(RayActor):
 
     def _init_external(self) -> None:
         logger.info("Use external vLLM engine (rank=%s) at %s:%s", self.rank, self.server_host, self.server_port)
-        base = self._http_base()
-        _wait_server_healthy(base, process=None)
-        self._wait_external_config_ready()
+        _wait_server_healthy(self._http_base(), process=None)
+        self._sanity_check_external_server_args()
 
-    def _wait_external_config_ready(self) -> None:
-        """External engine: best-effort ``GET /server_info`` TP check (non-fatal)."""
-        try:
-            actual = requests.get(f"{self._http_base()}/server_info", params={"config_format": "json"}, timeout=30)
-            actual.raise_for_status()
-            body = actual.json()
-        except requests.RequestException as e:
-            logger.warning("External vLLM: could not GET /server_info (non-fatal): %s", e)
-            return
+    def _sanity_check_external_server_args(self) -> None:
+        """Strictly verify an external engine's parallel config matches what we expect; raise on mismatch.
 
-        expect_tp = self.args.rollout_num_gpus_per_engine
+        Replaces the previous warn-only check, which (a) compared against the *global*
+        ``rollout_num_gpus_per_engine`` — wrong for heterogeneous / multi-node groups — and
+        (b) only logged a warning, so a misconfigured external engine sailed through and then
+        hung the weight-sync rendezvous ~300s later with no clear error.
+
+        We now compare every field in ``EXTERNAL_ENGINE_CHECK_FIELDS`` against the per-engine
+        expectation in ``self._server_args`` and raise immediately on mismatch. A field that the
+        engine's ``/server_info`` does not report (``actual is None``) is skipped rather than
+        treated as a mismatch (e.g. vLLM ``parallel_config`` may not surface ``nnodes``), so the
+        check stays strict for reported fields without false-failing on unreported ones.
+        """
+        response = requests.get(f"{self._http_base()}/server_info", params={"config_format": "json"}, timeout=30)
+        body = _response_json(response)
         parallel_cfg = body.get("vllm_config", {}).get("parallel_config", {})
-        actual_tp = parallel_cfg.get("tensor_parallel_size")
-        if actual_tp is not None and actual_tp != expect_tp:
-            logger.warning(
-                "External vLLM server_info TP mismatch: expect=%s actual=%s (weak check)",
-                expect_tp,
-                actual_tp,
-            )
+        if not parallel_cfg:
+            raise RuntimeError(f"External vLLM /server_info missing vllm_config.parallel_config: {body}")
+        actual = {
+            "tp_size": parallel_cfg.get("tensor_parallel_size"),
+            "pp_size": parallel_cfg.get("pipeline_parallel_size"),
+            "dp_size": parallel_cfg.get("data_parallel_size"),
+            "nnodes": parallel_cfg.get("nnodes"),
+        }
+        expect = {name: self._server_args.get(name) for name in EXTERNAL_ENGINE_CHECK_FIELDS}
+        for name in EXTERNAL_ENGINE_CHECK_FIELDS:
+            actual_value = actual.get(name)
+            if actual_value is None:
+                logger.debug("External vLLM /server_info did not report %s; skipping that check.", name)
+                continue
+            if actual_value != expect.get(name):
+                raise AssertionError(
+                    f"External vLLM server arg mismatch: {name}: expect={expect.get(name)} "
+                    f"actual={actual_value} (full expect={expect} actual={actual})"
+                )
 
     def _init_normal(self) -> None:
         topology = self._topology
@@ -728,9 +759,17 @@ class VLLMEngine(RayActor):
         else:
             _wait_worker_process_alive(self.process)
 
-    def _post_json(self, endpoint: str, payload: dict, timeout: float) -> requests.Response:
+    def _make_request(self, endpoint: str, payload: dict | None = None, *, timeout: float) -> dict | None:
+        """Control-plane POST returning parsed JSON (mirrors SGLang's ``_make_request``).
+
+        The single choke point for control-plane POSTs: headless workers (node_rank>0) own no
+        HTTP server, so they no-op to None; otherwise POST and parse via the shared
+        ``_response_json`` (also reused by the query-param endpoints /sleep, /wake_up, ...).
+        """
+        if self.node_rank != 0:
+            return None
         url = f"{self._http_base()}/{endpoint.lstrip('/')}"
-        return requests.post(url, json=payload, timeout=timeout)
+        return _response_json(requests.post(url, json=payload or {}, timeout=timeout))
 
     def _post_vllm_update_weights_http(self, update_info: dict) -> dict:
         """POST ``/update_weights`` with ``{"update_info": ...}`` (vLLM RLHF control plane).
@@ -738,12 +777,11 @@ class VLLMEngine(RayActor):
         Caller must invoke ``start_weight_update`` / ``finish_weight_update`` around a batch of
         ``/update_weights`` calls (see ``UpdateWeightFromTensor`` / ``UpdateWeightFromDistributed``).
         """
-        response = self._post_json(
+        return self._make_request(
             "update_weights",
             {"update_info": update_info},
             timeout=self._weight_transfer_http_timeout(),
         )
-        return _response_json(response)
 
     def health_generate(self, timeout: float = 5.0) -> bool:
         """Return True if ``GET /health`` succeeds."""
@@ -861,6 +899,8 @@ class VLLMEngine(RayActor):
         level=0 releases both KV cache and model weights (required before IPC tensor injection).
         Returns a no-op dict when ``--vllm-enable-sleep-mode`` was not set.
         """
+        if self.node_rank != 0:  # /sleep bypasses _make_request (query params, not JSON body); guard explicitly.
+            return None
         self.flush_cache()
         if not getattr(self.args, "vllm_enable_sleep_mode", False):
             return {"ok": True, "sleep_mode": False, "note": "vLLM sleep mode disabled; no /sleep call."}
@@ -875,6 +915,8 @@ class VLLMEngine(RayActor):
 
     def resume_memory_occupation(self, tags: list[str] | None = None):
         """``POST /wake_up`` when sleep mode is on; else a no-op placeholder dict."""
+        if self.node_rank != 0:  # /wake_up bypasses _make_request (query params, not JSON body); guard explicitly.
+            return None
         if not getattr(self.args, "vllm_enable_sleep_mode", False):
             return {"ok": True, "sleep_mode": False}
         tags = _normalize_vllm_wake_tags(tags)
@@ -898,8 +940,7 @@ class VLLMEngine(RayActor):
         last_error = None
         for attempt in range(1, 4):
             try:
-                response = self._post_json("init_weight_transfer_engine", payload, timeout=init_timeout_s)
-                return _response_json(response)
+                return self._make_request("init_weight_transfer_engine", payload, timeout=init_timeout_s)
             except Exception as e:
                 last_error = e
                 if attempt < 3:
@@ -909,12 +950,11 @@ class VLLMEngine(RayActor):
 
     def start_weight_update(self, is_checkpoint_format: bool = False) -> dict:
         """``POST /start_weight_update`` — signals vLLM to enter IPC weight-update mode."""
-        response = self._post_json(
+        return self._make_request(
             "start_weight_update",
             {"is_checkpoint_format": is_checkpoint_format},
             timeout=self._weight_transfer_http_timeout(),
         )
-        return _response_json(response)
 
     def finish_weight_update(self) -> dict:
         """``POST /finish_weight_update`` — signals vLLM to exit IPC weight-update mode.
@@ -923,8 +963,7 @@ class VLLMEngine(RayActor):
         ``update_weights_from_tensor`` (the IPC data-carrying RPC), matching slime's
         single-RPC version-with-data semantics.
         """
-        response = self._post_json("finish_weight_update", {}, timeout=self._weight_transfer_http_timeout())
-        return _response_json(response)
+        return self._make_request("finish_weight_update", {}, timeout=self._weight_transfer_http_timeout())
 
     def check_weights(self, action: str):
         """No vLLM ``weights_checker`` route; return a placeholder dict."""
@@ -950,8 +989,7 @@ class VLLMEngine(RayActor):
         last_error = None
         for attempt in range(1, 4):
             try:
-                response = self._post_json("init_weight_transfer_engine", payload, timeout=init_timeout_s)
-                return _response_json(response)
+                return self._make_request("init_weight_transfer_engine", payload, timeout=init_timeout_s)
             except Exception as e:
                 last_error = e
                 if attempt < 3:
