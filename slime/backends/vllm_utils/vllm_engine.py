@@ -41,25 +41,6 @@ _VLLM_WAKE_TAGS = frozenset({"weights", "kv_cache"})
 _PRIMITIVE_TYPES = (str, int, float, bool)
 
 
-@dataclasses.dataclass(frozen=True)
-class VllmEngineTopology:
-    """Per-Ray-actor placement for one slice of a logical rollout engine."""
-
-    nnodes: int
-    node_rank: int
-    local_num_gpus: int
-    tensor_parallel_size: int
-    pipeline_parallel_size: int
-
-    @property
-    def headless(self) -> bool:
-        return self.node_rank != 0
-
-    @property
-    def multi_node(self) -> bool:
-        return self.nnodes > 1
-
-
 def _format_v6_uri(addr: str | None) -> str | None:
     if not addr or addr.startswith("["):
         return addr
@@ -110,6 +91,25 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
         f"GPU id {physical_gpu_id} is not valid under CUDA_VISIBLE_DEVICES={cvd}. "
         f"Expected one of {visible} (physical) or 0..{len(visible)-1} (local)."
     )
+
+
+@dataclasses.dataclass(frozen=True)
+class VllmEngineTopology:
+    """Per-Ray-actor placement for one slice of a logical rollout engine."""
+
+    nnodes: int
+    node_rank: int
+    local_num_gpus: int
+    tensor_parallel_size: int
+    pipeline_parallel_size: int
+
+    @property
+    def headless(self) -> bool:
+        return self.node_rank != 0
+
+    @property
+    def multi_node(self) -> bool:
+        return self.nnodes > 1
 
 
 def _get_vllm_pp_size(args) -> int:
@@ -298,40 +298,6 @@ def compute_server_args(
     return server_args
 
 
-def redact_cmd_for_log(cmd: list[str]) -> str:
-    """Stringify ``cmd`` for logging, redacting credential flags."""
-    parts: list[str] = []
-    redact_next = False
-    for token in cmd:
-        if redact_next:
-            parts.append("***")
-            redact_next = False
-            continue
-        parts.append(token)
-        if isinstance(token, str) and token in _REDACTED_FLAGS:
-            redact_next = True
-    return " ".join(parts)
-
-
-def build_vllm_subprocess_env(server_args: dict[str, Any]) -> dict[str, str]:
-    """Child-process environment for ``vllm serve``."""
-    args = server_args["args"]
-    env = os.environ.copy()
-    env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
-    env.setdefault("NCCL_CUMEM_ENABLE", "0")
-    env["CUDA_VISIBLE_DEVICES"] = server_args["visible_devices"]
-    env.setdefault("VLLM_SERVER_DEV_MODE", "1")
-    if getattr(args, "colocate", False):
-        import slime
-
-        vime_root = os.path.dirname(os.path.dirname(os.path.abspath(slime.__file__)))
-        existing_pp = env.get("PYTHONPATH", "")
-        if vime_root not in {p for p in existing_pp.split(os.pathsep) if p}:
-            env["PYTHONPATH"] = os.pathsep.join(filter(None, [vime_root, existing_pp]))
-        env.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
-    return env
-
-
 class _RobustJsonEncoder:
     @staticmethod
     def default(obj):
@@ -430,6 +396,40 @@ def _forward_vllm_cli_args(args, cmd: list[str]) -> None:
         cmd.extend([vllm_flag, serialized])
 
 
+def redact_cmd_for_log(cmd: list[str]) -> str:
+    """Stringify ``cmd`` for logging, redacting credential flags."""
+    parts: list[str] = []
+    redact_next = False
+    for token in cmd:
+        if redact_next:
+            parts.append("***")
+            redact_next = False
+            continue
+        parts.append(token)
+        if isinstance(token, str) and token in _REDACTED_FLAGS:
+            redact_next = True
+    return " ".join(parts)
+
+
+def build_vllm_subprocess_env(server_args: dict[str, Any]) -> dict[str, str]:
+    """Child-process environment for ``vllm serve``."""
+    args = server_args["args"]
+    env = os.environ.copy()
+    env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+    env.setdefault("NCCL_CUMEM_ENABLE", "0")
+    env["CUDA_VISIBLE_DEVICES"] = server_args["visible_devices"]
+    env.setdefault("VLLM_SERVER_DEV_MODE", "1")
+    if getattr(args, "colocate", False):
+        import slime
+
+        vime_root = os.path.dirname(os.path.dirname(os.path.abspath(slime.__file__)))
+        existing_pp = env.get("PYTHONPATH", "")
+        if vime_root not in {p for p in existing_pp.split(os.pathsep) if p}:
+            env["PYTHONPATH"] = os.pathsep.join(filter(None, [vime_root, existing_pp]))
+        env.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
+    return env
+
+
 def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
     """Translate ``server_args`` to ``vllm serve`` argv and subprocess environment."""
     args = server_args["args"]
@@ -523,16 +523,6 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
     return cmd, env
 
 
-def _normalize_vllm_wake_tags(tags: list[str] | None) -> list[str] | None:
-    if not tags:
-        return tags
-    normalized = [t for t in tags if t in _VLLM_WAKE_TAGS]
-    dropped = set(tags) - set(normalized)
-    if dropped:
-        logger.debug("vLLM wake_up: dropped tags not supported by vLLM: %s", sorted(dropped))
-    return normalized or None
-
-
 def _exec_vllm_cmd(cmd: list[str], env: dict[str, str]) -> None:
     """Entry point for multiprocessing child process."""
     os.execvpe(cmd[0], cmd, env)
@@ -546,14 +536,6 @@ def _wait_worker_process_alive(process: multiprocessing.Process, timeout_s: floa
             return
         time.sleep(2)
     raise RuntimeError(f"vLLM worker process exited unexpectedly with code {process.exitcode}")
-
-
-def launch_server_process(server_args: dict) -> multiprocessing.Process:
-    """Spawn ``vllm serve`` from a :func:`compute_server_args` dict."""
-    cmd, env = build_vllm_cmd_and_env(server_args)
-    p = _spawn_ctx.Process(target=_exec_vllm_cmd, args=(cmd, env))
-    p.start()
-    return p
 
 
 def _wait_server_healthy(base_url: str, process: multiprocessing.Process | None, timeout_s: float = 300.0) -> None:
@@ -572,6 +554,24 @@ def _wait_server_healthy(base_url: str, process: multiprocessing.Process | None,
         if time.time() - start > timeout_s:
             raise TimeoutError(f"Timeout waiting for vLLM server healthy: {base_url}")
         time.sleep(2)
+
+
+def launch_server_process(server_args: dict) -> multiprocessing.Process:
+    """Spawn ``vllm serve`` from a :func:`compute_server_args` dict."""
+    cmd, env = build_vllm_cmd_and_env(server_args)
+    p = _spawn_ctx.Process(target=_exec_vllm_cmd, args=(cmd, env))
+    p.start()
+    return p
+
+
+def _normalize_vllm_wake_tags(tags: list[str] | None) -> list[str] | None:
+    if not tags:
+        return tags
+    normalized = [t for t in tags if t in _VLLM_WAKE_TAGS]
+    dropped = set(tags) - set(normalized)
+    if dropped:
+        logger.debug("vLLM wake_up: dropped tags not supported by vLLM: %s", sorted(dropped))
+    return normalized or None
 
 
 class VLLMEngine(RayActor):
