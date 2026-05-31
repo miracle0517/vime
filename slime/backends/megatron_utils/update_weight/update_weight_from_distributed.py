@@ -222,6 +222,17 @@ class UpdateWeightFromDistributed:
 
     def _update_weights_vllm_packed(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
         """Single-shot vLLM weight update using packed broadcast."""
+        # P4 guard: this path is only reached on the PP source rank (see _sync_weights_to_rollout_engines),
+        # which always connects _model_update_groups first. If it is still None here the NCCL weight-sync
+        # group was never built — passing None down would hang the rendezvous (the 300s class of bug) with
+        # an opaque error. Fail loudly and point at the [vllm-topo] sizing logs instead.
+        if self._model_update_groups is None:
+            raise RuntimeError(
+                "[vllm-topo] _update_weights_vllm_packed reached with _model_update_groups=None "
+                f"(is_pp_src_rank={getattr(self, '_is_pp_src_rank', None)} group={getattr(self, '_group_name', None)}). "
+                "The weight-sync NCCL group was never connected; check engine_gpu_counts vs launched tp "
+                "in the [vllm-topo] server_args logs."
+            )
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)
 
