@@ -29,7 +29,7 @@ This example shows how to run **on-policy distillation (OPD)** using slime. A sm
 ## Components
 
 - `slime/rollout/on_policy_distillation.py` implements (for vLLM mode):
-  - `reward_func` calls the teacher server (via `args.rm_url`, an OpenAI-compatible `/v1/completions` endpoint) with every sample to obtain prompt log-probs.
+  - `reward_func` calls the teacher server (via `args.rm_url`, the vLLM disaggregated `/inference/v1/generate` endpoint) with every sample to obtain prompt log-probs.
   - `post_process_rewards` trims the teacher logprobs to the generated response span and writes the tensors back to each `Sample` to compute advantages.
 - `run-qwen3-8B-opd.sh` launches a vLLM teacher server, then submits a Ray job that runs `train.py`.
 - `run-qwen3-8B-opd-megatron.sh` uses Megatron-loaded teacher model (no external server needed).

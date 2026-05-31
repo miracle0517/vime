@@ -11,11 +11,11 @@ TEACHER_PORT=13141
 LOG_FILE="/tmp/vllm_teacher_$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 6).log"
 
 ## Launch the teacher model server in the background.
-## OPD teacher uses /v1/completions with echo=True + prompt_logprobs=1 set
+## OPD teacher uses /inference/v1/generate with token_ids + sampling_params
 ## per-request (see slime/rollout/on_policy_distillation.py reward_func).
 ## prompt_logprobs is a per-request SamplingParams field in vLLM; no
-## server-side flag gates it. --max-logprobs defaults to 20, which is
-## plenty for prompt_logprobs=1.
+## server-side flag gates it. The teacher model server exposes the
+## disaggregated /inference/v1/generate router alongside the OpenAI API.
 CUDA_VISIBLE_DEVICES=7 vllm serve /root/Qwen3-32B \
     --host 0.0.0.0 \
     --port $TEACHER_PORT \
@@ -77,7 +77,7 @@ ROLLOUT_ARGS=(
 RM_ARGS=(
    --custom-rm-path slime.rollout.on_policy_distillation.reward_func
    --custom-reward-post-process-path slime.rollout.on_policy_distillation.post_process_rewards
-   --rm-url http://$TEACHER_IP:$TEACHER_PORT/v1/completions
+   --rm-url http://$TEACHER_IP:$TEACHER_PORT/inference/v1/generate
 )
 
 EVAL_ARGS=(

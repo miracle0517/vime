@@ -9,8 +9,9 @@ TIGHT_DEVICE_MEMORY = U.get_bool_env_var("SLIME_TEST_TIGHT_DEVICE_MEMORY", "1")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 8
-NUM_TRAIN_GPUS = 4
+NUM_GPUS = int(os.environ.get("SLIME_TEST_NUM_GPUS", "8"))
+NUM_TRAIN_GPUS = int(os.environ.get("SLIME_TEST_NUM_TRAIN_GPUS", "4"))
+TEACHER_GPU_MEMORY_UTILIZATION = float(os.environ.get("SLIME_TEST_TEACHER_GPU_MEMORY_UTILIZATION", "0.6"))
 
 TEACHER_HOST = "127.0.0.1"
 TEACHER_PORT = 13141
@@ -19,7 +20,7 @@ TEACHER_PORT = 13141
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    U.hf_download_dataset("zhuzilin/gsm8k")
+    U.exec_command("hf download --repo-type dataset zhuzilin/gsm8k --local-dir /root/datasets/gsm8k")
 
 
 def _get_gpu_split():
@@ -52,7 +53,7 @@ def _launch_teacher_server(teacher_gpu: str):
             "--tensor-parallel-size",
             "1",
             "--gpu-memory-utilization",
-            "0.6",
+            str(TEACHER_GPU_MEMORY_UTILIZATION),
             "--trust-remote-code",
         ],
         env=env,
@@ -129,7 +130,7 @@ def execute():
         rm_args = (
             "--custom-rm-path slime.rollout.on_policy_distillation.reward_func "
             "--custom-reward-post-process-path slime.rollout.on_policy_distillation.post_process_rewards "
-            f"--rm-url http://{TEACHER_HOST}:{TEACHER_PORT}/v1/completions "
+            f"--rm-url http://{TEACHER_HOST}:{TEACHER_PORT}/inference/v1/generate "
         )
 
         grpo_args = (
