@@ -603,8 +603,8 @@ class VLLMEngine(RayActor):
     def _http_base(self) -> str:
         return f"http://{self.server_host}:{self.server_port}"
 
-    def _weight_transfer_http_timeout(self) -> float:
-        return float(self.args.vllm_weight_transfer_timeout_sec)
+    def _engine_request_http_timeout(self) -> float:
+        return float(self.args.vllm_engine_request_timeout_secs)
 
     def init(
         self,
@@ -780,7 +780,7 @@ class VLLMEngine(RayActor):
         return self._make_request(
             "update_weights",
             {"update_info": update_info},
-            timeout=self._weight_transfer_http_timeout(),
+            timeout=self._engine_request_http_timeout(),
         )
 
     def health_generate(self, timeout: float = 5.0) -> bool:
@@ -906,10 +906,13 @@ class VLLMEngine(RayActor):
             return {"ok": True, "sleep_mode": False, "note": "vLLM sleep mode disabled; no /sleep call."}
         # vLLM ``POST /sleep`` reads ``level`` from query params, not JSON body
         # (``vllm.entrypoints.serve.sleep.api_router.sleep``).
+        # Use the (tunable) engine-request timeout, not a hardcoded 30s: releasing a large model's
+        # weights/KV scales with model size, and under vLLM data parallelism the front API server
+        # (api_server_count=dp) coordinates every replica's sleep, so a 30B+ engine exceeds 30s.
         response = requests.post(
             f"{self._http_base()}/sleep",
             params={"level": level},
-            timeout=30,
+            timeout=self._engine_request_http_timeout(),
         )
         return _response_json(response)
 
@@ -926,7 +929,7 @@ class VLLMEngine(RayActor):
         response = requests.post(
             f"{self._http_base()}/wake_up",
             params=wake_params,
-            timeout=30,
+            timeout=self._engine_request_http_timeout(),
         )
         return _response_json(response)
 
@@ -936,7 +939,7 @@ class VLLMEngine(RayActor):
         For IPC mode the payload is ``{"init_info": {}}``; for NCCL use
         ``init_weights_update_group`` which constructs the payload from typed args.
         """
-        init_timeout_s = self._weight_transfer_http_timeout()
+        init_timeout_s = self._engine_request_http_timeout()
         last_error = None
         for attempt in range(1, 4):
             try:
@@ -953,7 +956,7 @@ class VLLMEngine(RayActor):
         return self._make_request(
             "start_weight_update",
             {"is_checkpoint_format": is_checkpoint_format},
-            timeout=self._weight_transfer_http_timeout(),
+            timeout=self._engine_request_http_timeout(),
         )
 
     def finish_weight_update(self) -> dict:
@@ -963,7 +966,7 @@ class VLLMEngine(RayActor):
         ``update_weights_from_tensor`` (the IPC data-carrying RPC), matching slime's
         single-RPC version-with-data semantics.
         """
-        return self._make_request("finish_weight_update", {}, timeout=self._weight_transfer_http_timeout())
+        return self._make_request("finish_weight_update", {}, timeout=self._engine_request_http_timeout())
 
     def check_weights(self, action: str):
         """No vLLM ``weights_checker`` route; return a placeholder dict."""
@@ -985,7 +988,7 @@ class VLLMEngine(RayActor):
                 "world_size": world_size,
             }
         }
-        init_timeout_s = self._weight_transfer_http_timeout()
+        init_timeout_s = self._engine_request_http_timeout()
         last_error = None
         for attempt in range(1, 4):
             try:

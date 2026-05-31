@@ -234,11 +234,21 @@ def add_vllm_arguments(parser):
             "true determinism — seed alone does not control kernel selection."
         ),
     )
+    # Timeout for trainer->vLLM-engine control-plane HTTP requests. Pairs with
+    # --router-request-timeout-secs (requests to the router). The old name
+    # --vllm-weight-transfer-timeout-sec is kept as a deprecated alias for back-compat
+    # (it is already a merged flag); both map to dest ``vllm_engine_request_timeout_secs``.
     parser.add_argument(
+        "--vllm-engine-request-timeout-secs",
         "--vllm-weight-transfer-timeout-sec",
+        dest="vllm_engine_request_timeout_secs",
         type=float,
         default=900.0,
-        help="Timeout (seconds) for vLLM weight-transfer HTTP control-plane calls.",
+        help=(
+            "Timeout (seconds) for trainer->vLLM-engine control-plane HTTP requests "
+            "(weight-transfer init/update, /sleep, /wake_up). "
+            "Alias --vllm-weight-transfer-timeout-sec is deprecated."
+        ),
     )
     # vime-only orchestration knob: not part of vllm's CLI but read by
     # UpdateWeightFromDistributed._use_vllm_packed() to choose packed
@@ -368,7 +378,7 @@ _VIME_ORCHESTRATION_DESTS = frozenset(
         "router_policy",
         "vllm_server_concurrency",
         "vllm_enable_deterministic_inference",
-        "vllm_weight_transfer_timeout_sec",
+        "vllm_engine_request_timeout_secs",
         "vllm_weight_sync_packed",
         # vime-only flags for fine-grained deployment; consumed in slime/ray/rollout.py
         # (start_rollout_servers / _resolve_vllm_config) and must NOT be forwarded to

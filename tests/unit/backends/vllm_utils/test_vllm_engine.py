@@ -173,7 +173,7 @@ def test_start_weight_update_posts_four_phase_endpoint(vllm_engine, monkeypatch)
     assert len(calls) == 1
     assert calls[0][0] == "start_weight_update"
     assert calls[0][1] == {"is_checkpoint_format": True}
-    assert calls[0][2] == vllm_engine._weight_transfer_http_timeout()
+    assert calls[0][2] == vllm_engine._engine_request_http_timeout()
 
 
 @pytest.mark.unit
@@ -189,7 +189,7 @@ def test_finish_weight_update_posts_empty_body(vllm_engine, monkeypatch):
     result = vllm_engine.finish_weight_update()
 
     assert result == {"done": True}
-    assert calls == [("finish_weight_update", {}, vllm_engine._weight_transfer_http_timeout())]
+    assert calls == [("finish_weight_update", {}, vllm_engine._engine_request_http_timeout())]
 
 
 @pytest.mark.unit
@@ -311,20 +311,20 @@ def test_post_vllm_update_weights_http_wraps_update_info(vllm_engine, monkeypatc
 
 
 @pytest.mark.unit
-def test_weight_transfer_http_timeout_reads_config(vllm_engine):
-    vllm_engine.args.vllm_weight_transfer_timeout_sec = 123.5
-    assert vllm_engine._weight_transfer_http_timeout() == 123.5
+def test_engine_request_http_timeout_reads_config(vllm_engine):
+    vllm_engine.args.vllm_engine_request_timeout_secs = 123.5
+    assert vllm_engine._engine_request_http_timeout() == 123.5
 
 
 @pytest.mark.unit
-def test_weight_transfer_http_timeout_uses_argument_default(vllm_engine):
-    assert vllm_engine.args.vllm_weight_transfer_timeout_sec == 900.0
-    assert vllm_engine._weight_transfer_http_timeout() == 900.0
+def test_engine_request_http_timeout_uses_argument_default(vllm_engine):
+    assert vllm_engine.args.vllm_engine_request_timeout_secs == 900.0
+    assert vllm_engine._engine_request_http_timeout() == 900.0
 
 
 @pytest.mark.unit
 def test_start_weight_update_uses_config_timeout(vllm_engine, monkeypatch):
-    vllm_engine.args.vllm_weight_transfer_timeout_sec = 123.5
+    vllm_engine.args.vllm_engine_request_timeout_secs = 123.5
     calls: list[tuple] = []
 
     def fake_post(endpoint: str, payload: dict, timeout: float):
@@ -339,7 +339,7 @@ def test_start_weight_update_uses_config_timeout(vllm_engine, monkeypatch):
 
 @pytest.mark.unit
 def test_init_weights_update_group_uses_config_timeout(vllm_engine, monkeypatch):
-    vllm_engine.args.vllm_weight_transfer_timeout_sec = 123.5
+    vllm_engine.args.vllm_engine_request_timeout_secs = 123.5
     calls: list[tuple] = []
 
     def fake_post(endpoint: str, payload: dict, timeout: float):
