@@ -16,13 +16,67 @@ import itertools
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 import torch
+import torch.nn.functional as F
 from megatron.bridge.models.conversion.mapping_registry import MegatronMappingRegistry
 from megatron.bridge.models.conversion.model_bridge import MegatronModelBridge
 from megatron.bridge.models.conversion.param_mapping import AutoMapping, GatedMLPMapping, QKVMapping, ReplicatedMapping
-from megatron.bridge.models.qwen.qwen_provider import Qwen3MoEModelProvider
 from megatron.bridge.utils.common_utils import hook_hf_module_setattr_for_tp_grad_sync
+
+# Qwen3-MoE provider base. The dataclass lives ONLY in the fzyzcjy Megatron-Bridge fork
+# (``megatron.bridge.models.qwen.qwen_provider``); upstream / radixark express the same config via
+# ``Qwen3MoEBridge.provider_bridge()`` and ship no such dataclass, so the fork-only import is a hard
+# crash on those builds (ModuleNotFoundError that takes down every MegatronTrainRayActor.init(),
+# even for non-MoE/non-VL models, since this plugin is imported eagerly). Per RFC #81 §5.1: prefer
+# the fork's class when present (byte-identical behavior on fzyzcjy images), otherwise define an
+# equivalent subclass of the PUBLIC ``GPTModelProvider`` with the same Qwen3-MoE field defaults so
+# glm4v_moe imports on every Megatron-Bridge variant.
+try:
+    from megatron.bridge.models.qwen.qwen_provider import Qwen3MoEModelProvider
+except ImportError:
+    from megatron.bridge.models.gpt_provider import GPTModelProvider
+
+    @dataclass
+    class Qwen3MoEModelProvider(GPTModelProvider):
+        """Public-base fallback equivalent to the fzyzcjy fork's Qwen3MoEModelProvider.
+
+        Field defaults are copied verbatim from the fork so behavior is identical regardless of
+        which Megatron-Bridge build is installed. ``Glm4vMoeBridge.provider_bridge()`` overrides the
+        per-model fields from the HF config; this base only supplies architecture defaults.
+        """
+
+        normalization: str = "RMSNorm"
+        activation_func: Callable = F.silu
+        gated_linear_unit: bool = True
+        add_bias_linear: bool = False
+        add_qkv_bias: bool = False
+        qk_layernorm: bool = True
+        kv_channels: Optional[int] = 128
+        num_query_groups: int = 8
+        seq_length: int = 40960
+        max_position_embeddings: int = 40960
+        init_method_std: float = 0.02
+        hidden_dropout: float = 0.0
+        attention_dropout: float = 0.0
+        vocab_size: int = 151936
+        share_embeddings_and_output_weights: Optional[bool] = False
+        layernorm_epsilon: float = 1e-6
+        rotary_base: float = 1000000.0
+        position_embedding_type: str = "rope"
+        autocast_dtype: torch.dtype = torch.bfloat16
+        params_dtype: torch.dtype = torch.bfloat16
+        bf16: bool = True
+        # MoE specific parameters
+        num_moe_experts: int = 128
+        moe_router_load_balancing_type: str = "aux_loss"
+        moe_aux_loss_coeff: float = 1e-3
+        moe_router_topk: int = 8
+        moe_router_pre_softmax: bool = False
+        moe_grouped_gemm: bool = True
+        moe_token_dispatcher_type: str = "alltoall"
+        moe_permute_fusion: bool = True
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.models.gpt import GPTModel as MCoreGPTModel
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
