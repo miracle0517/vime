@@ -50,6 +50,6 @@ MODEL_ARGS=(
     --rotary-base 1000000
     --enable-experimental
 
-    # slime specific args
+    # Vime specific args
     --allgather-cp
 )

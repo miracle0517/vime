@@ -16,7 +16,7 @@ python tools/convert_hf_to_fp8.py \
     --max-workers 4
 ```
 
-请确保转换后的权重目录中的 `config.json` 包含正确的 `quantization_config`，以便 slime 在权重更新期间自动使用 FP8 量化。
+请确保转换后的权重目录中的 `config.json` 包含正确的 `quantization_config`，以便 Vime 在权重更新期间自动使用 FP8 量化。
 
 ## FP8 推理与 FP8 训练
 
@@ -51,11 +51,11 @@ bash scripts/low_precision/run-qwen3-30b-a3b-fp8.sh
 
 ### 原理简述
 
-以下是 slime 中 FP8 训练目前的实现方式：
+以下是 Vime 中 FP8 训练目前的实现方式：
 
 1. **初始化**：如果启用了 FP8 方案，相关层将在 FP8 上下文中构建。
 2. **训练过程**：在训练期间，权重和激活值会在线量化为 `nvfp8` 格式，并在前向和反向传播中调用 `cuBLAS FP8 GEMM` 进行计算。
-3. **权重更新**：在强化学习（RL）权重更新期间，Megatron 首先将 FP8 权重反量化为 BF16 格式，然后 slime 再将这些 BF16 权重重新量化为 FP8 并发送给 vLLM。（这种"反量化+再量化"的操作虽然不够优雅，但为了框架兼容性，目前尚未修改接口。）
+3. **权重更新**：在强化学习（RL）权重更新期间，Megatron 首先将 FP8 权重反量化为 BF16 格式，然后 Vime 再将这些 BF16 权重重新量化为 FP8 并发送给 vLLM。（这种"反量化+再量化"的操作虽然不够优雅，但为了框架兼容性，目前尚未修改接口。）
 4. **保存 ckpt**：与权重更新类似，从训练引擎保存 ckpt 时，也会反量化回 BF16 并以 `torch_dist` 格式保存。
 
 ### 待办事项 (TODO)

@@ -1,6 +1,6 @@
 # Trace Viewer
 
-slime can attach lightweight execution traces to each rollout sample. These traces capture span-style events such as generation and reward-model calls, and they can be inspected later from a saved rollout debug dump.
+Vime can attach lightweight execution traces to each rollout sample. These traces capture span-style events such as generation and reward-model calls, and they can be inspected later from a saved rollout debug dump.
 
 ![trace timeline viewer](../../_static/image/trace.png)
 
@@ -54,7 +54,7 @@ Use `trace_span(...)` when you only want to trace part of a function body, or wh
 
 Use `trace_function(...)` when the whole function should be represented as one span. Internally it resolves the trace target and then opens a `trace_span(...)` around the function call, so it works for both sync and async functions.
 
-The decorator is what slime uses for the main rollout pipeline. For example, `generate_and_rm(...)` is traced per sample and `generate_and_rm_group(...)` is traced per sample group:
+The decorator is what Vime uses for the main rollout pipeline. For example, `generate_and_rm(...)` is traced per sample and `generate_and_rm_group(...)` is traced per sample group:
 
 ```python
 from slime.utils.trace_utils import trace_function

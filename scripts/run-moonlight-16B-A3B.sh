@@ -30,8 +30,8 @@ source "${SCRIPT_DIR}/models/moonlight.sh"
 CKPT_ARGS=(
    --hf-checkpoint /root/Moonlight-16B-A3B
    --ref-load /root/Moonlight-16B-A3B_torch_dist
-   --load /root/Moonlight-16B-A3B_slime/
-   --save /root/Moonlight-16B-A3B_slime/
+   --load /root/Moonlight-16B-A3B_vime/
+   --save /root/Moonlight-16B-A3B_vime/
    --save-interval 20
 )
 
@@ -106,7 +106,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group moomlight-16B-A3B-test
    # --wandb-key ${WANDB_KEY}
 )

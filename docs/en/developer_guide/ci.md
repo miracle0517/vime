@@ -1,13 +1,13 @@
 # CI (Continuous Integration)
 
-slime uses GitHub Actions for CI. Tests are triggered by **PR labels** — adding a specific label to a PR will run the corresponding test suite.
+Vime uses GitHub Actions for CI. Tests are triggered by **PR labels** — adding a specific label to a PR will run the corresponding test suite.
 
 ## How It Works
 
 The workflow is defined in `.github/workflows/pr-test.yml` (auto-generated from `pr-test.yml.j2`). Each CI job:
 
 1. Runs on a self-hosted GPU runner via `docker run`; most tests use `inferactinc/public:vime-vllm-cu129-latest`, while image validation uses `inferactinc/public:vime-vllm-cu129-latest`.
-2. Installs slime with `pip install -e . --no-deps`.
+2. Installs Vime with `pip install -e . --no-deps`.
 3. Acquires the required GPUs via `tests/ci/gpu_lock_exec.py --count <num_gpus>`.
 4. Executes the test file: `python <test_path>.py` or `python tests/<test_file>.py`, depending on whether the test lives under `tests/` or a subdirectory such as `tests/plugin_contracts/`.
 

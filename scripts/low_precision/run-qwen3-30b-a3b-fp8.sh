@@ -33,8 +33,8 @@ BASE_DIR="/root"
 CKPT_ARGS=(
    --hf-checkpoint "${BASE_DIR}/Qwen3-30B-A3B-FP8/"
    --ref-load "${BASE_DIR}/Qwen3-30B-A3B_torch_dist/"
-   --load "${BASE_DIR}/Qwen3-30B-A3B_slime/"
-   --save "${BASE_DIR}/Qwen3-30B-A3B_slime/"
+   --load "${BASE_DIR}/Qwen3-30B-A3B_vime/"
+   --save "${BASE_DIR}/Qwen3-30B-A3B_vime/"
    --save-interval 20
 )
 
@@ -117,7 +117,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    #--use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group qwen3-30B-A3B-test
    # --wandb-key ${WANDB_KEY}
 )

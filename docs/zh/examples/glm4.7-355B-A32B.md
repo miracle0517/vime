@@ -6,7 +6,7 @@
 
 ### 前置条件
 
-GLM-4.7 使用 slime 标准 Docker 环境即可。多机启动前，请确保所有机器都能访问同一个 `$BASE_DIR` 路径，并在启动 Ray worker 前先取消代理：
+GLM-4.7 使用 Vime 标准 Docker 环境即可。多机启动前，请确保所有机器都能访问同一个 `$BASE_DIR` 路径，并在启动 Ray worker 前先取消代理：
 
 ```bash
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
@@ -23,7 +23,7 @@ hf download zai-org/GLM-4.7 --local-dir $BASE_DIR/GLM-4.7-355B-A32B
 可以用如下方法把 Hugging Face checkpoint 转换为 torch_dist 格式（2 机 x 8 卡）：
 
 ```bash
-cd /root/slime
+cd /root/vime
 pip install -e . --no-deps
 source scripts/models/glm4.5-355B-A32B.sh
 PYTHONPATH=/root/Megatron-LM/ torchrun \
@@ -43,14 +43,14 @@ PYTHONPATH=/root/Megatron-LM/ torchrun \
 从 node0 执行训练脚本：
 
 ```bash
-cd /root/slime
+cd /root/vime
 export BASE_DIR=/shared/path  # 所有节点都能访问的共享路径
 bash scripts/run-glm4.7-355B-A32B.sh
 ```
 
 ### 参数简介
 
-这里我们简单介绍一下 [run-glm4.7-355B-A32B.sh](https://github.com/THUDM/slime/blob/main/scripts/run-glm4.7-355B-A32B.sh) 中的关键部分。
+这里我们简单介绍一下 [run-glm4.7-355B-A32B.sh](https://github.com/vllm-project/vime/blob/main/scripts/run-glm4.7-355B-A32B.sh) 中的关键部分。
 
 #### MoE 配置
 
@@ -115,7 +115,7 @@ VLLM_ARGS=(
 
 #### MTP 训练
 
-slime 也支持在 GLM-4.7 上将 MTP 层与主模型联合训练。启用时，相关参数如下：
+Vime 也支持在 GLM-4.7 上将 MTP 层与主模型联合训练。启用时，相关参数如下：
 
 ```bash
 # 在模型配置中添加 MTP 层数
@@ -153,10 +153,10 @@ MTP_ARGS=(
 
 ## FP8 Rollout
 
-开源版 GLM-4.7 的 FP8 checkpoint 使用的是 per-channel 量化，目前无法在 vLLM 中直接启用 DeepEP。可以利用 slime 自带工具将其转换为 128x128 的 per-block FP8 checkpoint：
+开源版 GLM-4.7 的 FP8 checkpoint 使用的是 per-channel 量化，目前无法在 vLLM 中直接启用 DeepEP。可以利用 Vime 自带工具将其转换为 128x128 的 per-block FP8 checkpoint：
 
 ```bash
-cd /root/slime
+cd /root/vime
 python tools/convert_hf_to_fp8.py \
     --model-dir $BASE_DIR/GLM-4.7-355B-A32B/ \
     --save-dir $BASE_DIR/GLM-4.7-355B-A32B-FP8/ \

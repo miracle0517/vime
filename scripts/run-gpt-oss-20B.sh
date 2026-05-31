@@ -39,8 +39,8 @@ source "${SCRIPT_DIR}/models/gpt-oss-20B.sh"
 CKPT_ARGS=(
    --hf-checkpoint /root/gpt-oss-20b-bf16
    --ref-load /root/gpt-oss-20b_torch_dist
-   --load /root/gpt-oss-20b_slime/
-   --save /root/gpt-oss-20b_slime/
+   --load /root/gpt-oss-20b_vime/
+   --save /root/gpt-oss-20b_vime/
    --save-interval 20
 )
 

@@ -51,12 +51,12 @@ if [ "$USE_EXTERNAL_RAY" = "0" ]; then
    ray stop --force
    pkill -9 ray
 fi
-pkill -9 slime
+pkill -9 -f '[v]ime|[s]lime'
 sleep 3
 if [ "$USE_EXTERNAL_RAY" = "0" ]; then
    pkill -9 ray
 fi
-pkill -9 slime
+pkill -9 -f '[v]ime|[s]lime'
 pkill -9 redis
 
 set -ex
@@ -144,7 +144,7 @@ VLLM_ARGS=(
 if [ -n "$WANDB_API_KEY" ]; then
    WANDB_ARGS=(
       --use-wandb
-      --wandb-project slime-geo3k-vlm
+      --wandb-project vime-geo3k-vlm
       --wandb-group ${MODEL_NAME_LOWER}-${TRAIN_BACKEND}-vllm-8gpu-noncolocate
       --wandb-key ${WANDB_API_KEY}
       --disable-wandb-random-suffix

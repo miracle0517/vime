@@ -29,8 +29,8 @@ source "${SCRIPT_DIR}/models/glm5-744B-A40B.sh"
 CKPT_ARGS=(
    --hf-checkpoint $BASE_DIR/GLM-5
    --ref-load $BASE_DIR/GLM-5_torch_dist/
-   --load $BASE_DIR/GLM-5_slime/
-   --save $BASE_DIR/GLM-5_slime/
+   --load $BASE_DIR/GLM-5_vime/
+   --save $BASE_DIR/GLM-5_vime/
    --save-interval 20
 )
 
@@ -98,7 +98,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group glm5-test
    # --wandb-key ${WANDB_KEY}
 )

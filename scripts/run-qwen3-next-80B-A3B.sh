@@ -48,8 +48,8 @@ source "${SCRIPT_DIR}/models/qwen3-next-80B-A3B.sh"
 CKPT_ARGS=(
    --hf-checkpoint "${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking"
    --ref-load "${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_torch_dist"
-   --load "${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_slime/"
-   --save "${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_slime/"
+   --load "${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_vime/"
+   --save "${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_vime/"
    --save-interval 20
 )
 
@@ -118,7 +118,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group qwen3-next-80B-A3B-32k
    # --wandb-key ${WANDB_KEY}
 )

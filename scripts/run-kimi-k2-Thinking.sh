@@ -30,8 +30,8 @@ CKPT_ARGS=(
    # --hf-checkpoint $BASE_DIR/Kimi-K2-Thinking-bf16/
    --hf-checkpoint $BASE_DIR/Kimi-K2-Thinking-fp8/
    --ref-load $BASE_DIR/Kimi-K2-Thinking_torch_dist/
-   --load $BASE_DIR/Kimi-K2-Thinking_slime/
-   --save $BASE_DIR/Kimi-K2-Thinking_slime/
+   --load $BASE_DIR/Kimi-K2-Thinking_vime/
+   --save $BASE_DIR/Kimi-K2-Thinking_vime/
    --save-interval 20
 )
 
@@ -112,7 +112,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group kimi-k2-test
    # --wandb-key ${WANDB_KEY}
 )

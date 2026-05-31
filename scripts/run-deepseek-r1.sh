@@ -30,8 +30,8 @@ CKPT_ARGS=(
    --hf-checkpoint $BASE_DIR/DeepSeek-R1/
    #--hf-checkpoint $BASE_DIR/DeepSeek-R1-bf16/
    --ref-load $BASE_DIR/DeepSeek-R1_torch_dist/
-   --load $BASE_DIR/DeepSeek-R1_slime/
-   --save $BASE_DIR/DeepSeek-R1_slime/
+   --load $BASE_DIR/DeepSeek-R1_vime/
+   --save $BASE_DIR/DeepSeek-R1_vime/
    --save-interval 20
 )
 
@@ -105,7 +105,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group deepseek-r1-test
    # --wandb-key ${WANDB_KEY}
 )

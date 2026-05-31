@@ -1,6 +1,6 @@
 # Customization Guide
 
-slime provides extensive customization capabilities through function path arguments. These allow you to inject custom logic at various stages of the training and rollout pipeline without modifying the core codebase.
+Vime provides extensive customization capabilities through function path arguments. These allow you to inject custom logic at various stages of the training and rollout pipeline without modifying the core codebase.
 
 ## Overview of Customization Interfaces
 
@@ -406,11 +406,11 @@ Stabilize MoE RL training by recording and replaying expert routing decisions to
 | Argument | Description |
 | --- | --- |
 | `--use-routing-replay` | Forward-backward routing consistency in training. ([arXiv:2507.18071](https://arxiv.org/abs/2507.18071)) |
-| `--use-rollout-routing-replay` | R3: Replay routing from rollout during training. Supported by slime's default `vllm_rollout` path. ([arXiv:2510.11370](https://arxiv.org/abs/2510.11370)) |
+| `--use-rollout-routing-replay` | R3: Replay routing from rollout during training. Supported by Vime's default `vllm_rollout` path. ([arXiv:2510.11370](https://arxiv.org/abs/2510.11370)) |
 
 ## Testing Custom Function Paths
 
-slime also provides CPU-only contract tests for customization interfaces. These tests resolve components through import-path strings, so they can validate both built-in hooks and user-defined implementations passed through the same CLI arguments used by training.
+Vime also provides CPU-only contract tests for customization interfaces. These tests resolve components through import-path strings, so they can validate both built-in hooks and user-defined implementations passed through the same CLI arguments used by training.
 
 The tests live under `tests/plugin_contracts/` and are grouped by hook shape:
 

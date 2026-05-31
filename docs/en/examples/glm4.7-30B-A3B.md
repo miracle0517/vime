@@ -16,7 +16,7 @@ hf download THUDM/GLM-4.7-Flash --local-dir /root/GLM-4.7-Flash
 To convert the Hugging Face checkpoint to torch_dist format:
 
 ```bash
-cd /root/slime
+cd /root/vime
 pip install -e . --no-deps
 source scripts/models/glm4.7-30B-A3B.sh
 PYTHONPATH=/root/Megatron-LM/ torchrun --nproc-per-node 8 \
@@ -31,13 +31,13 @@ PYTHONPATH=/root/Megatron-LM/ torchrun --nproc-per-node 8 \
 Execute the training script:
 
 ```bash
-cd /root/slime
+cd /root/vime
 bash scripts/run-glm4.7-30B-A3B-8gpus.sh
 ```
 
 ### Parameter Introduction
 
-Here, we will briefly introduce the key parts in the [run-glm4.7-30B-A3B-8gpus.sh](https://github.com/THUDM/slime/blob/main/scripts/run-glm4.7-30B-A3B-8gpus.sh) script.
+Here, we will briefly introduce the key parts in the [run-glm4.7-30B-A3B-8gpus.sh](https://github.com/vllm-project/vime/blob/main/scripts/run-glm4.7-30B-A3B-8gpus.sh) script.
 
 #### MoE Configuration
 
@@ -99,7 +99,7 @@ This enables vLLM to use the model's MTP layer as a draft model for EAGLE-style 
 
 #### MTP Training
 
-slime also supports training MTP layers jointly with the main model for models that have MTP weight conversion implemented (e.g., MiMo, GLM-4.7). When enabled, the relevant arguments are:
+Vime also supports training MTP layers jointly with the main model for models that have MTP weight conversion implemented (e.g., MiMo, GLM-4.7). When enabled, the relevant arguments are:
 
 ```bash
 # Add MTP layer count to model config
@@ -125,7 +125,7 @@ SPEC_ARGS=(
 For multi-node training (e.g., 2×8 H100), use the multi-node script:
 
 ```bash
-cd /root/slime
+cd /root/vime
 export BASE_DIR=/shared/path  # accessible by all nodes
 bash scripts/run-glm4.7-30B-A3B.sh
 ```

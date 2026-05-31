@@ -1,6 +1,6 @@
 # 自定义指南
 
-slime 通过函数路径参数提供了广泛的自定义能力。这些参数允许你在训练和推理流程的各个阶段注入自定义逻辑，而无需修改核心代码库。
+Vime 通过函数路径参数提供了广泛的自定义能力。这些参数允许你在训练和推理流程的各个阶段注入自定义逻辑，而无需修改核心代码库。
 
 ## 自定义接口概览
 
@@ -408,11 +408,11 @@ def custom_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler
 | 参数 | 说明 |
 | --- | --- |
 | `--use-routing-replay` | 训练中前向-反向路由一致性。([arXiv:2507.18071](https://arxiv.org/abs/2507.18071)) |
-| `--use-rollout-routing-replay` | R3：在训练时重放 rollout 阶段的路由。slime 默认的 `vllm_rollout` 路径支持该功能。([arXiv:2510.11370](https://arxiv.org/abs/2510.11370)) |
+| `--use-rollout-routing-replay` | R3：在训练时重放 rollout 阶段的路由。Vime 默认的 `vllm_rollout` 路径支持该功能。([arXiv:2510.11370](https://arxiv.org/abs/2510.11370)) |
 
 ## 自定义函数路径的测试
 
-slime 现在也提供了一组 CPU 契约测试，用于校验这些 customization 接口。测试会通过字符串形式的导入路径来动态加载组件，因此既能回归仓库内置 hook，也能验证用户通过和训练时完全相同的 CLI 参数传入的自定义实现。
+Vime 现在也提供了一组 CPU 契约测试，用于校验这些 customization 接口。测试会通过字符串形式的导入路径来动态加载组件，因此既能回归仓库内置 hook，也能验证用户通过和训练时完全相同的 CLI 参数传入的自定义实现。
 
 这些测试统一放在 `tests/plugin_contracts/` 目录下，并按 hook 形态归并成少数几个文件：
 

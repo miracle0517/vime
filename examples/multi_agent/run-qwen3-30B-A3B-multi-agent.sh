@@ -24,14 +24,14 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "/root/slime/scripts/models/qwen3-30B-A3B.sh"
+source "/root/vime/scripts/models/qwen3-30B-A3B.sh"
 
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-30B-A3B
    #--hf-checkpoint /root/Qwen3-30B-A3B-FP8
    --ref-load /root/Qwen3-30B-A3B_torch_dist
-   --load /root/Qwen3-4B_slime/
-   --save /root/Qwen3-4B_slime/
+   --load /root/Qwen3-4B_vime/
+   --save /root/Qwen3-4B_vime/
    --save-interval 20
 )
 
@@ -105,7 +105,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    #--use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group qwen3-30B-A3B-test
    # --wandb-key ${WANDB_KEY}
 )

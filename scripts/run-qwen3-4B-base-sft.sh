@@ -29,8 +29,8 @@ source "${SCRIPT_DIR}/models/qwen3-4B.sh"
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-4B-Base/
    --ref-load /root/Qwen3-4B-Base_torch_dist
-   --load /root/Qwen3-4B-Base_slime/
-   --save /root/Qwen3-4B-Base_slime/
+   --load /root/Qwen3-4B-Base_vime/
+   --save /root/Qwen3-4B-Base_vime/
    --save-interval 1000
 )
 
@@ -80,7 +80,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group qwen3-4B-base-sft
    # --wandb-key ${WANDB_KEY}
 )

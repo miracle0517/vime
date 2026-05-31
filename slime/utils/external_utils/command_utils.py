@@ -120,10 +120,10 @@ def execute_train(
         "sleep 3; "
         f"{'' if external_ray else 'ray stop --force; '}"
         f"{'' if external_ray else 'pkill -9 ray; '}"
-        "pkill -9 slime; "
+        "pkill -9 -f '[v]ime|[s]lime'; "
         "sleep 3; "
         f"{'' if external_ray else 'pkill -9 ray; '}"
-        "pkill -9 slime; "
+        "pkill -9 -f '[v]ime|[s]lime'; "
         "pkill -9 redis; "
         "true; "
     )
@@ -134,16 +134,18 @@ def execute_train(
             f"export PYTHONBUFFERED=16 && "
             f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
         )
-
     if (f := before_ray_job_submit) is not None:
         f()
 
     runtime_env_json = json.dumps(
         {
             "env_vars": {
-                "PYTHONPATH": "/root/Megatron-LM/",
+                "PYTHONPATH": "/root/triton/python:/root/Megatron-LM/",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
+                "FLASHINFER_DISABLE_VERSION_CHECK": "1",
+                "SGLANG_ENABLE_JIT_DEEPGEMM": "0",
+                "SGLANG_DISABLE_PIECEWISE_CUDA_GRAPH": "1",
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
@@ -170,10 +172,11 @@ def execute_train(
             else ""
         )
         exec_command(
-            f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
+            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
             f"{cmd_megatron_model_source}"
             f'ray job submit --address="http://127.0.0.1:8265" '
             f"--runtime-env-json='{runtime_env_json}' "
+            f'--working-dir "{repo_base_dir}" '
             f"-- python3 {train_script} "
             f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
             f"{train_args}"

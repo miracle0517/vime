@@ -2,12 +2,12 @@
 
 ## Overview
 
-Rollout Buffer is an independent component for asynchronous agent trajectory generation, with the main function of using the LLM OpenAI Server launched by slime training to generate agent trajectories.
+Rollout Buffer is an independent component for asynchronous agent trajectory generation, with the main function of using the LLM OpenAI Server launched by Vime training to generate agent trajectories.
 
 ### Workflow
 
 ```
-slime Training Process ←─── HTTP API ───→ Rollout Buffer
+Vime Training Process ←─── HTTP API ───→ Rollout Buffer
         ↓                                      ↓
    LLM Server ←─────── HTTP Requests ─────── Agent Framework
         ↓                                      ↓

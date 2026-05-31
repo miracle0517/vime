@@ -109,12 +109,12 @@ RUN cd Megatron-LM && \
 # ====================================== Install main package ============================================
 
 ARG VIME_COMMIT=main
-RUN git clone https://github.com/vllm-project/vime.git /root/slime && \
-    cd /root/slime && \
+RUN git clone https://github.com/vllm-project/vime.git /root/vime && \
+    cd /root/vime && \
     git checkout ${VIME_COMMIT} && \
     pip install -e . --no-deps
 
-RUN cd /root/slime/slime/backends/megatron_utils/kernels/int4_qat && \
+RUN cd /root/vime/slime/backends/megatron_utils/kernels/int4_qat && \
     pip install . --no-build-isolation
 
 # ====================================== Build-time smoke ============================================

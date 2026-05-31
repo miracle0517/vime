@@ -82,7 +82,7 @@ hf download Qwen/Qwen3-8B --local-dir /root/Qwen3-8B
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
 
 # 2. Convert student model
-cd /root/slime
+cd /root/vime
 source scripts/models/qwen3-8B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \

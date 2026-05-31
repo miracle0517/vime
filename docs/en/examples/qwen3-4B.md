@@ -6,8 +6,8 @@ After pulling the `inferactinc/public:vime-vllm-cu129-latest` image, initialize 
 
 ```bash
 cd /root/
-git clone https://github.com/THUDM/slime.git
-cd slime/
+git clone https://github.com/vllm-project/vime.git
+cd vime/
 pip install -e . --no-deps
 ```
 
@@ -30,7 +30,7 @@ Convert the Hugging Face checkpoint into a format that Megatron can load:
 
 ```bash
 # mcore checkpoint
-cd /root/slime
+cd /root/vime
 source scripts/models/qwen3-4B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
@@ -43,13 +43,13 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 Execute the training script:
 
 ```bash
-cd /root/slime
+cd /root/vime
 bash scripts/run-qwen3-4B.sh
 ```
 
 ### Parameter Introduction
 
-Here, we will briefly introduce the various components of the [run-qwen3-4B.sh](https://github.com/THUDM/slime/blob/main/scripts/run-qwen3-4B.sh) script:
+Here, we will briefly introduce the various components of the [run-qwen3-4B.sh](https://github.com/vllm-project/vime/blob/main/scripts/run-qwen3-4B.sh) script:
 
 #### MODEL\_ARGS
 
@@ -58,7 +58,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-4B.sh"
 ```
 
-This reads the model's configuration from [scripts/models/qwen3-4B.sh](https://github.com/THUDM/slime/blob/main/scripts/models/qwen3-4B.sh). These are all Megatron parameters. When training with Megatron, it cannot read the model config from the checkpoint, so we need to configure it ourselves. We provide some examples in [scripts/models](https://github.com/THUDM/slime/tree/main/scripts/models/).
+This reads the model's configuration from [scripts/models/qwen3-4B.sh](https://github.com/vllm-project/vime/blob/main/scripts/models/qwen3-4B.sh). These are all Megatron parameters. When training with Megatron, it cannot read the model config from the checkpoint, so we need to configure it ourselves. We provide some examples in [scripts/models](https://github.com/vllm-project/vime/tree/main/scripts/models/).
 
 ⚠️  Ensure that settings such as `--rotary-base` in the model configuration file match the settings of the model you are currently training. This is because different models, even with the same architecture, might use different values. If needed, you can override these parameters in your script after loading the model weights. For instance:
 
@@ -77,8 +77,8 @@ CKPT_ARGS=(
    # Checkpoint for the reference model
    --ref-load /root/Qwen3-4B_torch_dist
    # Load directory for the actor; if empty, it will be loaded from `ref_load`
-   --load /root/Qwen3-4B_slime/
-   --save /root/Qwen3-4B_slime/
+   --load /root/Qwen3-4B_vime/
+   --save /root/Qwen3-4B_vime/
    --save-interval 20
 )
 ```
@@ -98,7 +98,7 @@ ROLLOUT_ARGS=(
    --rollout-shuffle
 
    # Reward model type.
-   # slime provides many types and --custom-rm-path for custom models
+   # Vime provides many types and --custom-rm-path for custom models
    --rm-type deepscaler
 
    # Total number of rollouts to train
@@ -135,13 +135,13 @@ EVAL_ARGS=(
 
 #### PERF\_ARGS
 
-This is a set of Megatron's parallelism parameters. Only `--use-dynamic-batch-size` and `--max-tokens-per-gpu` are added by slime.
+This is a set of Megatron's parallelism parameters. Only `--use-dynamic-batch-size` and `--max-tokens-per-gpu` are added by Vime.
 
 `max_tokens_per_gpu` specifies the maximum number of tokens each GPU can process. When `use_dynamic_batch_size` is enabled, it attempts to pack data of varying lengths within a batch as close to `max_tokens_per_gpu` as possible, thus forming a dynamic micro-batch size. If a single data item exceeds `max_tokens_per_gpu`, it forms its own batch without being truncated. When context parallelism (CP) is enabled, it allows the CP GPUs to share a total of `CP * max_tokens_per_gpu` tokens.
 
 When `dynamic_batch_size` is enabled, the traditional `micro_batch_size` is ignored.
 
-⚠️ slime always trains the model using data packing and strictly guarantees per-sample or per-token loss. This means enabling dynamic batch size will not affect the loss calculation. It is recommended to enable it.
+⚠️ Vime always trains the model using data packing and strictly guarantees per-sample or per-token loss. This means enabling dynamic batch size will not affect the loss calculation. It is recommended to enable it.
 
 ```bash
 PERF_ARGS=(
@@ -193,7 +193,7 @@ OPTIMIZER_ARGS=(
 
 #### VLLM\_ARGS
 
-Parameters for vLLM inference. vime uses vLLM as the rollout backend by default (`rollout.py` launches `VLLMEngine`; the default rollout function is `slime.rollout.vllm_rollout.generate_rollout`), so no extra backend flag is needed. `--rollout-num-gpus-per-engine` corresponds to each vLLM engine's `tensor_parallel_size`. Other vLLM parameters are passed to slime with a `--vllm-` prefix (for example, `--vllm-max-model-len`).
+Parameters for vLLM inference. vime uses vLLM as the rollout backend by default (`rollout.py` launches `VLLMEngine`; the default rollout function is `slime.rollout.vllm_rollout.generate_rollout`), so no extra backend flag is needed. `--rollout-num-gpus-per-engine` corresponds to each vLLM engine's `tensor_parallel_size`. Other vLLM parameters are passed to Vime with a `--vllm-` prefix (for example, `--vllm-max-model-len`).
 
 ```bash
 VLLM_ARGS=(
@@ -204,11 +204,11 @@ VLLM_ARGS=(
 
 When rollout concurrency is high, tune the vLLM scheduler via the `--vllm-` prefix—for example, `--vllm-max-num-seqs` and `--vllm-max-num-batched-tokens`. Add `--vllm-enforce-eager` for debugging or to work around CUDA graph limits.
 
-⚠️  slime uses the vLLM router to schedule multiple vLLM servers. With co-located training and inference (`--colocate`), weights are synchronized via CUDA IPC; with decoupled training and inference, the trainer synchronizes weights with vLLM engines over NCCL.
+⚠️  Vime uses the vLLM router to schedule multiple vLLM servers. With co-located training and inference (`--colocate`), weights are synchronized via CUDA IPC; with decoupled training and inference, the trainer synchronizes weights with vLLM engines over NCCL.
 
 ### Dynamic Sampling
 
-slime supports more complex sampling schemes, such as the dynamic sampling in [DAPO](https://dapo-sia.github.io/). To enable dynamic sampling, you need to configure:
+Vime supports more complex sampling schemes, such as the dynamic sampling in [DAPO](https://dapo-sia.github.io/). To enable dynamic sampling, you need to configure:
 
 ```bash
    --over-sampling-batch-size ${OVER_SAMPLING_BS} \
@@ -224,7 +224,7 @@ Here, `over_sampling_batch_size` needs to be greater than `rollout_batch_size`. 
    --over-sampling-batch-size 64 \
 ```
 
-In this case, the sampling process will directly sample 64 prompts, with 8 samples per prompt. Since slime performs asynchronous sampling internally, we will receive the 8 responses for each prompt sequentially. Upon receiving the responses, the function specified by `dynamic_sampling_filter_path` is used for filtering. If the samples pass the filter, these 8 data points are kept; otherwise, they are discarded. The function in the example checks if the rewards for the samples are not all identical (i.e., not all correct or all incorrect):
+In this case, the sampling process will directly sample 64 prompts, with 8 samples per prompt. Since Vime performs asynchronous sampling internally, we will receive the 8 responses for each prompt sequentially. Upon receiving the responses, the function specified by `dynamic_sampling_filter_path` is used for filtering. If the samples pass the filter, these 8 data points are kept; otherwise, they are discarded. The function in the example checks if the rewards for the samples are not all identical (i.e., not all correct or all incorrect):
 
 ```python
 def check_reward_nonzero_std(args, samples: list[Sample], **kwargs):
@@ -297,6 +297,6 @@ Add `--vllm-enforce-eager` when debugging or to work around CUDA graph limits.
 
 ### Asynchronous Training
 
-When you separate training and inference, you may notice that the training and inference GPUs are always waiting for each other. To prevent these resources from being idle, we can enable asynchronous training. This can be done by changing `train.py` to `train_async.py` in the startup script. By doing this, slime will generate data for the next rollout while training on the current one.
+When you separate training and inference, you may notice that the training and inference GPUs are always waiting for each other. To prevent these resources from being idle, we can enable asynchronous training. This can be done by changing `train.py` to `train_async.py` in the startup script. By doing this, Vime will generate data for the next rollout while training on the current one.
 
 The only difference between `train.py` and `train_async.py` lies in the synchronization logic of the training loop. We achieve this by using Ray's asynchronous features (`.remote`, `ray.get`).

@@ -19,7 +19,7 @@ parser.add_argument("--async-save", action="store_true", help="Whether to test a
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    U.exec_command(f"rm -rf /root/models/{MODEL_NAME}_slime")
+    U.exec_command(f"rm -rf /root/models/{MODEL_NAME}_vime")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
@@ -31,15 +31,15 @@ def prepare():
 def execute(mode: str = ""):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
     if mode == "save":
-        ckpt_args += f"--save /root/models/{MODEL_NAME}_slime "
+        ckpt_args += f"--save /root/models/{MODEL_NAME}_vime "
         ckpt_args += "--save-interval 2 "
     elif mode == "async_save":
-        ckpt_args += f"--save /root/models/{MODEL_NAME}_slime "
+        ckpt_args += f"--save /root/models/{MODEL_NAME}_vime "
         ckpt_args += "--save-interval 2 "
         # Real async save (Megatron disables async without persistent ckpt worker).
         ckpt_args += "--async-save --use-persistent-ckpt-worker "
     elif mode == "load":
-        ckpt_args += f"--load /root/models/{MODEL_NAME}_slime "
+        ckpt_args += f"--load /root/models/{MODEL_NAME}_vime "
         ckpt_args += "--ckpt-step 1 "
 
     rollout_args = (

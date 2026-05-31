@@ -16,7 +16,7 @@ python tools/convert_hf_to_fp8.py \
     --max-workers 4
 ```
 
-Please ensure that the converted checkpoint points to a directory where the `config.json` contains the correct `quantization_config` so that slime can automatically use FP8 quantization during weight updates.
+Please ensure that the converted checkpoint points to a directory where the `config.json` contains the correct `quantization_config` so that Vime can automatically use FP8 quantization during weight updates.
 
 ## FP8 rollout and FP8 training
 
@@ -57,13 +57,13 @@ Note that TransformerEngine does not specifically save FP8 quantized weights; th
 
 ### Quick Explanation
 
-Here's a quick explanation of how FP8 training is currently implemented in slime:
+Here's a quick explanation of how FP8 training is currently implemented in Vime:
 
 1. Initialization: If FP8 recipe is enabled, layers will be built in FP8 context.
 
 2. Training: During training, weights and activations are quantized online to nvfp8 format, and cuBLAS FP8 GEMM is called for various GEMM computations in forward and backward passes.
 
-3. Weight updates: During RL weight updates, Megatron first dequantizes FP8 weights to bf16 format, then slime quantizes these bf16 weights to fp8 format and sends them to vLLM. (This additional dequantization and quantization is not elegant, but we haven't modified the interface yet for framework compatibility.)
+3. Weight updates: During RL weight updates, Megatron first dequantizes FP8 weights to bf16 format, then Vime quantizes these bf16 weights to fp8 format and sends them to vLLM. (This additional dequantization and quantization is not elegant, but we haven't modified the interface yet for framework compatibility.)
 
 4. Save checkpoint: Similar to weight updates, if checkpoints need to be saved from the training engine, they will also be dequantized back to bf16 and saved to `torch_dist` format checkpoints.
 
@@ -81,7 +81,7 @@ This guide provides examples for INT4 STE (Straight-Through Estimator) training 
 ### Quick Start
 
 1. Convert HuggingFace Weights to INT4
-Use the `tools/convert_hf_to_int4_direct.py` script to convert BF16 weights to INT4 format. Ensure that the `--hf-checkpoint` parameter points to a directory where `config.json` contains the correct `quantization_config`. slime will automatically utilize INT4 quantization during weight updates.
+Use the `tools/convert_hf_to_int4_direct.py` script to convert BF16 weights to INT4 format. Ensure that the `--hf-checkpoint` parameter points to a directory where `config.json` contains the correct `quantization_config`. Vime will automatically utilize INT4 quantization during weight updates.
 
 ```bash
 python tools/convert_hf_to_int4_direct.py \

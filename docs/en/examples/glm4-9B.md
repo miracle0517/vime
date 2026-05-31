@@ -6,8 +6,8 @@ After pulling the `inferactinc/public:vime-vllm-cu129-latest` image, initialize 
 
 ```bash
 cd /root/
-git clone https://github.com/THUDM/slime.git
-cd slime/
+git clone https://github.com/vllm-project/vime.git
+cd vime/
 pip install -e . --no-deps
 ```
 
@@ -30,7 +30,7 @@ Convert the Hugging Face checkpoint to a Megatron-loadable Hugging Face checkpoi
 
 ```bash
 # mcore checkpoint
-cd /root/slime
+cd /root/vime
 source scripts/models/glm4-9B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
@@ -43,13 +43,13 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 Execute the training:
 
 ```bash
-cd /root/slime
+cd /root/vime
 bash scripts/run-glm4-9B.sh
 ```
 
 ### Parameter Introduction
 
-Here, we will briefly introduce the various components of the [run-glm4-9B.sh](https://github.com/THUDM/slime/blob/main/scripts/run-glm4-9B.sh) script:
+Here, we will briefly introduce the various components of the [run-glm4-9B.sh](https://github.com/vllm-project/vime/blob/main/scripts/run-glm4-9B.sh) script:
 
 #### MODEL\_ARGS
 
@@ -58,7 +58,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/glm4-9B.sh"
 ```
 
-Reads the model's config from [scripts/models/glm4-9B.sh](https://github.com/THUDM/slime/blob/main/scripts/models/glm4-9B.sh). These configs are all Megatron parameters. When training with Megatron, it cannot read the model config from the checkpoint, so we need to configure it ourselves. We provide some examples in [scripts/models](https://github.com/THUDM/slime/tree/main/scripts/models/).
+Reads the model's config from [scripts/models/glm4-9B.sh](https://github.com/vllm-project/vime/blob/main/scripts/models/glm4-9B.sh). These configs are all Megatron parameters. When training with Megatron, it cannot read the model config from the checkpoint, so we need to configure it ourselves. We provide some examples in [scripts/models](https://github.com/vllm-project/vime/tree/main/scripts/models/).
 
 ⚠️  Ensure that settings such as `--rotary-base` in the model configuration file match the settings of the model you are currently training. This is because different models, even with the same architecture, might use different values. If needed, you can override these parameters in your script after loading the model weights. For instance:
 
@@ -77,8 +77,8 @@ CKPT_ARGS=(
    # Checkpoint for the reference model
    --ref-load /root/GLM-Z1-9B-0414_torch_dist
    # Load directory for the actor; if empty, it will be loaded from `ref_load`
-   --load /root/GLM-Z1-9B-0414_slime/
-   --save /root/GLM-Z1-9B-0414_slime/
+   --load /root/GLM-Z1-9B-0414_vime/
+   --save /root/GLM-Z1-9B-0414_vime/
    --save-interval 20
 )
 ```
@@ -98,7 +98,7 @@ ROLLOUT_ARGS=(
    --rollout-shuffle
 
    # Reward model type.
-   # slime provides many types and --custom-rm-path for custom models
+   # Vime provides many types and --custom-rm-path for custom models
    --rm-type deepscaler
 
    # Total number of rollouts to train
@@ -135,13 +135,13 @@ EVAL_ARGS=(
 
 #### PERF\_ARGS
 
-A set of Megatron's parallelism parameters. Only `--use-dynamic-batch-size` and `--max-tokens-per-gpu` are added by slime.
+A set of Megatron's parallelism parameters. Only `--use-dynamic-batch-size` and `--max-tokens-per-gpu` are added by Vime.
 
 `max_tokens_per_gpu` specifies the maximum number of tokens each GPU can process. When `use_dynamic_batch_size` is enabled, it will try to pack data of varying lengths within a batch up to `max_tokens_per_gpu`, thus forming a dynamic micro-batch size. If a single data item's length exceeds `max_tokens_per_gpu`, it will form its own batch without being truncated. When context parallelism (CP) is enabled, it allows the CP GPUs to share data with a total length of `CP * max_tokens_per_gpu` tokens.
 
 When `dynamic_batch_size` is enabled, the traditional `micro_batch_size` is ignored.
 
-⚠️  slime always trains the model using data packing and strictly guarantees per-sample or per-token loss. This means enabling dynamic batch size will not affect the loss calculation. It is recommended to enable it.
+⚠️  Vime always trains the model using data packing and strictly guarantees per-sample or per-token loss. This means enabling dynamic batch size will not affect the loss calculation. It is recommended to enable it.
 
 ```bash
 PERF_ARGS=(
@@ -193,7 +193,7 @@ OPTIMIZER_ARGS=(
 
 #### VLLM\_ARGS
 
-Parameters required by vLLM. Here, `--rollout-num-gpus-per-engine` corresponds to vLLM's `tp_size`. Other vLLM parameters are passed to slime by adding the `--vllm-` prefix.
+Parameters required by vLLM. Here, `--rollout-num-gpus-per-engine` corresponds to vLLM's `tp_size`. Other vLLM parameters are passed to Vime by adding the `--vllm-` prefix.
 
 ```bash
 VLLM_ARGS=(
@@ -201,7 +201,7 @@ VLLM_ARGS=(
 )
 ```
 
-⚠️  slime uses `vllm-router` to schedule multiple vLLM engines.
+⚠️  Vime uses `vllm-router` to schedule multiple vLLM engines.
 
 ### Co-located Training and Inference
 
@@ -235,7 +235,7 @@ In this case, both training and inference will share these 8 GPUs.
 
 ### Dynamic Sampling
 
-slime supports more complex sampling schemes, such as the dynamic sampling in [DAPO](https://dapo-sia.github.io/). To enable dynamic sampling, you need to configure:
+Vime supports more complex sampling schemes, such as the dynamic sampling in [DAPO](https://dapo-sia.github.io/). To enable dynamic sampling, you need to configure:
 
 ```bash
    --over-sampling-batch-size ${OVER_SAMPLING_BS} \
@@ -251,7 +251,7 @@ Here, `over_sampling_batch_size` needs to be greater than `rollout_batch_size`. 
    --over-sampling-batch-size 64 \
 ```
 
-The sampling will then directly sample 64 prompts, with 8 samples per prompt. Since slime performs asynchronous sampling internally, we will receive the 8 responses for each prompt sequentially. Upon receiving responses, they will be filtered using the function specified by `dynamic_sampling_filter_path`. If they pass, these 8 data points are kept; otherwise, they are discarded. The function in the example checks if the answers are all correct or all incorrect:
+The sampling will then directly sample 64 prompts, with 8 samples per prompt. Since Vime performs asynchronous sampling internally, we will receive the 8 responses for each prompt sequentially. Upon receiving responses, they will be filtered using the function specified by `dynamic_sampling_filter_path`. If they pass, these 8 data points are kept; otherwise, they are discarded. The function in the example checks if the answers are all correct or all incorrect:
 
 ```python
 def check_reward_nonzero_std(args, samples: list[Sample], **kwargs):

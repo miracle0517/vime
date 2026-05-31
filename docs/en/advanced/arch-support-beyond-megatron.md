@@ -2,7 +2,7 @@
 
 While the Megatron-LM framework is highly efficient for parallel training, it can lack the flexibility to support rapidly evolving model architectures like Qwen3Next. Natively supporting the unique structures of these models, such as Gated-Delta-Net, often requires invasive and time-consuming modifications to Megatron's core codebase.
 
-To accelerate the adoption of these cutting-edge models, slime introduces a more agile approach: **instead of deeply re-engineering Megatron, we directly import and wrap the model's official HuggingFace implementation**, embedding it as a "black-box" module into Megatron's parallel training pipeline.
+To accelerate the adoption of these cutting-edge models, Vime introduces a more agile approach: **instead of deeply re-engineering Megatron, we directly import and wrap the model's official HuggingFace implementation**, embedding it as a "black-box" module into Megatron's parallel training pipeline.
 
 This document uses Qwen3Next 80B-A3B as an example to illustrate this concept.
 
@@ -10,7 +10,7 @@ This document uses Qwen3Next 80B-A3B as an example to illustrate this concept.
 
 Megatron's model instantiation is a two-step process: first, it generates a "layer specification" (`ModuleSpec`) based on the configuration, and then it instantiates the actual PyTorch modules according to that spec.
 
-slime leverages this mechanism by **hijacking the spec generation stage to replace Megatron's native modules** with an external implementation (in this case, from HuggingFace). This process involves the coordination of three core components:
+Vime leverages this mechanism by **hijacking the spec generation stage to replace Megatron's native modules** with an external implementation (in this case, from HuggingFace). This process involves the coordination of three core components:
 
 1.  **Replacing the Megatron Module Spec**
     This is the entry point for our solution. We use a custom function (e.g., `get_qwen3_next_spec`) to modify the standard `ModuleSpec`, swapping out Megatron's native Attention layer with our custom wrapper.

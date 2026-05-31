@@ -29,8 +29,8 @@ source "${SCRIPT_DIR}/../models/kimi-k2-thinking.sh"
 CKPT_ARGS=(
    --hf-checkpoint /root/Kimi-K2-Thinking/
    --ref-load /root/Kimi-K2_thinking_torch_dist/
-   --load /root/Kimi-K2-thinking_slime/
-   --save /root/Kimi-K2-thinking_slime/
+   --load /root/Kimi-K2-thinking_vime/
+   --save /root/Kimi-K2-thinking_vime/
    --save-interval 20
 )
 
@@ -111,7 +111,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-dev
+   # --wandb-project vime-dev
    # --wandb-group kimi-k2-thinking-test
    # --wandb-key ${WANDB_KEY}
 )
@@ -165,7 +165,7 @@ RUNTIME_ENV_JSON="{
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 /personal/slime/slime/train.py \
+   -- python3 /personal/vime/slime/train.py \
    --actor-num-nodes 32 \
    --actor-num-gpus-per-node 8 \
    --colocate \

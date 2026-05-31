@@ -1,13 +1,13 @@
 # CI（持续集成）
 
-slime 使用 GitHub Actions 进行 CI。测试通过 **PR label** 触发——给 PR 添加特定 label 即可运行对应的测试套件。
+Vime 使用 GitHub Actions 进行 CI。测试通过 **PR label** 触发——给 PR 添加特定 label 即可运行对应的测试套件。
 
 ## 工作原理
 
 工作流定义在 `.github/workflows/pr-test.yml`（由 `pr-test.yml.j2` 自动生成）。每个 CI 任务会：
 
 1. 在自托管 GPU runner 上通过 `docker run` 运行；大多数测试使用 `inferactinc/public:vime-vllm-cu129-latest`，镜像验证使用 `inferactinc/public:vime-vllm-cu129-latest`。
-2. 通过 `pip install -e . --no-deps` 安装 slime。
+2. 通过 `pip install -e . --no-deps` 安装 Vime。
 3. 通过 `tests/ci/gpu_lock_exec.py --count <num_gpus>` 获取所需数量的 GPU。
 4. 执行测试文件：`python <test_path>.py` 或 `python tests/<test_file>.py`。如果测试位于 `tests/plugin_contracts/` 这样的子目录，CI 也会自动处理。
 
