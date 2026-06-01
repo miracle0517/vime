@@ -70,12 +70,8 @@ pre-commit run --all-files --show-diff-on-failure --color=always
 
 ## slime doc
 
-Vime is derived from slime. The following upstream resources and in-repo guides still use the slime naming and remain the reference for shared concepts (Megatron integration, customization, advanced topics):
+Vime is derived from slime. The following in-repo guides use the slime naming and remain the reference for shared concepts (Megatron integration, customization, advanced topics):
 
-[![Documentation](https://img.shields.io/badge/slime_docs-latest-brightgreen.svg?style=flat)](https://thudm.github.io/slime/)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/THUDM/slime)
-
-- Upstream repository: [THUDM/slime](https://github.com/THUDM/slime)
 - English docs in this repo: [docs/en/](docs/en/)
 - Chinese docs in this repo: [docs/zh/](docs/zh/)
 

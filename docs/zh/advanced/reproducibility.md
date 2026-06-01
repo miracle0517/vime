@@ -48,5 +48,3 @@ PYTHONPATH=/root/Megatron-LM/ python \
 ```bash
 bash script/run-qwen2.5-0.5B-reproducibility.sh
 ```
-
-上游 slime [pull#370](https://github.com/THUDM/slime/pull/370) 中记录了 wandb 的截图。

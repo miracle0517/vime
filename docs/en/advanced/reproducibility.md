@@ -47,5 +47,3 @@ And to run training,
 ```bash
 bash script/run-qwen2.5-0.5B-reproducibility.sh
 ```
-
-For screen shots of the wandb, please refer to the upstream slime [pull#370](https://github.com/THUDM/slime/pull/370).

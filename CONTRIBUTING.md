@@ -10,9 +10,9 @@ slime is the RL training infrastructure behind [GLM-4.5 through GLM-5.1](https:/
 
 Our goal for open-source collaboration is focused on **bug fixes** and **general-purpose large-scale RL optimizations**. We have had several successful collaborations with the community in this area, including:
 
-- Speculative decoding in RL ([upstream docs](https://thudm.github.io/slime/en/advanced/speculative_decoding.html))
-- Low-precision training: fp8 rollout + bf16/fp8 training, int4 rollout + int4 QAT training ([upstream docs](https://thudm.github.io/slime/en/advanced/low_precision_training.html))
-- Deterministic training ([upstream docs](https://thudm.github.io/slime/en/advanced/reproducibility.html))
+- Speculative decoding in RL
+- Low-precision training: fp8 rollout + bf16/fp8 training, int4 rollout + int4 QAT training
+- Deterministic training
 
 ### What We Welcome
 
@@ -54,9 +54,9 @@ slime 承担了智谱内部的大量实验，包括 GLM 4.5 至 5 的全部 RL �
 
 我们将开源协作的范围限制在 **bug fix** 和一些**通用的大规模 RL 优化**上。在这方面我们也和社区达成了多次成功的合作，例如：
 
-- RL 中的投机采样（[上游文档](https://thudm.github.io/slime/en/advanced/speculative_decoding.html)）
-- 低精度训练：fp8 rollout + bf16/fp8 training，int4 rollout + int4 QAT training（[上游文档](https://thudm.github.io/slime/en/advanced/low_precision_training.html)）
-- 确定性训练（[上游文档](https://thudm.github.io/slime/en/advanced/reproducibility.html)）
+- RL 中的投机采样
+- 低精度训练：fp8 rollout + bf16/fp8 training，int4 rollout + int4 QAT training
+- 确定性训练
 
 ### 我们欢迎的
 
