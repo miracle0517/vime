@@ -144,7 +144,7 @@ def _make_instance(upw_vllm, args=None):
     obj._distributed_engines = []
     obj._model_update_groups = None
     obj._is_distributed_src_rank = False
-    obj._group_name = "slime"
+    obj._group_name = "vime"
     obj._ipc_initialized = False
     return obj
 
@@ -207,7 +207,7 @@ def test_colocated_lifecycle_uses_vllm_sleep_and_weight_transfer_apis(upw_vllm):
 def test_send_via_ipc_dispatches_update_weights_from_tensor_with_version(upw_vllm):
     """slot_size=1: every HF chunk fires
     ``engine.update_weights_from_tensor.remote(**fields, weight_version=...)``.
-    Mirrors slime's IPC RPC contract — same name, parameterized fields,
+    Mirrors the IPC RPC contract — same name, parameterized fields,
     version travels with data (no piggyback onto ``finish_weight_update``)."""
     obj = _make_instance(upw_vllm)
     engine = RecordingVLLMEngine()

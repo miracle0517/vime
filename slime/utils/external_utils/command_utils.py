@@ -1,5 +1,5 @@
 """
-This file is not for slime framework itself, but as an optional utility to easily launch slime jobs and tests.
+This file is not for the Vime framework itself, but as an optional utility to easily launch Vime jobs and tests.
 """
 
 import datetime
@@ -215,7 +215,7 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
     wandb_key = os.environ.get("WANDB_API_KEY")
     return (
         "--use-wandb "
-        f"--wandb-project slime-{test_name} "
+        f"--wandb-project vime-{test_name} "
         f"--wandb-group {wandb_run_name} "
         f"--wandb-key '{wandb_key}' "
         "--disable-wandb-random-suffix "

@@ -226,7 +226,7 @@ EVAL_ARGS=(
 
 ### PERF_ARGS: Performance and Parallelism Parameters
 
-This part mainly contains Megatron's parallel configuration. `--use-dynamic-batch-size` and `--max-tokens-per-gpu` are slime-specific optimizations.
+This part mainly contains Megatron's parallel configuration. `--use-dynamic-batch-size` and `--max-tokens-per-gpu` are Vime-specific optimizations.
 
 - `--max-tokens-per-gpu`: Maximum number of tokens processed per GPU. After enabling dynamic batching (`use_dynamic_batch_size`), the system will intelligently pack samples of varying lengths so that the total token count of each micro-batch approaches this limit, thereby improving training efficiency. If a single sample length exceeds this value, it will form an independent batch. In context parallel (CP) mode, `N` CP cards share the total length of `N * max_tokens_per_gpu`.
 - `--use-dynamic-batch-size`: Enable dynamic batching. At this time, `--micro-batch-size` will be ignored.
@@ -565,7 +565,7 @@ ray job submit --address="http://127.0.0.1:8265" \
      }
    }' \
    -- python3 train.py \
-   --... # Other Megatron/vLLM/slime arguments
+   --... # Other Megatron/vLLM/Vime arguments
 ```
 
 Optionally, the following environment variables may be needed based on your environment. For example, when there are multiple IPs and the wrong one is chosen in a Docker or SLURM envionment. We provide an example used in a SLURM + enroot multi-node system as follows:

@@ -22,7 +22,7 @@ def _base_args(**overrides):
         use_kl_loss=False,
         use_opd=True,
         opd_type="megatron",
-        custom_advantage_function_path="slime.test.adv",
+        custom_advantage_function_path="vime.test.adv",
         untie_embeddings_and_output_weights=False,
         actor_num_nodes=1,
         actor_num_gpus_per_node=1,

@@ -278,7 +278,7 @@ def test_update_weights_from_distributed_posts_update_weights_without_checkpoint
         names,
         dtypes,
         shapes,
-        group_name="slime-pp_0",
+        group_name="vime-pp_0",
         weight_version="7",
         packed=True,
     )

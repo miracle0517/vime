@@ -41,7 +41,7 @@ def _end_vllm_weight_update_session(rollout_engines: Sequence[ActorHandle]) -> N
 
 class UpdateWeightFromDistributed:
     """
-    Update distributed engines via NCCL. Each PP rank: group "slime-pp_{pp_rank}",
+    Update distributed engines via NCCL. Each PP rank: group "vime-pp_{pp_rank}",
     only DP=TP=0 broadcasts. Non-expert (TP) and expert (EP) params separate.
     """
 
@@ -72,7 +72,7 @@ class UpdateWeightFromDistributed:
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         """
-        Create NCCL "slime-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
+        Create NCCL "vime-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
         """
         self.rollout_engines = rollout_engines
         self.rollout_engine_lock = rollout_engine_lock
@@ -86,7 +86,7 @@ class UpdateWeightFromDistributed:
         )
         pp_rank = mpu.get_pipeline_model_parallel_rank()
         if self._is_pp_src_rank:
-            self._group_name = f"slime-pp_{pp_rank}"
+            self._group_name = f"vime-pp_{pp_rank}"
 
         if self._is_pp_src_rank:
             if self._model_update_groups is not None:

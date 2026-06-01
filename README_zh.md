@@ -19,7 +19,7 @@ Vime 继承 slime 的广泛模型支持，包括：
 - [快速开始](#快速开始)
 - [参数说明](#参数说明)
 - [开发指南](#开发指南)
-- [slime doc](#slime-doc)
+- [上游文档](#上游文档)
 - [常见 Q&A 与致谢](#常见-qa-与致谢)
 
 ## 架构总览
@@ -68,11 +68,11 @@ Vime 的参数分为三类：
 
 - 调试技巧请参考 [debug 指南](docs/zh/developer_guide/debug.md)
 
-## slime doc
+## 上游文档
 
 Vime 由 slime 衍生而来。以下上游资源与本仓库文档仍沿用 slime 命名，可作为共享概念（Megatron 集成、定制化、高级主题）的参考：
 
-[![Documentation](https://img.shields.io/badge/slime_文档-latest-brightgreen.svg?style=flat)](https://thudm.github.io/slime/)
+[![Documentation](https://img.shields.io/badge/upstream_docs-latest-brightgreen.svg?style=flat)](https://thudm.github.io/slime/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/THUDM/slime)
 
 - 上游仓库：[THUDM/slime](https://github.com/THUDM/slime)

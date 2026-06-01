@@ -19,7 +19,7 @@ Vime inherits broad model support from slime, including:
 - [Quick Start](#quick-start)
 - [Arguments Walkthrough](#arguments-walkthrough)
 - [Developer Guide](#developer-guide)
-- [slime doc](#slime-doc)
+- [Upstream docs](#upstream-docs)
 - [FAQ & Acknowledgements](#faq--acknowledgements)
 
 ## Architecture Overview
@@ -68,11 +68,11 @@ pre-commit run --all-files --show-diff-on-failure --color=always
 
 - For debugging tips, please refer to the [Debugging Guide](docs/en/developer_guide/debug.md)
 
-## slime doc
+## Upstream docs
 
 Vime is derived from slime. The following upstream resources and in-repo guides still use the slime naming and remain the reference for shared concepts (Megatron integration, customization, advanced topics):
 
-[![Documentation](https://img.shields.io/badge/slime_docs-latest-brightgreen.svg?style=flat)](https://thudm.github.io/slime/)
+[![Documentation](https://img.shields.io/badge/upstream_docs-latest-brightgreen.svg?style=flat)](https://thudm.github.io/slime/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/THUDM/slime)
 
 - Upstream repository: [THUDM/slime](https://github.com/THUDM/slime)
