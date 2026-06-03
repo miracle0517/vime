@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import dataclasses
 import ipaddress
+import json
 import logging
 import multiprocessing
 import os
@@ -129,17 +130,21 @@ def _resolve_vllm_parallel_sizes(args, *, gpus_per_engine: int) -> tuple[int, in
     # desyncing the weight-transfer rendezvous (the 300s "3/4 clients joined" hang).
     pp = _get_vllm_pp_size(args)
     dp = _get_vllm_dp_size(args)
-    if dp != 1:
-        raise NotImplementedError(
-            "vLLM data parallelism (vllm_data_parallel_size>1) is not wired in this base: TP is "
-            "computed as gpus_per_engine // pp (no DP term) and --data-parallel-size is not "
-            "forwarded. DP/EP support lands in a follow-up PR."
-        )
-    if gpus_per_engine % pp != 0:
+    # In vLLM, DP and PP both *consume GPUs* (total ranks = tp * pp * dp), so TP per engine is
+    # gpus_per_engine // (pp * dp). This differs from sglang's attention-DP shape (tp = gpus // pp,
+    # dp orthogonal); vLLM launches `dp` model replicas in-process via the mp data-parallel backend
+    # (see build_vllm_cmd_and_env). Expert parallelism rides on top as the boolean
+    # ``--enable-expert-parallel`` (EP world size = tp * dp), auto-forwarded from
+    # ``--vllm-enable-expert-parallel``. TP stays PER ENGINE (no global vllm_tp_size shadow) — the
+    # exact value used both to launch ``vllm serve --tensor-parallel-size`` AND to size the NCCL
+    # weight-transfer rendezvous; a divergence here was the 300s "3/4 clients joined" hang.
+    parallel_divisor = pp * dp
+    if gpus_per_engine % parallel_divisor != 0:
         raise ValueError(
-            f"num_gpus_per_engine ({gpus_per_engine}) must be divisible by " f"vllm_pipeline_parallel_size ({pp})"
+            f"num_gpus_per_engine ({gpus_per_engine}) must be divisible by "
+            f"vllm_pipeline_parallel_size * vllm_data_parallel_size ({pp} * {dp} = {parallel_divisor})"
         )
-    tp = gpus_per_engine // pp
+    tp = gpus_per_engine // parallel_divisor
     return tp, pp
 
 
@@ -362,6 +367,9 @@ def build_vllm_subprocess_env(server_args: dict[str, Any]) -> dict[str, str]:
     env.setdefault("NCCL_CUMEM_ENABLE", "0")
     env["CUDA_VISIBLE_DEVICES"] = server_args["visible_devices"]
     env.setdefault("VLLM_SERVER_DEV_MODE", "1")
+    # DP engines need a longer readiness window in colocate (port of vime PR #125).
+    if int(server_args.get("dp_size", 1) or 1) > 1:
+        env.setdefault("VLLM_ENGINE_READY_TIMEOUT_S", "1800")
     if getattr(args, "colocate", False):
         import vime
 
@@ -408,6 +416,19 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
             args,
         )
 
+    # Single-node DP (dp>1, nnodes==1): vLLM needs the ``mp`` data-parallel backend to spawn the DP
+    # replicas inside one ``vllm serve`` process. The multi-node path already sets this via
+    # append_vllm_distributed_launch_flags. ``--data-parallel-size`` itself is auto-forwarded by
+    # _forward_vllm_cli_args from ``--vllm-data-parallel-size``; expert parallelism likewise rides on
+    # the boolean ``--enable-expert-parallel`` (auto-forwarded from ``--vllm-enable-expert-parallel``;
+    # EP world size = tp * dp). See _resolve_vllm_parallel_sizes for the tp = gpus // (pp*dp) sizing.
+    if (
+        server_args["dp_size"] > 1
+        and not topology.multi_node
+        and not _user_overrode(args, "vllm_data_parallel_backend")
+    ):
+        cmd += ["--data-parallel-backend", "mp"]
+
     if getattr(args, "fp16", False):
         cmd += ["--dtype", "float16"]
 
@@ -422,6 +443,23 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
         and getattr(args, "vllm_max_model_len", None) is None
     ):
         cmd += ["--max-model-len", str(args.rollout_max_context_len)]
+
+    # Conservative DP+EP sleep-mode defaults (port of vime PR #125). DP engines in colocated
+    # sleep/offload mode are flaky in vLLM's CUDA-graph / async-scheduler startup path for large
+    # MoE checkpoints — colocate DP+EP + cudagraph + sleep/wake segfaults at update_weights
+    # (cuMemcpyDtoDAsync). Forcing eager + sync scheduling makes DP+EP work; explicit --vllm-*
+    # overrides still flow through. (TP-only sidesteps the bug but DP+EP is the target topology.)
+    if (
+        server_args["dp_size"] > 1
+        and getattr(args, "vllm_enable_sleep_mode", False)
+        and not _user_overrode(args, "vllm_async_scheduling")
+    ):
+        cmd += ["--no-async-scheduling"]
+    if server_args["dp_size"] > 1 and getattr(args, "vllm_enable_sleep_mode", False):
+        if not _user_overrode(args, "vllm_enforce_eager"):
+            cmd += ["--enforce-eager"]
+        if not _user_overrode(args, "vllm_distributed_timeout_seconds"):
+            cmd += ["--distributed-timeout-seconds", "1800"]
 
     if getattr(args, "use_rollout_routing_replay", False):
         cmd += ["--enable-return-routed-experts"]
@@ -461,6 +499,24 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
             "vime.backends.megatron_utils.update_weight.update_weight_from_tensor.vLLMColocateWorkerExtension",
         ]
 
+    # PD (prefill/decode) disaggregation: launch prefill/decode engines with the NIXL KV connector
+    # so prefill-produced KV can be pulled by the decode engine. Both roles run kv_role="kv_both";
+    # the vllm-router (PD, static URLs) drives the
+    # do_remote_decode -> do_remote_prefill handshake. Each engine needs a unique NIXL side-channel
+    # port — use the orchestrator-allocated bootstrap port when present, else derive from the HTTP
+    # port. Only the rank-0 (HTTP-owning) process of a multi-node engine registers a side channel.
+    worker_type = server_args.get("worker_type", "regular")
+    if worker_type in ("prefill", "decode") and topology.node_rank == 0:
+        side_port = server_args.get("disaggregation_bootstrap_port") or (int(server_args["port"]) + 1100)
+        engine_id = f"{worker_type}-{host_for_subprocess}-{server_args['port']}"
+        if "--kv-transfer-config" not in cmd:
+            cmd += [
+                "--kv-transfer-config",
+                json.dumps({"kv_connector": "NixlConnector", "kv_role": "kv_both", "engine_id": engine_id}),
+            ]
+        env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = host_for_subprocess
+        env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(side_port)
+
     _forward_vllm_cli_args(args, cmd)
     logger.info("Launching vLLM server: %s", redact_cmd_for_log(cmd))
     return cmd, env
@@ -489,7 +545,7 @@ def launch_server_process(server_args: dict) -> multiprocessing.Process:
     return p
 
 
-def _wait_worker_process_alive(process: multiprocessing.Process, timeout_s: float = 300.0) -> None:
+def _wait_worker_process_alive(process: multiprocessing.Process, timeout_s: float = 1200.0) -> None:
     """Non-head nodes have no HTTP health endpoint; ensure the subprocess stays up."""
     start = time.time()
     while process.is_alive():
@@ -563,9 +619,10 @@ class VLLMEngine(RayActor):
         router_ip=None,
         router_port=None,
     ):
-        # ``nccl_port`` / ``disaggregation_bootstrap_port`` are allocated by rollout
-        # port allocation but not consumed by vLLM (rendezvous uses ``dist_init_addr``).
-        del nccl_port, disaggregation_bootstrap_port
+        # ``nccl_port`` is allocated by rollout port allocation but not consumed by vLLM
+        # (rendezvous uses ``dist_init_addr``). ``disaggregation_bootstrap_port`` IS consumed in
+        # PD mode: it becomes the engine's NIXL side-channel port (see build_vllm_cmd_and_env).
+        del nccl_port
 
         gpus_per_engine = self.num_gpus_per_engine or self.args.rollout_num_gpus_per_engine
         host = host or get_host_info()[1]
@@ -580,6 +637,7 @@ class VLLMEngine(RayActor):
             base_gpu_id=self.base_gpu_id,
             vllm_overrides=self.vllm_overrides,
             num_gpus_per_engine=gpus_per_engine,
+            disaggregation_bootstrap_port=disaggregation_bootstrap_port,
         )
         self._topology = self._server_args["topology"]
         self.node_rank = self._topology.node_rank
@@ -590,6 +648,9 @@ class VLLMEngine(RayActor):
         self.router_port = router_port
         self.server_host = self._server_args["host"]
         self.server_port = port
+        # PD side-channel: persist the orchestrator-allocated bootstrap port so
+        # get_pd_bootstrap_port() advertises it instead of falling back to port+1100.
+        self.disaggregation_bootstrap_port = disaggregation_bootstrap_port
 
         if self.worker_type != "regular":
             logger.warning(
@@ -789,6 +850,18 @@ class VLLMEngine(RayActor):
             return None
         return self._http_base()
 
+    def get_pd_bootstrap_port(self):
+        """NIXL side-channel (bootstrap) port for PD, or ``None`` when ``node_rank != 0``.
+
+        Mirrors the side-channel port build_vllm_cmd_and_env assigns to
+        ``VLLM_NIXL_SIDE_CHANNEL_PORT`` (``disaggregation_bootstrap_port`` when set, else
+        ``http_port + 1100``).
+        """
+        if self.node_rank != 0:
+            return None
+        bp = getattr(self, "disaggregation_bootstrap_port", None)
+        return int(bp) if bp else int(self.server_port) + 1100
+
     def shutdown(self):
         logger.info("Shutdown vLLM engine %s:%s...", self.server_host, self.server_port)
         self._deregister_worker_from_router()
@@ -852,10 +925,14 @@ class VLLMEngine(RayActor):
             return {"ok": True, "sleep_mode": False, "note": "vLLM sleep mode disabled; no /sleep call."}
         # vLLM ``POST /sleep`` reads ``level`` from query params, not JSON body
         # (``vllm.entrypoints.serve.sleep.api_router.sleep``).
+        # Use the generous (tunable) weight-transfer timeout, not a hardcoded 30s: releasing a large
+        # model's weights/KV scales with model size, and under vLLM data parallelism (api_server_count
+        # = dp) the front API server coordinates every DP replica's sleep — a 30B+ DP engine exceeds
+        # 30s and would spuriously ReadTimeout.
         response = requests.post(
             f"{self._http_base()}/sleep",
             params={"level": level},
-            timeout=30,
+            timeout=self._weight_transfer_http_timeout(),
         )
         return _response_json(response)
 
@@ -872,7 +949,7 @@ class VLLMEngine(RayActor):
         response = requests.post(
             f"{self._http_base()}/wake_up",
             params=wake_params,
-            timeout=30,
+            timeout=self._weight_transfer_http_timeout(),
         )
         return _response_json(response)
 
@@ -1081,6 +1158,7 @@ def _compute_server_args(
     base_gpu_id: int | None = None,
     vllm_overrides: dict | None = None,
     num_gpus_per_engine: int | None = None,
+    disaggregation_bootstrap_port: int | None = None,
 ) -> dict[str, Any]:
     """Build per-actor launch config for ``launch_server_process``."""
     gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
@@ -1120,6 +1198,8 @@ def _compute_server_args(
         "pp_size": topology.pipeline_parallel_size,
         "dp_size": _get_vllm_dp_size(args),
         "seed": getattr(args, "seed", 1234) + rank,
+        # PD (prefill/decode) disaggregation: role + NIXL side-channel port (None for "regular").
+        "disaggregation_bootstrap_port": disaggregation_bootstrap_port,
     }
     _apply_vllm_overrides(args, server_args, vllm_overrides, rank)
     return server_args

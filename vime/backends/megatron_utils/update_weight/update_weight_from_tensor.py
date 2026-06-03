@@ -454,6 +454,85 @@ class _VLLMHijack:
         IPCWeightTransferEngine.receive_weights = _slime_receive_weights
         IPCWeightTransferEngine._slime_receive_patched = True  # type: ignore[attr-defined]
 
+        # ── FIX A: skip execute_dummy_batch while the engine is asleep / mid weight-update ──
+        # Port of the UNMERGED vLLM PR #24882. In DP mode the DP coordinator can tell an idle
+        # replica to run a dummy batch (_dummy_run forward) to stay collective-synced. During
+        # vime's colocate weight sync the engine is slept (release_memory_occupation level=0 →
+        # weights freed) then woken weights-only; a dummy batch forward then reads freed/half-
+        # written weight memory → "illegal memory access" at update_weights (DP+EP only; TP has
+        # no DP dummy-batch coordination). All vime engine replicas sleep/update together, so
+        # skipping in lockstep does not desync the DP collective. Localized via CUDA_LAUNCH_BLOCKING
+        # to gpu_worker.py execute_dummy_batch → _dummy_run.
+        try:
+            from vllm.v1.worker.gpu_worker import Worker as _GPUWorker
+
+            if not getattr(_GPUWorker, "_vime_dummy_batch_patched", False):
+                _orig_sleep = _GPUWorker.sleep
+                _orig_wake = _GPUWorker.wake_up
+                _orig_dummy = _GPUWorker.execute_dummy_batch
+
+                _ALL_TAGS = frozenset({"weights", "kv_cache"})
+
+                def _vime_sleep(self, level=1, _o=_orig_sleep):
+                    # sleep() frees the whole CuMem pool -> nothing is awake until wake_up restores it.
+                    self._vime_awake_tags = set()
+                    return _o(self, level)
+
+                def _vime_wake_up(self, tags=None, _o=_orig_wake):
+                    r = _o(self, tags)
+                    awake = getattr(self, "_vime_awake_tags", None)
+                    if awake is None:
+                        awake = set()
+                        self._vime_awake_tags = awake
+                    # tags=None wakes everything; otherwise only the named tags are restored.
+                    awake |= set(tags) if tags else set(_ALL_TAGS)
+                    return r
+
+                def _vime_execute_dummy_batch(self, _o=_orig_dummy):
+                    # A dummy _dummy_run forward needs BOTH weights and kv_cache present. Run it only
+                    # when the engine is FULLY awake and not mid weight-update. Tracking the awake-tag
+                    # set (not a single bool) avoids a kv_cache-only wake — weights still asleep —
+                    # wrongly re-enabling the forward against freed weight memory (vLLM #24882).
+                    # Default {} on the attr is fully-awake: an engine that never slept runs normally.
+                    awake = getattr(self, "_vime_awake_tags", _ALL_TAGS)
+                    fully_awake = _ALL_TAGS <= set(awake)
+                    if not fully_awake or getattr(self, "_weight_update_active", False):
+                        return
+                    return _o(self)
+
+                _GPUWorker.sleep = _vime_sleep
+                _GPUWorker.wake_up = _vime_wake_up
+                _GPUWorker.execute_dummy_batch = _vime_execute_dummy_batch
+                _GPUWorker._vime_dummy_batch_patched = True  # type: ignore[attr-defined]
+
+                # ── FIX B: tolerate the colocate startup memory-profiling race ──
+                # determine_available_memory asserts init_free >= post_profile_free; colocated
+                # megatron frees GPU memory DURING the engine's profile_run, so free goes UP and
+                # the assert trips (kills startup). Retry after a short settle — by then megatron's
+                # offload has finished and the snapshot is stable.
+                _orig_determine = _GPUWorker.determine_available_memory
+
+                def _vime_determine_available_memory(self, _o=_orig_determine):
+                    import time as _time
+
+                    for attempt in range(5):
+                        try:
+                            return _o(self)
+                        except AssertionError as e:
+                            if "memory profiling" not in str(e) or attempt == 4:
+                                raise
+                            try:
+                                import torch as _torch
+
+                                _torch.cuda.synchronize()
+                            except Exception:
+                                pass
+                            _time.sleep(4.0)
+
+                _GPUWorker.determine_available_memory = _vime_determine_available_memory
+        except Exception:  # pragma: no cover - defensive; never block engine startup
+            pass
+
 
 class vLLMColocateWorkerExtension:
     """vLLM ``--worker-extension-cls`` entry for colocated IPC weight sync."""
