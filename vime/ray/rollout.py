@@ -1251,7 +1251,11 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
 
 
 def _compute_spec_metrics(args, all_samples: list[Sample]):
-    if args.vllm_speculative_config is None:
+    # Guard against --debug-train-only / --load-debug-rollout-data, where the
+    # vllm arg-parse phase is skipped (skip_vllm) and vllm_speculative_config is
+    # never set on args. Mirrors slime #1938. getattr(..., None) keeps this safe
+    # whether or not the vllm parse ran.
+    if getattr(args, "vllm_speculative_config", None) is None:
         return {}
     num_samples = len(all_samples)
     metrics = {}
