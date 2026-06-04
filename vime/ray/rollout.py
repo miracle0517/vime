@@ -907,9 +907,8 @@ def _allocate_rollout_engine_addr_and_ports_normal(
     return addr_and_ports, node_port_cursor
 
 
-def _start_router(args, *, force_new: bool = False) -> tuple[str, int]:
-    """Start the rollout HTTP gateway (vllm-router). PD disaggregation uses
-    ``_launch_static_pd_router`` instead; this path is non-PD only."""
+def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool = False) -> tuple[str, int]:
+    """Start the rollout HTTP gateway (vllm-router)."""
     if not force_new and args.vllm_router_ip is not None:
         return args.vllm_router_ip, args.vllm_router_port
 
@@ -921,9 +920,9 @@ def _start_router(args, *, force_new: bool = False) -> tuple[str, int]:
         if router_port is None:
             router_port = find_available_port(random.randint(3000, 4000))
 
-    from vime.utils.http_utils import run_router
-
     from vllm_router.router_args import RouterArgs
+
+    from vime.utils.http_utils import run_router
 
     router_args = RouterArgs.from_cli_args(args, use_router_prefix=True)
 
@@ -933,12 +932,12 @@ def _start_router(args, *, force_new: bool = False) -> tuple[str, int]:
     router_args.log_level = "warning"
     router_args.request_timeout_secs = args.router_request_timeout_secs
 
-    # This path is non-PD only: PD disaggregation goes through ``_launch_static_pd_router``,
-    # which sets vllm_pd_disaggregation / static prefill+decode URLs itself. The non-PD Rust
-    # router accepts dynamic /workers registration (engines register after the router is up),
-    # matching slime's launch-router-then-register flow.
-    if any(f.name == "disable_health_check" for f in dataclasses.fields(type(router_args))):
-        router_args.disable_health_check = True
+    if has_pd_disaggregation:
+        router_args.vllm_pd_disaggregation = True
+        # Disable circuit breaker to prevent RDMA transfer timeouts from
+        # marking decode workers as dead. Timeouts are transient (PCIe
+        # contention under high load) and do not indicate a dead server.
+        router_args.disable_circuit_breaker = True
 
     logger.info(f"Launch router with args: {router_args}")
 
@@ -950,12 +949,7 @@ def _start_router(args, *, force_new: bool = False) -> tuple[str, int]:
     process.start()
     # Wait 3 seconds
     time.sleep(3)
-    if not process.is_alive():
-        raise RuntimeError(
-            f"Router subprocess exited (exitcode={process.exitcode}). "
-            "Ensure the vllm-router (Rust) wheel is installed; both PD and non-PD rollout use it. "
-            "See vime.utils.http_utils run_router logs."
-        )
+    assert process.is_alive()
     logger.info(f"Router launched at {router_ip}:{router_port}, Prometheus port: {router_args.prometheus_port}")
     return router_ip, router_port, router_args.prometheus_port
 
@@ -967,9 +961,9 @@ def _launch_static_pd_router(args, router_ip, router_port, prom_port, prefill_ur
     vllm-router is started with those URLs (vllm_pd_disaggregation). The router
     pulls from the static workers; engines do not self-register.
     """
-    from vime.utils.http_utils import run_router
-
     from vllm_router.router_args import RouterArgs
+
+    from vime.utils.http_utils import run_router
 
     router_args = RouterArgs.from_cli_args(args, use_router_prefix=True)
     router_args.host = router_ip
@@ -992,11 +986,7 @@ def _launch_static_pd_router(args, router_ip, router_port, prom_port, prefill_ur
     process.daemon = True
     process.start()
     time.sleep(3)
-    if not process.is_alive():
-        raise RuntimeError(
-            f"vLLM-router (PD static) exited (exitcode={process.exitcode}). "
-            f"prefill_urls={prefill_urls} decode_urls={decode_urls}"
-        )
+    assert process.is_alive()
     logger.info("vLLM-router (PD) at %s:%s, Prometheus %s", router_ip, router_port, prom_port)
 
 
@@ -1053,7 +1043,9 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
             prom_port = find_available_port(random.randint(4000, 5000))
             engine_router_ip, engine_router_port = None, None
         else:
-            router_ip, router_port, prom_port = _start_router(args, force_new=(model_idx > 0))
+            router_ip, router_port, prom_port = _start_router(
+                args, has_pd_disaggregation=has_pd, force_new=(model_idx > 0)
+            )
             engine_router_ip, engine_router_port = router_ip, router_port
 
         # Write back so downstream readers (vllm_rollout, vllm_engine) see the
