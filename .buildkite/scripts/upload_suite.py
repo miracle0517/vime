@@ -12,6 +12,10 @@ from typing import Any
 
 
 IMAGE = "inferactinc/public:vime-vllm-cu129-latest"
+# Lightweight image for the always-on CPU checks (pre-commit, plugin contracts):
+# the Buildkite equivalent of a GitHub-hosted ubuntu-latest runner, so these
+# don't pull the heavy CUDA training image.
+CPU_IMAGE = "python:3.10"
 CPU_QUEUE = "small_cpu_queue_premerge"
 # All GPU jobs (4- and 8-GPU) run on the shared H100 Kubernetes pool; each job
 # gets its own pod sized to its GPU count (the pool supports up to 8 GPUs/pod).
@@ -130,7 +134,7 @@ def core_steps() -> list[dict[str, Any]]:
                 "python -m pre_commit run --all-files --show-diff-on-failure --color=always",
             ],
             "agents": {"queue": CPU_QUEUE},
-            "plugins": [docker_plugin()],
+            "plugins": [lite_docker_plugin()],
             "retry": retry_agent_lost(),
         },
         {
@@ -142,6 +146,7 @@ def core_steps() -> list[dict[str, Any]]:
                     TestJob(test_file, 0, timeout_in_minutes=30),
                     group_label="Plugin Contracts",
                     depends_on=["pre-commit"],
+                    cpu_lite=True,
                 )
                 for test_file in PLUGIN_CONTRACTS
             ],
@@ -211,16 +216,26 @@ def changed_steps() -> list[dict[str, Any]]:
     ]
 
 
-def test_step(suite: str, job: TestJob, *, group_label: str, depends_on: list[str]) -> dict[str, Any]:
+def test_step(
+    suite: str,
+    job: TestJob,
+    *,
+    group_label: str,
+    depends_on: list[str],
+    cpu_lite: bool = False,
+) -> dict[str, Any]:
+    # cpu_lite -> always-on lightweight CPU runner (plugin contracts): a plain
+    # python image on the CPU queue that pip-installs CPU deps, instead of the
+    # heavy CUDA image / H100 pod used by GPU and in-image jobs.
     key = step_key(suite, job)
     step = {
         "label": f"{group_label} - {display_name(job)}",
         "key": key,
         "depends_on": depends_on,
         "commands": [".buildkite/scripts/run_test.sh"],
-        "agents": {"queue": agent_queue(job.num_gpus)},
-        "env": test_env(job),
-        "plugins": [plugin_for(job)],
+        "agents": {"queue": CPU_QUEUE if cpu_lite else agent_queue(job.num_gpus)},
+        "env": test_env(job, cpu_lite=cpu_lite),
+        "plugins": [lite_docker_plugin() if cpu_lite else plugin_for(job)],
         "retry": retry_agent_lost(),
     }
     if job.timeout_in_minutes:
@@ -228,8 +243,8 @@ def test_step(suite: str, job: TestJob, *, group_label: str, depends_on: list[st
     return step
 
 
-def test_env(job: TestJob) -> dict[str, str]:
-    return {
+def test_env(job: TestJob, *, cpu_lite: bool = False) -> dict[str, str]:
+    env = {
         "TEST_FILE": job.test_file,
         "TEST_ARGS": job.test_args,
         "NUM_GPUS": str(job.num_gpus),
@@ -240,6 +255,11 @@ def test_env(job: TestJob) -> dict[str, str]:
         "VIME_TEST_USE_FP8_ROLLOUT": job.use_fp8_rollout,
         "VIME_TEST_ENABLE_EVAL": job.enable_eval,
     }
+    if cpu_lite:
+        # Lightweight image has no torch/deps baked in; run_test.sh installs the
+        # CPU wheel set before running the contract file.
+        env["VIME_INSTALL_CPU_DEPS"] = "1"
+    return env
 
 
 def plugin_for(job: TestJob) -> dict[str, Any]:
@@ -250,9 +270,27 @@ def plugin_for(job: TestJob) -> dict[str, Any]:
     return docker_plugin(image=job.image)
 
 
+def lite_docker_plugin(image: str = CPU_IMAGE) -> dict[str, Any]:
+    # Lightweight CPU runner (no CUDA image) for pre-commit and plugin
+    # contracts -- the Buildkite equivalent of GitHub-hosted ubuntu-latest.
+    return {
+        "docker#v5.2.0": {
+            "image": image,
+            "always-pull": True,
+            "propagate-environment": True,
+            "environment": [
+                "http_proxy",
+                "https_proxy",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+            ],
+        }
+    }
+
+
 def docker_plugin(*, image: str = IMAGE) -> dict[str, Any]:
-    # CPU-only, in-image runner for pre-commit / plugin-contracts / unit tests.
-    # GPU work goes through h100_k8s_plugin instead.
+    # In-image CPU runner for the unit/utils suite (needs megatron + torch from
+    # the CUDA image). GPU work goes through h100_k8s_plugin instead.
     config: dict[str, Any] = {
         "image": image,
         "always-pull": True,

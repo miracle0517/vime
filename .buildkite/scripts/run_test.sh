@@ -19,6 +19,14 @@ export VIME_TEST_USE_DEEPEP="${VIME_TEST_USE_DEEPEP:-0}"
 export VIME_TEST_USE_FP8_ROLLOUT="${VIME_TEST_USE_FP8_ROLLOUT:-0}"
 export VIME_TEST_ENABLE_EVAL="${VIME_TEST_ENABLE_EVAL:-1}"
 
+# Lightweight CPU runner (plugin contracts) starts from a bare python image, so
+# install the CPU wheel set first. Mirrors the cpu path in pr-test.yml.
+if [[ "${VIME_INSTALL_CPU_DEPS:-0}" == "1" ]]; then
+  echo "--- :python: Install CPU test deps"
+  python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+  python -m pip install pytest numpy packaging pyyaml omegaconf tqdm httpx pybase64 pylatexenc sympy aiohttp pillow
+fi
+
 echo "--- :python: Install vime editable"
 python -m pip install -e . --no-deps --break-system-packages || python -m pip install -e . --no-deps
 
