@@ -367,9 +367,6 @@ def build_vllm_subprocess_env(server_args: dict[str, Any]) -> dict[str, str]:
     env.setdefault("NCCL_CUMEM_ENABLE", "0")
     env["CUDA_VISIBLE_DEVICES"] = server_args["visible_devices"]
     env.setdefault("VLLM_SERVER_DEV_MODE", "1")
-    # DP engines need a longer readiness window in colocate (port of vime PR #125).
-    if int(server_args.get("dp_size", 1) or 1) > 1:
-        env.setdefault("VLLM_ENGINE_READY_TIMEOUT_S", "1800")
     if getattr(args, "colocate", False):
         import vime
 
