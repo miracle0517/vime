@@ -507,32 +507,6 @@ class _VLLMHijack:
                 _GPUWorker.wake_up = _vime_wake_up
                 _GPUWorker.execute_dummy_batch = _vime_execute_dummy_batch
                 _GPUWorker._vime_dummy_batch_patched = True  # type: ignore[attr-defined]
-
-                # ── FIX B: tolerate the colocate startup memory-profiling race ──
-                # determine_available_memory asserts init_free >= post_profile_free; colocated
-                # megatron frees GPU memory DURING the engine's profile_run, so free goes UP and
-                # the assert trips (kills startup). Retry after a short settle — by then megatron's
-                # offload has finished and the snapshot is stable.
-                _orig_determine = _GPUWorker.determine_available_memory
-
-                def _vime_determine_available_memory(self, _o=_orig_determine):
-                    import time as _time
-
-                    for attempt in range(5):
-                        try:
-                            return _o(self)
-                        except AssertionError as e:
-                            if "memory profiling" not in str(e) or attempt == 4:
-                                raise
-                            try:
-                                import torch as _torch
-
-                                _torch.cuda.synchronize()
-                            except Exception:
-                                pass
-                            _time.sleep(4.0)
-
-                _GPUWorker.determine_available_memory = _vime_determine_available_memory
         except Exception:  # pragma: no cover - defensive; never block engine startup
             pass
 
