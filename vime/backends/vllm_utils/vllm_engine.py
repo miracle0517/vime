@@ -441,26 +441,9 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
     ):
         cmd += ["--max-model-len", str(args.rollout_max_context_len)]
 
-    # DP+EP colocate sleep/wake: keep a longer distributed timeout (the weight-sync window — sleep →
-    # wake(['weights']) → update → wake(['kv_cache']) — can exceed the default), but KEEP cudagraph +
-    # async scheduling ENABLED.
-    #
-    # The colocate DP+EP + sleep/wake crash at update_weights (cuMemcpyDtoDAsync segfault, or a
-    # cublas CUBLAS_STATUS_EXECUTION_FAILED → illegal memory access) is fixed at the ROOT by FIX A
-    # in update_weight_from_tensor.py: it skips execute_dummy_batch while the engine is asleep /
-    # only partially woken (weights restored, kv_cache still absent) or mid weight-update. Without
-    # that guard an idle DP rank's busy loop runs a real model forward (e.g. the GDN in_proj GEMM)
-    # against freed / half-written weight memory → the crash. Forcing --enforce-eager /
-    # --no-async-scheduling (the old PR #125 workaround) only HID this by avoiding the cudagraph
-    # path; FIX A removes the cause, so cudagraph + async can stay on. Verified on gb200 2-node 35B
-    # PD: iter0 weight-sync + rollout + train pass with cudagraph FULL + async scheduling enabled.
-    # Explicit --vllm-* overrides still flow through unchanged.
-    if (
-        server_args["dp_size"] > 1
-        and getattr(args, "vllm_enable_sleep_mode", False)
-        and not _user_overrode(args, "vllm_distributed_timeout_seconds")
-    ):
-        cmd += ["--distributed-timeout-seconds", "1800"]
+    # cudagraph + async scheduling stay ENABLED for colocate DP+EP sleep/wake. The update_weights
+    # crash is fixed at the root by FIX A (execute_dummy_batch skip while the engine is not fully
+    # awake) in update_weight_from_tensor.py — no conservative engine-arg overrides are forced here.
 
     if getattr(args, "use_rollout_routing_replay", False):
         cmd += ["--enable-return-routed-experts"]
@@ -546,7 +529,7 @@ def launch_server_process(server_args: dict) -> multiprocessing.Process:
     return p
 
 
-def _wait_worker_process_alive(process: multiprocessing.Process, timeout_s: float = 1200.0) -> None:
+def _wait_worker_process_alive(process: multiprocessing.Process, timeout_s: float = 300.0) -> None:
     """Non-head nodes have no HTTP health endpoint; ensure the subprocess stays up."""
     start = time.time()
     while process.is_alive():
@@ -926,14 +909,10 @@ class VLLMEngine(RayActor):
             return {"ok": True, "sleep_mode": False, "note": "vLLM sleep mode disabled; no /sleep call."}
         # vLLM ``POST /sleep`` reads ``level`` from query params, not JSON body
         # (``vllm.entrypoints.serve.sleep.api_router.sleep``).
-        # Use the generous (tunable) weight-transfer timeout, not a hardcoded 30s: releasing a large
-        # model's weights/KV scales with model size, and under vLLM data parallelism (api_server_count
-        # = dp) the front API server coordinates every DP replica's sleep — a 30B+ DP engine exceeds
-        # 30s and would spuriously ReadTimeout.
         response = requests.post(
             f"{self._http_base()}/sleep",
             params={"level": level},
-            timeout=self._weight_transfer_http_timeout(),
+            timeout=30,
         )
         return _response_json(response)
 
@@ -950,7 +929,7 @@ class VLLMEngine(RayActor):
         response = requests.post(
             f"{self._http_base()}/wake_up",
             params=wake_params,
-            timeout=self._weight_transfer_http_timeout(),
+            timeout=30,
         )
         return _response_json(response)
 
