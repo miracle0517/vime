@@ -454,7 +454,7 @@ class _VLLMHijack:
         IPCWeightTransferEngine.receive_weights = _slime_receive_weights
         IPCWeightTransferEngine._slime_receive_patched = True  # type: ignore[attr-defined]
 
-        # ── FIX A: skip execute_dummy_batch while the engine is asleep / mid weight-update ──
+        # ── FIX A: skip execute_dummy_batch while the engine is asleep / only partially woken ──
         # Port of the UNMERGED vLLM PR #24882. In DP mode the DP coordinator can tell an idle
         # replica to run a dummy batch (_dummy_run forward) to stay collective-synced. During
         # vime's colocate weight sync the engine is slept (release_memory_occupation level=0 →
@@ -490,13 +490,16 @@ class _VLLMHijack:
 
                 def _vime_execute_dummy_batch(self, _o=_orig_dummy):
                     # A dummy _dummy_run forward needs BOTH weights and kv_cache present. Run it only
-                    # when the engine is FULLY awake and not mid weight-update. Tracking the awake-tag
-                    # set (not a single bool) avoids a kv_cache-only wake — weights still asleep —
-                    # wrongly re-enabling the forward against freed weight memory (vLLM #24882).
-                    # Default {} on the attr is fully-awake: an engine that never slept runs normally.
+                    # when the engine is FULLY awake. During vime's staged weight sync the engine is
+                    # woken weights-only (kv_cache still asleep), so `fully_awake` is False for the
+                    # whole update window and the forward is skipped — covering the crash. Tracking
+                    # the awake-tag set (not a single bool) avoids a kv_cache-only wake — weights
+                    # still asleep — wrongly re-enabling the forward against freed weight memory
+                    # (vLLM #24882). Default {} on the attr is fully-awake: an engine that never
+                    # slept runs normally.
                     awake = getattr(self, "_vime_awake_tags", _ALL_TAGS)
                     fully_awake = _ALL_TAGS <= set(awake)
-                    if not fully_awake or getattr(self, "_weight_update_active", False):
+                    if not fully_awake:
                         return
                     return _o(self)
 
