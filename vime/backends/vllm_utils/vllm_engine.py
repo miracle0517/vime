@@ -444,22 +444,26 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
     ):
         cmd += ["--max-model-len", str(args.rollout_max_context_len)]
 
-    # Conservative DP+EP sleep-mode defaults (port of vime PR #125). DP engines in colocated
-    # sleep/offload mode are flaky in vLLM's CUDA-graph / async-scheduler startup path for large
-    # MoE checkpoints — colocate DP+EP + cudagraph + sleep/wake segfaults at update_weights
-    # (cuMemcpyDtoDAsync). Forcing eager + sync scheduling makes DP+EP work; explicit --vllm-*
-    # overrides still flow through. (TP-only sidesteps the bug but DP+EP is the target topology.)
+    # DP+EP colocate sleep/wake: keep a longer distributed timeout (the weight-sync window — sleep →
+    # wake(['weights']) → update → wake(['kv_cache']) — can exceed the default), but KEEP cudagraph +
+    # async scheduling ENABLED.
+    #
+    # The colocate DP+EP + sleep/wake crash at update_weights (cuMemcpyDtoDAsync segfault, or a
+    # cublas CUBLAS_STATUS_EXECUTION_FAILED → illegal memory access) is fixed at the ROOT by FIX A
+    # in update_weight_from_tensor.py: it skips execute_dummy_batch while the engine is asleep /
+    # only partially woken (weights restored, kv_cache still absent) or mid weight-update. Without
+    # that guard an idle DP rank's busy loop runs a real model forward (e.g. the GDN in_proj GEMM)
+    # against freed / half-written weight memory → the crash. Forcing --enforce-eager /
+    # --no-async-scheduling (the old PR #125 workaround) only HID this by avoiding the cudagraph
+    # path; FIX A removes the cause, so cudagraph + async can stay on. Verified on gb200 2-node 35B
+    # PD: iter0 weight-sync + rollout + train pass with cudagraph FULL + async scheduling enabled.
+    # Explicit --vllm-* overrides still flow through unchanged.
     if (
         server_args["dp_size"] > 1
         and getattr(args, "vllm_enable_sleep_mode", False)
-        and not _user_overrode(args, "vllm_async_scheduling")
+        and not _user_overrode(args, "vllm_distributed_timeout_seconds")
     ):
-        cmd += ["--no-async-scheduling"]
-    if server_args["dp_size"] > 1 and getattr(args, "vllm_enable_sleep_mode", False):
-        if not _user_overrode(args, "vllm_enforce_eager"):
-            cmd += ["--enforce-eager"]
-        if not _user_overrode(args, "vllm_distributed_timeout_seconds"):
-            cmd += ["--distributed-timeout-seconds", "1800"]
+        cmd += ["--distributed-timeout-seconds", "1800"]
 
     if getattr(args, "use_rollout_routing_replay", False):
         cmd += ["--enable-return-routed-experts"]
