@@ -137,6 +137,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.colocate:
             update_weight_cls = UpdateWeightFromTensor
+        elif getattr(self.args, "update_weight_mode", "full") == "delta":
+            # Lazy import: keeps the delta module (and its numpy/safetensors/zstd
+            # encode path) off the import graph when delta mode is unused, for
+            # backward-compat with images/configs that never touch it.
+            from .update_weight.update_weight_from_distributed_delta import UpdateWeightFromDistributedDelta
+
+            update_weight_cls = UpdateWeightFromDistributedDelta
         else:
             update_weight_cls = UpdateWeightFromDistributed
         self.weight_updater = update_weight_cls(

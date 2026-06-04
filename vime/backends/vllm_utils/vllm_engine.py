@@ -976,10 +976,47 @@ class VLLMEngine(RayActor):
         }
         return self._post_vllm_update_weights_http(update_info)
 
-    def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
-        """``POST /collective_rpc`` with ``reload_weights`` and ``weights_path``."""
+    def update_weights_from_disk(
+        self,
+        model_path: str,
+        load_format: str | None = None,
+        weight_version: str | None = None,
+        files: list[str] | None = None,
+    ):
+        """``POST /collective_rpc`` to reload weights from disk.
+
+        Standard HF reload (``load_format`` is None / not "delta"): calls
+        ``reload_weights`` with ``weights_path=model_path``.
+
+        Delta reload (``load_format="delta"``): ``model_path`` is the parent of
+        the per-sync version subdir and ``files`` are the safetensors basenames
+        within it; calls the ``apply_delta_from_disk`` worker-extension method
+        (registered via ``--worker-extension-cls vLLMColocateWorkerExtension``).
+        Records ``weight_version`` on success so ``get_weight_version`` tracks the
+        trainer's counter.
+        """
         if self.node_rank != 0:
             return
+        if load_format == "delta":
+            response = requests.post(
+                f"{self._http_base()}/collective_rpc",
+                json={
+                    "method": "apply_delta_from_disk",
+                    "kwargs": {
+                        "model_path": model_path,
+                        "files": files or [],
+                        "chunk_byte_cap": int(
+                            getattr(self.args, "update_weight_delta_chunk_bytes", 512 * 1024 * 1024)
+                        ),
+                        "read_workers": int(getattr(self.args, "update_weight_delta_read_workers", 4)),
+                    },
+                },
+                timeout=600,
+            )
+            result = _response_json(response)
+            if weight_version is not None:
+                self._weight_version = str(weight_version)
+            return result
         del load_format
         response = requests.post(
             f"{self._http_base()}/collective_rpc",
@@ -989,7 +1026,62 @@ class VLLMEngine(RayActor):
             },
             timeout=600,
         )
+        if weight_version is not None:
+            self._weight_version = str(weight_version)
         return _response_json(response)
+
+    def update_weights_from_distributed_delta(
+        self,
+        *,
+        delta_spec_json: str,
+        weight_version: str | None = None,
+    ):
+        """NCCL delta transport: ``POST /collective_rpc`` invoking the
+        ``apply_delta_from_distributed`` worker-extension method.
+
+        The worker receives the (__positions__, __values__) payload on the vLLM
+        weight-transfer PyNCCL communicator; the trainer broadcasts it on the
+        matching ``PyNcclCommunicator`` concurrently. ``delta_spec_json`` carries
+        the per-bucket manifest (encoding, per-param slices, checksum) plus the
+        positions/values shapes+dtype the receiver needs to allocate recv buffers.
+
+        Returns the ``requests.Response`` immediately is NOT what we do here — this
+        is fired via a Ray ``.remote()`` from the trainer so the HTTP POST blocks
+        only the engine actor thread while the trainer broadcasts.
+        """
+        if self.node_rank != 0:
+            return None
+        response = requests.post(
+            f"{self._http_base()}/collective_rpc",
+            json={
+                "method": "apply_delta_from_distributed",
+                "kwargs": {
+                    "delta_spec_json": delta_spec_json,
+                    "chunk_byte_cap": int(
+                        getattr(self.args, "update_weight_delta_chunk_bytes", 512 * 1024 * 1024)
+                    ),
+                },
+            },
+            timeout=self._weight_transfer_http_timeout(),
+        )
+        result = _response_json(response)
+        if weight_version is not None:
+            self._weight_version = str(weight_version)
+        return result
+
+    def set_weight_version(self, new_version: str):
+        """Bump the engine's recorded weight version without changing weights.
+
+        Used by the delta-update path when a sync produced no bytes (e.g. an
+        all-zero diff): the engine's recorded version must still track the
+        updater's, else the CI version-equality check trips. vLLM has no
+        server-side weight-version store, so this is a local record on the engine
+        actor (consistent with how ``update_weights_*`` record ``_weight_version``).
+        """
+        if self.node_rank != 0:
+            return None
+        self._weight_version = str(new_version)
+        return {"ok": True, "weight_version": self._weight_version}
 
     def pause_generation(self):
         """``POST /pause`` with mode="keep"; returns the ``requests.Response``."""
