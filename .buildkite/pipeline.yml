@@ -1,0 +1,82 @@
+# Document 1 is the bootstrap loaded by Buildkite. It resolves docs-only
+# skip-ci, then uploads document 2 with concrete upload-step conditions.
+steps:
+  - label: ":github: Resolve skip-ci & upload vime pipeline"
+    key: upload-ci-pipeline
+    commands:
+      - "bash .buildkite/scripts/upload_pipeline_with_skip_ci.sh"
+    agents:
+      queue: "cpu_queue_premerge"
+
+---
+steps:
+  - label: "Upload Core Pipeline"
+    key: upload-core-pipeline
+    if: __UPLOAD_CORE_IF__
+    commands:
+      - "python3 .buildkite/scripts/upload_suite.py core | buildkite-agent pipeline upload"
+    agents:
+      queue: "cpu_queue_premerge"
+
+  - label: "Upload Short Pipeline"
+    key: upload-short-pipeline
+    depends_on: upload-core-pipeline
+    if: __UPLOAD_SHORT_IF__
+    commands:
+      - "python3 .buildkite/scripts/upload_suite.py short | buildkite-agent pipeline upload"
+    agents:
+      queue: "cpu_queue_premerge"
+
+  - label: "Upload vLLM Config Pipeline"
+    key: upload-vllm-config-pipeline
+    depends_on: upload-core-pipeline
+    if: __UPLOAD_VLLM_CONFIG_IF__
+    commands:
+      - "python3 .buildkite/scripts/upload_suite.py vllm-config | buildkite-agent pipeline upload"
+    agents:
+      queue: "cpu_queue_premerge"
+
+  - label: "Upload Megatron Pipeline"
+    key: upload-megatron-pipeline
+    depends_on: upload-core-pipeline
+    if: __UPLOAD_MEGATRON_IF__
+    commands:
+      - "python3 .buildkite/scripts/upload_suite.py megatron | buildkite-agent pipeline upload"
+    agents:
+      queue: "cpu_queue_premerge"
+
+  - label: "Upload Precision Pipeline"
+    key: upload-precision-pipeline
+    depends_on: upload-core-pipeline
+    if: __UPLOAD_PRECISION_IF__
+    commands:
+      - "python3 .buildkite/scripts/upload_suite.py precision | buildkite-agent pipeline upload"
+    agents:
+      queue: "cpu_queue_premerge"
+
+  - label: "Upload Checkpoint Pipeline"
+    key: upload-ckpt-pipeline
+    depends_on: upload-core-pipeline
+    if: __UPLOAD_CKPT_IF__
+    commands:
+      - "python3 .buildkite/scripts/upload_suite.py ckpt | buildkite-agent pipeline upload"
+    agents:
+      queue: "cpu_queue_premerge"
+
+  - label: "Upload Image Release Pipeline"
+    key: upload-image-pipeline
+    depends_on: upload-core-pipeline
+    if: __UPLOAD_IMAGE_IF__
+    commands:
+      - "python3 .buildkite/scripts/upload_suite.py image | buildkite-agent pipeline upload"
+    agents:
+      queue: "cpu_queue_premerge"
+
+  - label: "Upload Changed Tests Pipeline"
+    key: upload-changed-pipeline
+    depends_on: upload-core-pipeline
+    if: __UPLOAD_CHANGED_IF__
+    commands:
+      - "python3 .buildkite/scripts/upload_suite.py changed | buildkite-agent pipeline upload"
+    agents:
+      queue: "cpu_queue_premerge"
