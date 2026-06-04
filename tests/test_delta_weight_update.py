@@ -101,7 +101,14 @@ def execute():
             "--update-weight-delta-keep-files "
         )
 
-        ci_args = "--ci-test "
+        # Disable the step-0 actor/ref KL invariant: with entropy-coef>0 (needed so
+        # tied-reward groups still produce a nonzero gradient -> real delta files),
+        # low_var_kl is ~6e-3 at step 0, not <1e-8. Verified config-only via a
+        # full-mode control run (gb200 8426: full-mode fails the SAME gate identically,
+        # kl_loss=0.0069), so the gate is orthogonal to delta correctness. The
+        # train_rollout_logprob_abs_diff<=0.1 gate stays active (0.025) and still
+        # guards that rollout==train through the delta sync.
+        ci_args = "--ci-test --ci-disable-kl-checker "
 
         misc_args = (
             "--attention-dropout 0.0 "
