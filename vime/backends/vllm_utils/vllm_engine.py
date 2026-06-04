@@ -455,7 +455,16 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
     else:
         cmd += ["--weight-transfer-config", '{"backend":"nccl"}']
 
-    if getattr(args, "colocate", False) and "--worker-extension-cls" not in cmd:
+    # The worker-extension class carries both the colocate IPC receive hook AND
+    # the delta-sync receivers (apply_delta_from_disk / apply_delta_from_distributed),
+    # which are invoked by name via POST /collective_rpc. Delta sync targets the
+    # NON-colocate case (large-model / cross-DC bandwidth), so wire the extension
+    # whenever colocate OR delta mode is on -- otherwise the rollout worker has no
+    # delta receiver and collective_rpc raises NotImplementedError.
+    if (
+        getattr(args, "colocate", False)
+        or getattr(args, "update_weight_mode", "full") == "delta"
+    ) and "--worker-extension-cls" not in cmd:
         cmd += [
             "--worker-extension-cls",
             "vime.backends.megatron_utils.update_weight.update_weight_from_tensor.vLLMColocateWorkerExtension",
