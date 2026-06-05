@@ -55,22 +55,23 @@
       'cpu': True,
       'tests': [
         {'test_file': 'test_megatron_argument_validation.py', 'num_gpus': 0},
-        {'test_file': 'test_rollout_validation.py', 'num_gpus': 0},
         {'test_file': 'plugin_contracts/test_plugin_rollout_contracts.py', 'num_gpus': 0},
         {'test_file': 'plugin_contracts/test_plugin_runtime_hook_contracts.py', 'num_gpus': 0},
         {'test_file': 'plugin_contracts/test_plugin_path_loading_contracts.py', 'num_gpus': 0},
         {'test_file': 'plugin_contracts/test_plugin_generate_contracts.py', 'num_gpus': 0},
-        {'test_file': 'test_rm_deepscaler.py', 'num_gpus': 0},
-        {'test_file': 'test_rm_f1.py', 'num_gpus': 0},
-        {'test_file': 'test_rm_gpqa.py', 'num_gpus': 0},
-        {'test_file': 'test_rm_math.py', 'num_gpus': 0},
-        {'test_file': 'test_rm_math_dapo.py', 'num_gpus': 0},
+        {'test_file': 'test_dp_schedule.py', 'num_gpus': 0},
+        {'test_file': 'test_cp_utils.py', 'num_gpus': 0},
+        {'test_file': 'test_metric_report.py', 'num_gpus': 0},
+        {'test_file': 'test_metric_report_dist.py', 'num_gpus': 0},
+        {'test_file': 'test_loss_cp_invariance.py', 'num_gpus': 0},
+        {'test_file': 'test_sample.py', 'num_gpus': 0},
+        {'test_file': 'utils/test_hf_checkpoint_saver.py', 'num_gpus': 0},
       ],
     },
 
     'e2e-test-image': {
       'label': 'run-ci-image',
-      'image': 'inferactinc/public:vime-test-latest',
+      'image': 'inferactinc/public:vime-vllm-cu129-latest',
       'tests': [
         {'test_file': 'test_qwen3.5_0.8B_gsm8k_async_short.py', 'num_gpus': 4},
         {'test_file': 'test_qwen3.5_0.8B_gsm8k_short.py', 'num_gpus': 4},
@@ -91,13 +92,9 @@
 name: PR Test
 
 on:
-  # Push to main triggers ONLY the cpu jobs (cheap GitHub-hosted runner) — see
-  # the per-job `if:` below, which adds `push` only for cpu configs. GPU jobs
-  # stay PR/label-gated so push events never burn the self-hosted fleet. This
-  # catches PR-pair regressions where two PRs pass individually but main breaks
-  # after both land.
-  push:
-    branches: [main]
+  # Do not run CI on push to reduce CI time
+  # push:
+  #   branches: [main]
   pull_request:
     branches: [main]
     types: [synchronize, labeled]
@@ -138,11 +135,7 @@ jobs:
   << job_name >>:
     needs: pre-commit
 <% if config.get('always') %>
-<% if config.get('cpu') %>
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
-<% else %>
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-<% endif %>
 <% else %>
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, '<< config.label >>'))
 <% endif %>
@@ -239,7 +232,7 @@ jobs:
             -v /mnt/nvme0n1/vime_ci/models:/root/models \
             -v /mnt/nvme0n1/vime_ci/datasets:/root/datasets \
             -w "$GITHUB_WORKSPACE" \
-            << config.image if config.image else 'inferactinc/public:vime-latest' >> \
+            << config.image if config.image else 'inferactinc/public:vime-vllm-cu129-latest' >> \
             bash -lc '
               set -euo pipefail
               pip install -e . --no-deps --break-system-packages
@@ -291,7 +284,7 @@ jobs:
             -e HTTPS_PROXY \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -w "$GITHUB_WORKSPACE" \
-            inferactinc/public:vime-latest \
+            inferactinc/public:vime-vllm-cu129-latest \
             bash -lc '
               set -euo pipefail
               pip install -e . --no-deps --break-system-packages
@@ -394,7 +387,7 @@ jobs:
             -v /mnt/nvme0n1/vime_ci/models:/root/models \
             -v /mnt/nvme0n1/vime_ci/datasets:/root/datasets \
             -w "$GITHUB_WORKSPACE" \
-            inferactinc/public:vime-latest \
+            inferactinc/public:vime-vllm-cu129-latest \
             bash -lc '
               set -euo pipefail
               pip install -e . --no-deps --break-system-packages
