@@ -19,15 +19,14 @@ from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.utils import get_model_config
+from megatron.training.global_vars import get_args
+from megatron.training.training import get_model
+from tqdm import tqdm
 
 try:
     from megatron.core.pipeline_parallel.utils import unwrap_model
 except ImportError:
     from megatron.core.utils import unwrap_model
-from megatron.training.global_vars import get_args
-from megatron.training.training import get_model
-from tqdm import tqdm
-
 from vime.utils import logging_utils
 from vime.utils.memory_utils import clear_memory
 
