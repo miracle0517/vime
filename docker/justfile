@@ -1,5 +1,5 @@
 release-primary:
-    ARG_TAG_POSTFIX="" ARG_BUILD_EXTRA_ARGS="" just _release-raw
+    ARG_TAG_POSTFIX="" ARG_BUILD_EXTRA_ARGS="--build-arg INSTALL_FLASHQLA=1" just _release-raw
 
 # Should be executed on ARM machines.
 # Inherits the Dockerfile's default cu129 BASE_IMAGE; that tag is a multi-arch
@@ -37,7 +37,7 @@ debug:
     VERSION="$(cat docker/version.txt | tr -d '\n')"
     IMAGE_TAG=${VERSION}
 
-    docker build -f docker/Dockerfile . --build-arg HTTP_PROXY="$http_proxy" --build-arg HTTPS_PROXY="$https_proxy" --build-arg NO_PROXY="localhost,127.0.0.1" -t aosheninferact/vime-vllm-test:$IMAGE_TAG
+    docker build -f docker/Dockerfile . --build-arg HTTP_PROXY="$http_proxy" --build-arg HTTPS_PROXY="$https_proxy" --build-arg NO_PROXY="localhost,127.0.0.1" --build-arg INSTALL_FLASHQLA=1 -t aosheninferact/vime-vllm-test:$IMAGE_TAG
     docker push aosheninferact/vime-vllm-test:$IMAGE_TAG
 
     docker tag aosheninferact/vime-vllm-test:$IMAGE_TAG aosheninferact/vime-vllm-test:latest
