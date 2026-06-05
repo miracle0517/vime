@@ -101,13 +101,14 @@ If you need to add attrs after part of the function has executed, use an inner `
 - `trace_function(...)` for the outer function-level lifecycle span
 - nested `trace_span(...)` for important sub-steps such as generation, RM, filtering, or post-processing
 
-For per-turn attrs around an HTTP call, wrap it in `trace_span` directly:
+If you want to record vLLM generation metadata in a consistent way, reuse `build_vllm_meta_trace_attrs`:
 
 ```python
-from vime.utils.trace_utils import trace_span
+from vime.utils.trace_utils import build_vllm_meta_trace_attrs, trace_span
 
-with trace_span(sample, "vllm_generate", attrs={"max_tokens": params["max_new_tokens"]}):
+with trace_span(sample, "vllm_generate") as span:
     output = await post(url, payload)
+    span.update(build_vllm_meta_trace_attrs(output))
 ```
 
 ## Tips

@@ -101,13 +101,14 @@ async def custom_rollout_batch(samples, **kwargs):
 - 外层用 `trace_function(...)` 表示整个函数生命周期
 - 内层用 `trace_span(...)` 标记 generation、RM、filter、post-process 等关键子步骤
 
-如果想在某个 HTTP 调用周围记录每轮的 attrs，可以直接套一层 `trace_span`：
+如果想统一记录 vLLM 返回的 generation 元信息，可以复用 `build_vllm_meta_trace_attrs`：
 
 ```python
-from vime.utils.trace_utils import trace_span
+from vime.utils.trace_utils import build_vllm_meta_trace_attrs, trace_span
 
-with trace_span(sample, "vllm_generate", attrs={"max_tokens": params["max_new_tokens"]}):
+with trace_span(sample, "vllm_generate") as span:
     output = await post(url, payload)
+    span.update(build_vllm_meta_trace_attrs(output))
 ```
 
 ## 使用建议

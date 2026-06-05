@@ -66,3 +66,11 @@ For long-running jobs:
 - If startup health checks fail on large MoE models, increase `--rollout-health-check-first-wait`.
 - If transient load spikes cause false positives, increase `--rollout-health-check-timeout`.
 - If an engine repeatedly restarts after weight sync, inspect the vLLM logs and the latest rollout debug dump.
+- If the trainer fails rather than rollout, resume from checkpoint and use debug replay to isolate whether the saved rollout batch is valid.
+
+## Related Docs
+
+- [Debugging](../developer_guide/debug.md)
+- [Trace Viewer](../developer_guide/trace.md)
+- [Profiling](../developer_guide/profiling.md)
+- [CI](../developer_guide/ci.md)
