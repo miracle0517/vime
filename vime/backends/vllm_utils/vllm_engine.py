@@ -786,22 +786,18 @@ class VLLMEngine(RayActor):
         return response
 
     def flush_cache(self):
-        """Clear prefix cache via ``POST /reset_prefix_cache``."""
+        """Reset the prefix cache via ``POST /reset_prefix_cache``.
+
+        vLLM's endpoint always returns 200 (it does not signal a busy engine),
+        so a single call suffices — no retry loop. ``reset_running_requests``
+        stays False: if any block is still in use the server skips the reset and
+        still returns 200; vime only calls this when the engine is idle
+        (colocate sleep / keep-mode pause).
+        """
         if self.node_rank != 0:
             return
-        params = {"reset_running_requests": False, "reset_external": False}
-        for _ in range(60):
-            try:
-                response = requests.post(f"{self._http_base()}/reset_prefix_cache", params=params, timeout=60)
-                if response.status_code == 200:
-                    return
-            except requests.ConnectionError:
-                raise
-            except Exception as e:
-                logger.info("Error resetting vLLM prefix cache: %s", e)
-                time.sleep(1)
-                continue
-        raise TimeoutError("Timeout while resetting vLLM prefix cache (reset_prefix_cache).")
+        params = {"reset_running_requests": False}
+        requests.post(f"{self._http_base()}/reset_prefix_cache", params=params, timeout=60).raise_for_status()
 
     def get_url(self):
         """Worker HTTP base URL, or ``None`` when ``node_rank != 0``."""
