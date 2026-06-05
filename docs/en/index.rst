@@ -49,7 +49,6 @@ vime is the RL-framework behind GLM-4.7, GLM-4.6 and GLM-4.5. Apart from models 
    :maxdepth: 1
    :caption: Other Usage
 
-   _examples_synced/search-r1/README.md
    _examples_synced/fully_async/README.md
    _examples_synced/retool/README.md
    _examples_synced/multi_agent/README.md

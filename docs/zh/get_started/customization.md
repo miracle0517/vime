@@ -84,8 +84,6 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
 - 添加检索增强生成（RAG）
 - 多轮对话处理
 
-**示例**: 参见 [examples/search-r1/generate_with_search.py](../../../examples/search-r1/generate_with_search.py)
-
 ---
 
 ### 3. 奖励模型 (`--custom-rm-path`)

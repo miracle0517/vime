@@ -84,8 +84,6 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
 - Adding retrieval-augmented generation (RAG)
 - Multi-turn conversation handling
 
-**Example**: See [examples/search-r1/generate_with_search.py](../../../examples/search-r1/generate_with_search.py)
-
 ---
 
 ### 3. Reward Model (`--custom-rm-path`)
