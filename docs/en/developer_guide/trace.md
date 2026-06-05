@@ -41,7 +41,7 @@ By default it also starts a local static server so you can open the generated HT
 
 ## Instrument custom code
 
-For custom rollout or reward code, reuse helpers from `vime.utils.trace_utils`:
+For custom rollout or reward code — including custom agent steps, tool calls, sandbox execution, and verifier calls in agentic workflows — reuse helpers from `vime.utils.trace_utils`:
 
 - `trace_span(target, name, attrs=...)`: record a duration span.
 - `trace_event(target, name, attrs=...)`: record an instant event.
@@ -101,13 +101,14 @@ If you need to add attrs after part of the function has executed, use an inner `
 - `trace_function(...)` for the outer function-level lifecycle span
 - nested `trace_span(...)` for important sub-steps such as generation, RM, filtering, or post-processing
 
-For per-turn attrs around an HTTP call, wrap it in `trace_span` directly:
+If you want to record vLLM generation metadata in a consistent way, reuse `build_vllm_meta_trace_attrs`:
 
 ```python
-from vime.utils.trace_utils import trace_span
+from vime.utils.trace_utils import build_vllm_meta_trace_attrs, trace_span
 
-with trace_span(sample, "vllm_generate", attrs={"max_tokens": params["max_new_tokens"]}):
+with trace_span(sample, "vllm_generate") as span:
     output = await post(url, payload)
+    span.update(build_vllm_meta_trace_attrs(output))
 ```
 
 ## Tips

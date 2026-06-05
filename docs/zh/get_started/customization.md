@@ -29,6 +29,23 @@ vime 通过函数路径参数提供了广泛的自定义能力。这些参数允
 | [`--custom-megatron-before-log-prob-hook-path`](#17-megatron-hook) | log probability 计算前的自定义逻辑。 |
 | [`--custom-megatron-before-train-step-hook-path`](#17-megatron-hook) | 每个训练步骤前的自定义逻辑。 |
 
+## 通过 customization 接口实现 agentic workflow
+
+agentic workflow——multi-turn tool use、sandbox interaction、environment feedback、verifier/test-based reward——是一类重要的训练数据生成 workflow。它们通过 vime 已有的 customization 接口接入，vime 本身并不需要变成一个单独的 agent framework。
+
+绝大多数 agentic 场景下，**建议从 `--custom-generate-function-path` 加 `--custom-rm-path` 开始**，只有在默认 rollout 循环无法满足需求时再去覆盖整个 rollout function。
+
+| 想做的事 | 应使用的接口 |
+| :--- | :--- |
+| 让每条 sample 跑自定义的 agent loop、tool call、RAG、sandbox 执行、browser/terminal 交互或多轮生成，同时复用 vime 默认 rollout loop | [`--custom-generate-function-path`](#2-自定义生成函数---custom-generate-function-path) |
+| 实现 verifier reward、test-based reward、environment 成功判定、rule-based reward 或调用外部 reward 服务 | [`--custom-rm-path`](#3-奖励模型---custom-rm-path) |
+| 替换整个 rollout 编排（只在 per-sample 自定义不够用时使用） | [`--rollout-function-path`](#1-rollout-函数---rollout-function-path) |
+| 控制任务采样、缓冲、回填，或自定义 prompt / task 数据源 | [`--data-source-path`](#15-数据源---data-source-path) |
+| 给 agentic 输出附加自定义 loss mask、metadata，或转换成训练数据 | [`--rollout-data-postprocess-path`](#8-rollout-数据后处理---rollout-data-postprocess-path)、[`--custom-convert-samples-to-train-data-path`](#13-样本转训练数据---custom-convert-samples-to-train-data-path) |
+| 调试长耗时的 custom generation、verifier、tool call 或 sandbox 调用 | [`vime.utils.trace_utils`](../developer_guide/trace.md) 中的 trace 工具 |
+
+这一模式的原生示例：[`examples/multi_agent`](../../../examples/multi_agent/README.md) 中基于 `--rollout-function-path` 的多 agent 模式，以及 [`examples/fully_async`](../../../examples/fully_async/README.md) 中适合 long-tail agentic 场景的 fully-async rollout，两者外层都走 vime 默认的 `vllm_rollout`。
+
 ## 详细接口参考
 
 ### 1. Rollout 函数 (`--rollout-function-path`)
@@ -66,8 +83,6 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
 - 实现工具调用（tool-calling）或函数调用（function-calling）能力
 - 添加检索增强生成（RAG）
 - 多轮对话处理
-
-**示例**: 参见 [examples/search-r1/generate_with_search.py](../../../examples/search-r1/generate_with_search.py)
 
 ---
 
@@ -295,6 +310,7 @@ dict: {
     "rollout_routed_experts": list,       # 路由专家（用于 MoE）
     "metadata": list,                     # 训练元数据
     "multimodal_train_inputs": list,      # 多模态张量（用于 VLM）
+    "teacher_log_probs": list,            # 教师 log 概率（用于蒸馏）
 }
 ```
 

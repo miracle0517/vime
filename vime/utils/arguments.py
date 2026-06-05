@@ -470,13 +470,13 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
                 "--rollout-health-check-interval",
                 type=float,
                 default=30.0,
-                help="Interval in seconds between rollout engine /health_generate checks during generate/eval.",
+                help="Interval in seconds between rollout engine /health checks during generate/eval.",
             )
             parser.add_argument(
                 "--rollout-health-check-timeout",
                 type=float,
                 default=30.0,
-                help="Timeout in seconds to wait for a rollout engine /health_generate response before killing it.",
+                help="Timeout in seconds to wait for a rollout engine /health response before killing it.",
             )
             parser.add_argument(
                 "--rollout-health-check-first-wait",

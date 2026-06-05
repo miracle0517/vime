@@ -41,7 +41,7 @@ python tools/trace_timeline_viewer.py /path/to/debug/rollout_0.pt
 
 ## 给自定义代码打点
 
-在自定义 rollout 或 reward 逻辑中，可以直接复用 `vime.utils.trace_utils` 里的工具：
+在自定义 rollout 或 reward 逻辑中——包括 agentic workflow 里的 agent step、tool call、sandbox 执行、verifier 调用等——可以直接复用 `vime.utils.trace_utils` 里的工具：
 
 - `trace_span(target, name, attrs=...)`：记录一段持续时间。
 - `trace_event(target, name, attrs=...)`：记录一个瞬时事件。
@@ -101,13 +101,14 @@ async def custom_rollout_batch(samples, **kwargs):
 - 外层用 `trace_function(...)` 表示整个函数生命周期
 - 内层用 `trace_span(...)` 标记 generation、RM、filter、post-process 等关键子步骤
 
-如果想在某个 HTTP 调用周围记录每轮的 attrs，可以直接套一层 `trace_span`：
+如果想统一记录 vLLM 返回的 generation 元信息，可以复用 `build_vllm_meta_trace_attrs`：
 
 ```python
-from vime.utils.trace_utils import trace_span
+from vime.utils.trace_utils import build_vllm_meta_trace_attrs, trace_span
 
-with trace_span(sample, "vllm_generate", attrs={"max_tokens": params["max_new_tokens"]}):
+with trace_span(sample, "vllm_generate") as span:
     output = await post(url, payload)
+    span.update(build_vllm_meta_trace_attrs(output))
 ```
 
 ## 使用建议

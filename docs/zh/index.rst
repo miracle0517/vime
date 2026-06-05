@@ -49,9 +49,7 @@ vime 是 GLM-4.7、GLM-4.6、GLM-4.5 背后的 RL 训练框架。除此之外，
    :maxdepth: 1
    :caption: 其他用法
 
-   _examples_synced/search-r1/README.md
    _examples_synced/fully_async/README.md
-   _examples_synced/retool/README.md
    _examples_synced/multi_agent/README.md
 
 .. toctree::

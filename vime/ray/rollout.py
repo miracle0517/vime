@@ -1251,7 +1251,7 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
 
 
 def _compute_spec_metrics(args, all_samples: list[Sample]):
-    if args.vllm_speculative_config is None:
+    if getattr(args, "vllm_speculative_config", None) is None:
         return {}
     num_samples = len(all_samples)
     metrics = {}

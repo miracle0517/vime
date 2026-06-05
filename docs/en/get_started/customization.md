@@ -29,6 +29,23 @@ Below is a summary of all available customization interfaces and their purposes.
 | [`--custom-megatron-before-log-prob-hook-path`](#17-megatron-hooks) | Custom logic before log probability computation. |
 | [`--custom-megatron-before-train-step-hook-path`](#17-megatron-hooks) | Custom logic before each training step. |
 
+## Agentic workflows through customization interfaces
+
+Agentic workflows — multi-turn tool use, sandbox interaction, environment feedback, verifier/test-based rewards — are an important class of data generation workflows. They plug into vime through the existing customization interfaces; vime does not require a separate agent framework.
+
+For most agentic use cases, **start with `--custom-generate-function-path` plus `--custom-rm-path`**, and only override the full rollout function when the default rollout loop is insufficient.
+
+| If you need to … | Use |
+| :--- | :--- |
+| Run a custom agent loop, tool calls, RAG, sandbox execution, browser/terminal interaction, or multi-turn generation for each sample, while reusing vime's default rollout loop | [`--custom-generate-function-path`](#2-custom-generate-function---custom-generate-function-path) |
+| Compute verifier rewards, test-based rewards, environment success checks, rule-based rewards, or call an external reward service | [`--custom-rm-path`](#3-reward-model---custom-rm-path) |
+| Replace the entire rollout orchestration (only when per-sample customization is not enough) | [`--rollout-function-path`](#1-rollout-function---rollout-function-path) |
+| Control task sampling, buffering, requeueing, or custom prompt/task sources | [`--data-source-path`](#15-data-source---data-source-path) |
+| Attach custom loss masks, metadata, or convert agentic outputs into training data | [`--rollout-data-postprocess-path`](#8-rollout-data-postprocess---rollout-data-postprocess-path), [`--custom-convert-samples-to-train-data-path`](#13-samples-to-train-data-conversion---custom-convert-samples-to-train-data-path) |
+| Debug long-running custom generation, verifier calls, tool calls, or sandbox steps | trace utilities in [`vime.utils.trace_utils`](../developer_guide/trace.md) |
+
+Native examples of this pattern: [`examples/multi_agent`](../../../examples/multi_agent/README.md) (a `--rollout-function-path`-based multi-agent pattern) and [`examples/fully_async`](../../../examples/fully_async/README.md) (long-tail agentic generation), both keeping vime's default `vllm_rollout` outer loop.
+
 ## Detailed Interface Reference
 
 ### 1. Rollout Function (`--rollout-function-path`)
@@ -66,8 +83,6 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
 - Implementing tool-calling or function-calling capabilities
 - Adding retrieval-augmented generation (RAG)
 - Multi-turn conversation handling
-
-**Example**: See [examples/search-r1/generate_with_search.py](../../../examples/search-r1/generate_with_search.py)
 
 ---
 
@@ -295,6 +310,7 @@ dict: {
     "rollout_routed_experts": list,       # Routed experts (for MoE)
     "metadata": list,                     # Train metadata
     "multimodal_train_inputs": list,      # Multimodal tensors (for VLM)
+    "teacher_log_probs": list,            # Teacher log probs (for distillation)
 }
 ```
 
