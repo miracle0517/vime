@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 import torch
 
@@ -55,7 +56,7 @@ def analyze_nccl_xfer_layout(
     shape: Sequence[int],
     dtype: torch.dtype,
     *,
-    quantization_config: dict | None = None,
+    quantization_config: Mapping[str, Any] | object | None = None,
 ) -> NcclXferLayoutDecision:
     """Classify whether a model weight can use the MVP NCCL Xfer layout mapping.
 
@@ -64,7 +65,7 @@ def analyze_nccl_xfer_layout(
     path instead of entering a partially implemented native transfer.
     """
 
-    if quantization_config and quantization_config.get("quant_method") == "compressed-tensors":
+    if _get_quant_method(quantization_config) == "compressed-tensors":
         return NcclXferLayoutDecision(False, "compressed-tensors quantized weights require broadcast fallback")
 
     ndim = len(shape)
@@ -101,3 +102,11 @@ def _endswith_any(name: str, suffixes: Sequence[str]) -> bool:
 
 def _contains_any(name: str, needles: Sequence[str]) -> bool:
     return any(needle in name for needle in needles)
+
+
+def _get_quant_method(quantization_config: Mapping[str, Any] | object | None) -> str | None:
+    if quantization_config is None:
+        return None
+    if isinstance(quantization_config, Mapping):
+        return quantization_config.get("quant_method")
+    return getattr(quantization_config, "quant_method", None)

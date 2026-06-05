@@ -44,6 +44,7 @@ class UpdateWeightFromNcclXfer:
             quantization_config=quantization_config,
         )
         self._fallback_logged = False
+        self._fallback_reason_cache = self._determine_fallback_reason()
 
     def connect_rollout_engines(
         self,
@@ -75,17 +76,13 @@ class UpdateWeightFromNcclXfer:
         raise NotImplementedError("native NCCL Xfer weight transfer is not implemented")
 
     def _fallback_reason(self) -> str | None:
+        return self._fallback_reason_cache
+
+    def _determine_fallback_reason(self) -> str | None:
         availability = get_nccl_xfer_availability()
         if not availability.available:
             return availability.reason or "native NCCL Xfer bridge is unavailable"
 
-        unsupported = self._first_unsupported_layout_reason()
-        if unsupported is not None:
-            return unsupported
-
-        return None
-
-    def _first_unsupported_layout_reason(self) -> str | None:
         for name, tensor in named_params_and_buffers(self.args, self.model):
             decision = analyze_nccl_xfer_layout(
                 name,
