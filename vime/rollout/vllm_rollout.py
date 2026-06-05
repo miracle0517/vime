@@ -132,12 +132,12 @@ async def _resume_vllm_workers(urls: list[str]) -> None:
     """Call ``POST /resume`` on each worker after ``pause?mode=abort`` so engines accept traffic again."""
     if not urls:
         return
-    logger.info("vLLM rollout: resuming workers after abort drain: %s", urls)
+    logger.info("rollout: resuming workers after abort drain: %s", urls)
     resume_tasks = [post(f"{url.rstrip('/')}/resume", {}, max_retries=3) for url in urls]
     resume_results = await asyncio.gather(*resume_tasks, return_exceptions=True)
     for url, result in zip(urls, resume_results, strict=False):
         if isinstance(result, Exception):
-            logger.warning("Failed to resume vLLM worker at %s: %s", url, result)
+            logger.warning("Failed to resume worker at %s: %s", url, result)
 
 
 def _vllm_meta_from_generate_choice(args: Namespace, choice: dict, usage: dict | None) -> dict[str, Any]:
@@ -709,12 +709,12 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     paused_workers = False
     if state.pendings:
         urls = await _router_worker_urls(args)
-        logger.info("vLLM rollout abort (pause) for workers: %s", urls)
+        logger.info("Abort request for %s", urls)
         pause_tasks = [post(f"{url.rstrip('/')}/pause?mode=abort", {}, max_retries=3) for url in urls]
         pause_results = await asyncio.gather(*pause_tasks, return_exceptions=True)
         for url, result in zip(urls, pause_results, strict=False):
             if isinstance(result, Exception):
-                logger.warning("Failed to pause/abort worker at %s: %s", url, result)
+                logger.warning("Failed to abort worker at %s: %s", url, result)
         paused_workers = True
 
     # make sure all the pending tasks are finished

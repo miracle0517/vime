@@ -810,7 +810,7 @@ class VLLMEngine(RayActor):
         return self._http_base()
 
     def shutdown(self):
-        logger.info("Shutdown vLLM engine %s:%s...", self.server_host, self.server_port)
+        logger.info("Shutdown engine %s:%s...", self.server_host, self.server_port)
         self._deregister_worker_from_router()
         if self.args.rollout_external:
             return
@@ -1086,7 +1086,7 @@ class VLLMEngine(RayActor):
                 self.args.rollout_external,
             )
             return
-        logger.info("Simulating crash on vLLM engine %s:%s...", self.server_host, self.server_port)
+        logger.info("Simulating crash on engine %s:%s...", self.server_host, self.server_port)
         self.shutdown()
 
 
