@@ -435,6 +435,87 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
                 help="Whether to keep the rollout model on training process",
             )
 
+            # Delta weight sync (non-colocate only).
+            parser.add_argument(
+                "--update-weight-mode",
+                choices=["full", "delta"],
+                default="full",
+                help=(
+                    "Weight sync strategy for non-colocate. 'full' (default) broadcasts every "
+                    "parameter every sync. 'delta' detects byte-level changes against a pinned-CPU "
+                    "snapshot of the previous broadcast and ships only the changed positions + values. "
+                    "Ignored under --colocate (which always uses IPC tensor transfer)."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-transport",
+                choices=["nccl", "disk"],
+                default="nccl",
+                help=(
+                    "Per-flush carrier for --update-weight-mode=delta. 'nccl' broadcasts each "
+                    "bucket on the vLLM weight-transfer PyNCCL group; 'disk' writes each bucket as "
+                    "a safetensors file under --update-weight-delta-dir and pushes once per pass."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-encoding",
+                choices=["indices", "deltas", "deltas_zstd"],
+                default="indices",
+                help=(
+                    "Position encoding for partial flushes. 'indices': int32 absolute "
+                    "positions (largest, lowest compute). 'deltas': uint16 gap-deltas "
+                    "with uint32 fallback (smaller). 'deltas_zstd': 'deltas' with the "
+                    "safetensors blob wrapped in zstd L1 (smallest, heaviest compute — "
+                    "best for shared-FS bandwidth <= ~300 MB/s)."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-delta-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Filesystem directory for per-sync delta safetensors. Writable by the "
+                    "trainer, readable by every rollout engine. Required when "
+                    "--update-weight-transport=disk. One subdirectory per sync "
+                    "(``weight_v{N:06d}``), removed after every engine has acknowledged."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-delta-keep-files",
+                action="store_true",
+                default=False,
+                help="Skip post-apply cleanup of per-sync version directories. Useful for debugging.",
+            )
+            parser.add_argument(
+                "--update-weight-delta-chunk-bytes",
+                type=int,
+                default=512 * 1024 * 1024,
+                help=(
+                    "Receiver-side per-load_weights byte budget when applying a decoded delta "
+                    "bucket. Caps peak temporary GPU memory during the masked apply."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-delta-read-workers",
+                type=int,
+                default=4,
+                help=(
+                    "Receiver-side disk-read parallelism for --update-weight-transport=disk. "
+                    "Files are read + decompressed by this many threads per batch."
+                ),
+            )
+            parser.add_argument(
+                "--custom-delta-pre-push-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to a custom function called by --update-weight-transport=disk after each "
+                    "trainer rank's files are durably on local disk, before rank 0 fires the engine "
+                    "RPCs. Signature: ``def hook(args, version_dir: str, rollout_engines) -> None``. "
+                    "Called from every trainer rank; the hook gates itself."
+                ),
+            )
+
             parser.add_argument(
                 "--rollout-data-postprocess-path",
                 type=str,
@@ -1748,6 +1829,19 @@ def vime_validate_args(args):
     assert not (args.debug_rollout_only and args.debug_train_only), (
         "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
+
+    if getattr(args, "update_weight_mode", "full") == "delta":
+        if args.colocate:
+            raise ValueError(
+                "--update-weight-mode=delta is not supported with --colocate. Colocate transfers "
+                "weights via in-process IPC tensors, not the distributed broadcast / disk path the "
+                "delta sender drives. Drop --colocate or use --update-weight-mode=full."
+            )
+        if args.update_weight_transport == "disk" and not args.update_weight_delta_dir:
+            raise ValueError(
+                "--update-weight-transport=disk requires --update-weight-delta-dir to point at a "
+                "directory writable by the trainer and readable by every rollout engine."
+            )
 
     # always true on offload for colocate at the moment.
     if args.colocate:

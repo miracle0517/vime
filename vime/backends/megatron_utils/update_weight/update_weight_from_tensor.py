@@ -12,6 +12,7 @@ https://docs.vllm.ai/en/stable/examples/rl/rlhf_ipc/
 
 from __future__ import annotations
 
+import json
 import os
 from argparse import Namespace
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -456,7 +457,16 @@ class _VLLMHijack:
 
 
 class vLLMColocateWorkerExtension:
-    """vLLM ``--worker-extension-cls`` entry for colocated IPC weight sync."""
+    """vLLM ``--worker-extension-cls`` entry for colocated IPC weight sync.
+
+    vLLM mixes this class into the worker base list (``worker_class.__bases__``),
+    so its methods are bound onto the live GPU worker instance and are invokable
+    by name through ``POST /collective_rpc``. Inside any method here ``self`` is
+    the vLLM ``Worker``: ``self.model_runner.get_model()`` is the live model and
+    ``self.device`` is the worker's CUDA device. The delta methods below use that
+    to apply selective (NaN-masked) weight deltas, mirroring the verbatim-ported
+    receiver in ``delta_receiver.py``.
+    """
 
     def __new__(cls, **kwargs):
         _VLLMHijack.hijack()
@@ -539,3 +549,88 @@ class vLLMColocateWorkerExtension:
         # Ensure the receiver has finished consuming the IPC tensors before
         # the sender drops its reference on the next barrier.
         torch.accelerator.synchronize()
+    # -- delta weight sync receivers (collective_rpc-callable) ---------------
+    #
+    # Wire layout (shared with the trainer encoder ``UpdateWeightFromDistributedDelta``):
+    #   * The per-bucket ``DeltaSpec`` manifest (encoding + per-param slices +
+    #     checksum) travels as a JSON string argument of the collective_rpc.
+    #   * The positions/values payload travels either via NCCL broadcast on the
+    #     vLLM weight-transfer ``PyNcclCommunicator`` (nccl transport) or inside
+    #     a safetensors file on a shared FS (disk transport).
+
+    def apply_delta_from_distributed(self, delta_spec_json: str, chunk_byte_cap: int) -> tuple[bool, str]:
+        """NCCL transport receiver. Recv (__positions__, __values__) from the
+        trainer (rank 0) on the vLLM weight-transfer PyNCCL communicator in the
+        exact order the trainer broadcasts them, then apply the delta.
+
+        The trainer side broadcasts via ``NCCLWeightTransferEngine.trainer_send_weights``
+        on the matching ``PyNcclCommunicator`` from ``trainer_init`` — the same
+        group vLLM's own full-sync ``receive_weights`` uses. We reuse that group
+        handle (``self.weight_transfer_engine.model_update_group``) rather than a
+        separate torch ProcessGroup.
+        """
+        import torch
+
+        from .delta_io import DeltaEncoding, DeltaParam, DeltaSpec
+        from .delta_receiver import apply_delta_payload
+
+        engine = getattr(self, "weight_transfer_engine", None)
+        group = getattr(engine, "model_update_group", None) if engine is not None else None
+        if group is None:
+            return False, (
+                "apply_delta_from_distributed: vLLM weight-transfer NCCL group not "
+                "initialized; call init_weight_transfer_engine first"
+            )
+
+        spec_dict = json.loads(delta_spec_json)
+        spec = DeltaSpec(
+            encoding=DeltaEncoding(spec_dict["encoding"]),
+            params=[DeltaParam(**p) for p in spec_dict["params"]],
+            checksum=int(spec_dict["checksum"]),
+        )
+
+        model = self.model_runner.get_model()
+        device = self.device
+        try:
+            with torch.device(device):
+                # Mirror the trainer broadcast order exactly: __positions__ (uint8)
+                # then __values__ (param-dtype). Each tensor's shape/dtype is carried
+                # in the DeltaSpec-adjacent metadata embedded in the JSON below.
+                positions = torch.empty(
+                    spec_dict["positions_numel"], dtype=torch.uint8, device=device
+                )
+                group.broadcast(positions, src=0, stream=torch.cuda.current_stream())
+                values_dtype = getattr(torch, spec_dict["values_dtype"])
+                values = torch.empty(
+                    spec_dict["values_numel"], dtype=values_dtype, device=device
+                )
+                group.broadcast(values, src=0, stream=torch.cuda.current_stream())
+                torch.cuda.current_stream().synchronize()
+
+                apply_delta_payload(
+                    model,
+                    spec.encoding,
+                    spec.params,
+                    positions,
+                    values,
+                    spec.checksum,
+                    device,
+                    chunk_byte_cap,
+                )
+            return True, "ok"
+        except Exception as e:  # noqa: BLE001
+            return False, f"Failed to apply delta from distributed: {e}."
+
+    def apply_delta_from_disk(
+        self, model_path: str, files: list[str], chunk_byte_cap: int, read_workers: int
+    ) -> tuple[bool, str]:
+        """Disk transport receiver: read + decode + apply each safetensors file
+        basename in ``files`` under ``model_path``."""
+        import os
+
+        from .delta_receiver import apply_delta_files
+
+        model = self.model_runner.get_model()
+        device = self.device
+        paths = [os.path.join(model_path, f) for f in files]
+        return apply_delta_files(model, paths, device, chunk_byte_cap, read_workers)

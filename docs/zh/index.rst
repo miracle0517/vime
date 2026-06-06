@@ -44,6 +44,7 @@ vime 是 GLM-4.7、GLM-4.6、GLM-4.5 背后的 RL 训练框架。除此之外，
    advanced/vllm-config.md
    advanced/megatron-config.md
    advanced/arch-support-beyond-megatron.md
+   advanced/delta-weight-sync.md
 
 .. toctree::
    :maxdepth: 1
