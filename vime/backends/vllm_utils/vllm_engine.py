@@ -455,6 +455,11 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
             "vime.backends.megatron_utils.update_weight.update_weight_from_tensor.vLLMColocateWorkerExtension",
         ]
 
+    worker_type = server_args.get("worker_type", "regular")
+    if worker_type in ("prefill", "decode") and topology.node_rank == 0:
+        env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = host_for_subprocess
+        env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(server_args["disaggregation_bootstrap_port"])
+
     _forward_vllm_cli_args(args, cmd)
     logger.info("Launching vLLM server: %s", redact_cmd_for_log(cmd))
     return cmd, env
@@ -548,9 +553,8 @@ class VLLMEngine(RayActor):
         router_ip=None,
         router_port=None,
     ):
-        # ``nccl_port`` / ``disaggregation_bootstrap_port`` are allocated by rollout
-        # port allocation but not consumed by vLLM (rendezvous uses ``dist_init_addr``).
-        del nccl_port, disaggregation_bootstrap_port
+        # ``nccl_port`` is allocated by rollout but unused by vLLM (rendezvous uses ``dist_init_addr``).
+        del nccl_port
 
         gpus_per_engine = self.num_gpus_per_engine or self.args.rollout_num_gpus_per_engine
         host = host or get_host_info()[1]
@@ -565,6 +569,7 @@ class VLLMEngine(RayActor):
             base_gpu_id=self.base_gpu_id,
             vllm_overrides=self.vllm_overrides,
             num_gpus_per_engine=gpus_per_engine,
+            disaggregation_bootstrap_port=disaggregation_bootstrap_port,
         )
         self._topology = self._server_args["topology"]
         self.node_rank = self._topology.node_rank
@@ -575,6 +580,7 @@ class VLLMEngine(RayActor):
         self.router_port = router_port
         self.server_host = self._server_args["host"]
         self.server_port = port
+        self.disaggregation_bootstrap_port = disaggregation_bootstrap_port
 
         if self.worker_type != "regular":
             logger.warning(
@@ -1101,6 +1107,7 @@ def _compute_server_args(
     base_gpu_id: int | None = None,
     vllm_overrides: dict | None = None,
     num_gpus_per_engine: int | None = None,
+    disaggregation_bootstrap_port: int | None = None,
 ) -> dict[str, Any]:
     """Build per-actor launch config for ``launch_server_process``."""
     gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
@@ -1140,6 +1147,7 @@ def _compute_server_args(
         "pp_size": topology.pipeline_parallel_size,
         "dp_size": _get_vllm_dp_size(args),
         "seed": getattr(args, "seed", 1234) + rank,
+        "disaggregation_bootstrap_port": disaggregation_bootstrap_port,
     }
     _apply_vllm_overrides(args, server_args, vllm_overrides, rank)
     return server_args

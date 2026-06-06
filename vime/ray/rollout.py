@@ -884,7 +884,7 @@ def _allocate_rollout_engine_addr_and_ports_normal(
             addr_and_ports[current_rank]["port"] = get_port()
             addr_and_ports[current_rank]["nccl_port"] = get_port()
 
-            if worker_type == "prefill":
+            if worker_type in ("prefill", "decode"):
                 addr_and_ports[current_rank]["disaggregation_bootstrap_port"] = get_port()
 
         if _gpus_per_engine > args.num_gpus_per_node:
@@ -907,25 +907,38 @@ def _allocate_rollout_engine_addr_and_ports_normal(
     return addr_and_ports, node_port_cursor
 
 
-def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool = False) -> tuple[str, int]:
-    """Start the rollout HTTP gateway (vllm-router)."""
-    if not force_new and args.vllm_router_ip is not None:
-        return args.vllm_router_ip, args.vllm_router_port
+def _start_router(
+    args,
+    *,
+    has_pd_disaggregation: bool = False,
+    force_new: bool = False,
+    bind: tuple[str, int] | None = None,
+    prefill_urls: list | None = None,
+    decode_urls: list | None = None,
+) -> tuple[str, int, int]:
+    """Start the rollout HTTP gateway (vllm-router).
 
-    router_ip = _wrap_ipv6(get_host_info()[1])
-    if force_new:
-        router_port = find_available_port(random.randint(3000, 4000))
+    Default: allocate an endpoint and let engines self-register. For vLLM PD
+    disaggregation (SkyRL-style) the caller pre-allocates the endpoint, starts
+    engines first, then calls with ``bind`` + static ``prefill_urls``/``decode_urls``;
+    engines do not self-register.
+    """
+    if bind is not None:
+        router_ip, router_port = bind
     else:
-        router_port = args.vllm_router_port
-        if router_port is None:
+        if not force_new and args.vllm_router_ip is not None:
+            return args.vllm_router_ip, args.vllm_router_port, None
+        router_ip = _wrap_ipv6(get_host_info()[1])
+        if force_new or args.vllm_router_port is None:
             router_port = find_available_port(random.randint(3000, 4000))
+        else:
+            router_port = args.vllm_router_port
 
     from vllm_router.router_args import RouterArgs
 
     from vime.utils.http_utils import run_router
 
     router_args = RouterArgs.from_cli_args(args, use_router_prefix=True)
-
     router_args.host = router_ip
     router_args.port = router_port
     router_args.prometheus_port = find_available_port(random.randint(4000, 5000))
@@ -934,20 +947,20 @@ def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool 
 
     if has_pd_disaggregation:
         router_args.vllm_pd_disaggregation = True
-        # Disable circuit breaker to prevent RDMA transfer timeouts from
-        # marking decode workers as dead. Timeouts are transient (PCIe
-        # contention under high load) and do not indicate a dead server.
+        # Disable circuit breaker so transient RDMA transfer timeouts (PCIe
+        # contention under load) don't mark decode workers dead.
         router_args.disable_circuit_breaker = True
+
+    if prefill_urls is not None:
+        router_args.prefill_urls = prefill_urls
+        router_args.decode_urls = decode_urls
+        router_args.disable_health_check = True
 
     logger.info(f"Launch router with args: {router_args}")
 
-    process = multiprocessing.Process(
-        target=run_router,
-        args=(router_args,),
-    )
-    process.daemon = True  # Set the process as a daemon
+    process = multiprocessing.Process(target=run_router, args=(router_args,))
+    process.daemon = True
     process.start()
-    # Wait 3 seconds
     time.sleep(3)
     assert process.is_alive()
     logger.info(f"Router launched at {router_ip}:{router_port}, Prometheus port: {router_args.prometheus_port}")
@@ -997,9 +1010,20 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
         model_cfg.resolve(args)
 
         has_pd = model_cfg.has_pd_disaggregation
-        router_ip, router_port, prom_port = _start_router(
-            args, has_pd_disaggregation=has_pd, force_new=(model_idx > 0)
-        )
+        use_static_pd_router = has_pd
+        if use_static_pd_router:
+            # SkyRL-style PD: reserve the router endpoint now but defer launching it until engines
+            # are up and their URLs collected (end of this function). Engines do not self-register,
+            # so router_ip/port are passed down as None.
+            router_ip = _wrap_ipv6(get_host_info()[1])
+            router_port = find_available_port(random.randint(3000, 4000))
+            prom_port = None  # assigned when the router actually launches, after URL collection
+            engine_router_ip, engine_router_port = None, None
+        else:
+            router_ip, router_port, prom_port = _start_router(
+                args, has_pd_disaggregation=has_pd, force_new=(model_idx > 0)
+            )
+            engine_router_ip, engine_router_port = router_ip, router_port
 
         # Write back so downstream readers (vllm_rollout, vllm_engine) see the
         # router we just started (only relevant for first model in multi-model setups).
@@ -1056,7 +1080,7 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
             for group_cfg in model_cfg.server_groups:
                 if group_cfg.worker_type != "encoder":
                     continue
-                group = _make_group(group_cfg, router_ip, router_port)
+                group = _make_group(group_cfg, engine_router_ip, engine_router_port)
                 handles, port_cursors = group.start_engines(port_cursors)
                 if handles:
                     ray.get(handles)
@@ -1077,7 +1101,7 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
                 if encoder_urls and group_cfg.worker_type in ("prefill", "regular"):
                     overrides_extra["language_only"] = True
                     overrides_extra["encoder_urls"] = encoder_urls
-                group = _make_group(group_cfg, router_ip, router_port, overrides_extra=overrides_extra)
+                group = _make_group(group_cfg, engine_router_ip, engine_router_port, overrides_extra=overrides_extra)
                 handles, port_cursors = group.start_engines(port_cursors)
                 non_encoder_handles.extend(handles)
                 server_groups.append(group)
@@ -1088,13 +1112,36 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
             # No EPD — start all groups in one pass (original path).
             all_init_handles: list = []
             for group_cfg in model_cfg.server_groups:
-                group = _make_group(group_cfg, router_ip, router_port)
+                group = _make_group(group_cfg, engine_router_ip, engine_router_port)
                 handles, port_cursors = group.start_engines(port_cursors)
                 all_init_handles.extend(handles)
                 server_groups.append(group)
 
             if all_init_handles:
                 ray.get(all_init_handles)
+
+        if use_static_pd_router:
+            prefill_urls: list[tuple] = []
+            decode_urls: list[str] = []
+            for g in server_groups:
+                for e in g.engines:
+                    if e is None:
+                        continue
+                    if g.worker_type == "prefill":
+                        url = ray.get(e.get_url.remote())
+                        if url:
+                            prefill_urls.append((url, None))
+                    elif g.worker_type == "decode":
+                        url = ray.get(e.get_url.remote())
+                        if url:
+                            decode_urls.append(url)
+            _, _, prom_port = _start_router(
+                args,
+                has_pd_disaggregation=True,
+                bind=(router_ip, router_port),
+                prefill_urls=prefill_urls,
+                decode_urls=decode_urls,
+            )
 
         servers[model_cfg.name] = RolloutServer(
             server_groups=server_groups,
