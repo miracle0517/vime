@@ -78,21 +78,6 @@ def get_base_gpu_id(args, rank):
     return start_index
 
 
-def _to_local_gpu_id(physical_gpu_id: int) -> int:
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if not cvd:
-        return physical_gpu_id
-    visible = [int(x) for x in cvd.split(",") if x.strip() != ""]
-    if physical_gpu_id in visible:
-        return visible.index(physical_gpu_id)
-    if 0 <= physical_gpu_id < len(visible):
-        return physical_gpu_id
-    raise RuntimeError(
-        f"GPU id {physical_gpu_id} is not valid under CUDA_VISIBLE_DEVICES={cvd}. "
-        f"Expected one of {visible} (physical) or 0..{len(visible)-1} (local)."
-    )
-
-
 @dataclasses.dataclass(frozen=True)
 class VllmEngineTopology:
     """Per-Ray-actor placement for one slice of a logical rollout engine."""
@@ -1113,7 +1098,6 @@ def _compute_server_args(
 
     topology = compute_vllm_engine_topology(args, rank, num_gpus_per_engine=gpus_per_engine)
     base = base_gpu_id if base_gpu_id is not None else get_base_gpu_id(args, rank)
-    base = _to_local_gpu_id(base)
 
     master_addr: str | None = None
     master_port: int | None = None

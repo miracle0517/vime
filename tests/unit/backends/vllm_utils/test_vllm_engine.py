@@ -55,17 +55,6 @@ def test_format_v6_uri_ipv4_unchanged():
 
 
 @pytest.mark.unit
-def test_to_local_gpu_id_without_cvd():
-    assert mod._to_local_gpu_id(3) == 3
-
-
-@pytest.mark.unit
-def test_to_local_gpu_id_maps_physical_id(monkeypatch):
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,3,4")
-    assert mod._to_local_gpu_id(3) == 1
-
-
-@pytest.mark.unit
 def test_compute_vllm_engine_topology_single_node(vllm_args):
     vllm_args.num_gpus_per_node = 8
     vllm_args.rollout_num_gpus_per_engine = 4
