@@ -42,12 +42,19 @@ async def generate_response(args, prompt, key):
         output = await post(url, payload)
         choice = output["choices"][0]
         finish_reason = choice.get("finish_reason") or "stop"
-        new_response_tokens, _ = _inference_generate_tokens_and_logprobs(choice)
+        new_response_tokens, new_response_log_probs = _inference_generate_tokens_and_logprobs(choice)
         response_text = tokenizer.decode(new_response_tokens, skip_special_tokens=False) if new_response_tokens else ""
 
         # Update sample with tokens directly - avoiding re-tokenization
         sample.tokens = sample.tokens + new_response_tokens
         sample.response_length += len(new_response_tokens)
+        if sample.rollout_log_probs is None:
+            sample.rollout_log_probs = []
+        sample.rollout_log_probs += new_response_log_probs
+        assert len(sample.rollout_log_probs) == sample.response_length, (
+            f"rollout logprob length mismatch: {len(sample.rollout_log_probs)} logprobs "
+            f"vs {sample.response_length} response tokens"
+        )
         sample.response = response_text
 
         match finish_reason:
