@@ -21,20 +21,6 @@ class ParsedModelOutput:
     tool_uses: list[dict[str, Any]]
 
 
-def _empty_chat_request(tools_schema: list[dict] | None = None):
-    """Build a minimal vLLM ChatCompletionRequest for the non-streaming parsers.
-
-    vLLM's reasoning / tool-call parsers take the originating request; for
-    post-hoc parsing of an already-decoded string only ``tools`` is consulted.
-    """
-    from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
-
-    kwargs: dict[str, Any] = {"messages": []}
-    if tools_schema:
-        kwargs["tools"] = tools_schema
-    return ChatCompletionRequest(**kwargs)
-
-
 def parse_model_output(
     raw_output: str,
     *,
@@ -45,16 +31,20 @@ def parse_model_output(
 ) -> ParsedModelOutput:
     """Parse raw model text into reasoning, visible text, and tool uses.
 
-    When ``reasoning_parser_name`` / ``tool_parser_name`` are set the heavy
-    format-specific work is delegated to vLLM's reasoning and tool-call parsers
-    (``vllm.reasoning`` / ``vllm.tool_parsers``, imported lazily so they are
-    only pulled in when explicitly enabled). The coding-agent example leaves
-    both unset and relies on the XML fallback, which covers the Anthropic-style
-    tool-call text that some coding-agent models still emit occasionally.
+    The heavy format-specific work is delegated to vLLM's reasoning and
+    tool-call parsers. The XML fallback covers Anthropic-style tool-call
+    text that some coding-agent models still emit occasionally.
     """
     reasoning, body_text = "", raw_output
     if reasoning_parser_name:
-        reasoning, body_text = _extract_reasoning(raw_output, tokenizer, reasoning_parser_name)
+        from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+        from vllm.reasoning import ReasoningParserManager
+
+        parser = ReasoningParserManager.get_reasoning_parser(reasoning_parser_name)(tokenizer)
+        r, b = parser.extract_reasoning(raw_output, ChatCompletionRequest(messages=[]))
+        reasoning, body_text = r or "", b or ""
+        if not reasoning and "</think>" in body_text:
+            reasoning, body_text = body_text.split("</think>", 1)
 
     body_text, tool_uses = parse_tool_uses(body_text, tools_schema, tool_parser_name, tokenizer)
     return ParsedModelOutput(
@@ -62,27 +52,6 @@ def parse_model_output(
         text=(body_text or "").strip(),
         tool_uses=tool_uses,
     )
-
-
-def _extract_reasoning(raw_output: str, tokenizer, reasoning_parser_name: str) -> tuple[str, str]:
-    """Split reasoning from visible text via vLLM's reasoning parser, with a
-    ``</think>`` string-split fallback if the parser is unavailable."""
-    reasoning, body_text = "", raw_output
-    try:
-        from vllm.reasoning import ReasoningParserManager
-
-        parser = ReasoningParserManager.get_reasoning_parser(reasoning_parser_name)(tokenizer)
-        r, b = parser.extract_reasoning(raw_output, _empty_chat_request())
-        reasoning = r or ""
-        body_text = b if b is not None else raw_output
-    except Exception:
-        logger.exception(
-            "[agent.parsing] vLLM reasoning parsing failed; falling back to </think> split"
-        )
-        reasoning, body_text = "", raw_output
-    if not reasoning and "</think>" in body_text:
-        reasoning, body_text = body_text.split("</think>", 1)
-    return reasoning, body_text
 
 
 def parse_tool_uses(
@@ -94,27 +63,24 @@ def parse_tool_uses(
     """Parse tool calls from body text and return visible text plus tool uses."""
     tool_uses: list[dict[str, Any]] = []
     if tool_parser_name and tools_schema:
-        try:
-            from vllm.tool_parsers import ToolParserManager
+        from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+        from vllm.tool_parsers import ToolParserManager
 
-            request = _empty_chat_request(tools_schema)
-            # Some parsers (e.g. qwen3coder) coerce argument types from the
-            # tools passed at construction, so hand them the validated schema
-            # in addition to the request.
-            parser = ToolParserManager.get_tool_parser(tool_parser_name)(tokenizer, tools=request.tools)
+        request = ChatCompletionRequest(messages=[], tools=tools_schema)
+        parser = ToolParserManager.get_tool_parser(tool_parser_name)(tokenizer, tools=request.tools)
+        info = None
+        try:
             info = parser.extract_tool_calls(body_text, request)
-            if info.tools_called:
-                # vLLM returns the text with tool-call markup stripped; ``None``
-                # means the whole output was the tool call (no leftover text).
-                body_text = info.content or ""
-                for call in info.tool_calls:
-                    try:
-                        args = json.loads(call.function.arguments or "{}")
-                    except json.JSONDecodeError:
-                        args = {"_raw_arguments": call.function.arguments}
-                    tool_uses.append({"name": call.function.name or "tool", "input": args})
         except Exception:
-            logger.exception("[agent.parsing] vLLM tool-call parsing failed; falling back")
+            logger.exception("[agent.parsing] vllm tool-call parsing failed; falling back")
+        if info is not None and info.tools_called:
+            body_text = info.content or ""
+            for call in info.tool_calls:
+                try:
+                    args = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {"_raw_arguments": call.function.arguments}
+                tool_uses.append({"name": call.function.name or "tool", "input": args})
 
     if not tool_uses and tools_schema:
         body_text, tool_uses = parse_xml_tool_uses(body_text, tools_schema)
