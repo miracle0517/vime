@@ -1006,9 +1006,6 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
         has_pd = model_cfg.has_pd_disaggregation
         use_static_pd_router = has_pd
         if use_static_pd_router:
-            # SkyRL-style PD: reserve the router endpoint now but defer launching it until engines
-            # are up and their URLs collected (end of this function). Engines do not self-register,
-            # so router_ip/port are passed down as None.
             router_ip = _wrap_ipv6(get_host_info()[1])
             router_port = find_available_port(random.randint(3000, 4000))
             prom_port = None  # assigned when the router actually launches, after URL collection
