@@ -1,4 +1,8 @@
-"""Tau-bench multi-turn custom rollout for vime (vLLM render + generate)."""
+"""Tau-bench multi-turn custom rollout for vime (vLLM render + generate).
+
+Combines tau env interaction, tool parsing (``vllm_tool_parser``), and vLLM
+multi-turn rollout in one entry point: ``generate_with_tau.generate``.
+"""
 
 from __future__ import annotations
 
@@ -562,10 +566,10 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
 
         sample.response = state.tokenizer.decode(response_tokens, skip_special_tokens=False)
         sample.response_length = len(sample.loss_mask)
+        if sample.reward is None:
+            sample.reward = _compute_process_reward(env, getattr(env, "total_reward", 0.0))
         if sample.status == Sample.Status.PENDING:
             sample.status = Sample.Status.COMPLETED
-        if sample.reward is None or sample.reward == 0.0:
-            sample.reward = _compute_process_reward(env, 0.0)
         return sample
     finally:
         try:

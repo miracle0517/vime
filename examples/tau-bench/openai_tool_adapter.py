@@ -2,13 +2,15 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from tool_parser import parse_tools
+from vllm_tool_parser import parse_tools
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class OpenAIToolCall:
+    """OpenAI format tool call structure."""
+
     id: str
     type: str = "function"
     function: dict[str, Any] = field(default_factory=dict)
@@ -16,17 +18,34 @@ class OpenAIToolCall:
 
 @dataclass
 class OpenAIAssistantMessage:
+    """OpenAI format assistant message structure."""
+
     role: str = "assistant"
     content: str | None = None
     tool_calls: list[OpenAIToolCall] | None = None
 
 
 class OpenAICompatibleToolCallAdapter:
+    """
+    Adapter that converts vLLM tool-call parsing results to OpenAI compatible format.
+
+    Wired through ``vllm_tool_parser.parse_tools``.
+    """
+
     def __init__(self, tools_info: list[dict[str, Any]], parser_type: str = "qwen25"):
         self.tools_info = tools_info
         self.parser_type = parser_type
 
     def parse_response_to_openai_format(self, response: str) -> dict[str, Any]:
+        """
+        Parse a vLLM rollout response to OpenAI compatible format.
+
+        Args:
+            response: Raw response text from the vLLM generate endpoint.
+
+        Returns:
+            Dictionary containing OpenAI format message and parsing results.
+        """
         try:
             parsed = parse_tools(response, self.tools_info, self.parser_type)
             normal_text = parsed["normal_text"]
@@ -61,4 +80,5 @@ class OpenAICompatibleToolCallAdapter:
 def create_openai_adapter(
     tools_info: list[dict[str, Any]], parser_type: str = "qwen25"
 ) -> OpenAICompatibleToolCallAdapter:
+    """Factory function to create an OpenAI compatible tool-call adapter."""
     return OpenAICompatibleToolCallAdapter(tools_info, parser_type)

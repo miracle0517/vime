@@ -35,19 +35,22 @@ ROLLOUT_GPUS_PER_ENGINE="${ROLLOUT_GPUS_PER_ENGINE:-1}"
 TOTAL_GPUS="$((ACTOR_GPUS_PER_NODE + ROLLOUT_NUM_GPUS))"
 echo "TOTAL_GPUS (ray): ${TOTAL_GPUS}  (actor=${ACTOR_GPUS_PER_NODE}, rollout=${ROLLOUT_NUM_GPUS}, per_engine=${ROLLOUT_GPUS_PER_ENGINE})"
 
-VIME_ROOT="${VIME_ROOT:-/data/nfs_87/xky/vime_debug/vime_tau_bench}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+VIME_DIR="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
 TAU_EXAMPLE="${SCRIPT_DIR}"
-cd "${VIME_ROOT}"
+TAU_BENCH_SRC="${TAU_BENCH_SRC:-/root/tau-bench-src}"
+TAU_DATA_DIR="${TAU_DATA_DIR:-/root/tau-bench}"
+
+cd "${VIME_DIR}"
 
 export MODEL_ARGS_ROTARY_BASE=5000000
-source "${VIME_ROOT}/scripts/models/qwen3-4B.sh"
+source "${VIME_DIR}/scripts/models/qwen3-4B-Instruct-2507.sh"
 
-HF_CKPT=/data/nfs_87/xky/models/Qwen3-4B-Instruct-2507
-REF_LOAD=/data/nfs_87/xky/models/Qwen3-4B-Instruct-2507_torch_dist
-SAVE_DIR=/data/nfs_87/xky/RL/vime_checkpoints/Qwen3-4B-Instruct_tau_bench
+HF_CKPT="${HF_CKPT:-/root/Qwen3-4B-Instruct-2507}"
+REF_LOAD="${REF_LOAD:-/root/Qwen3-4B-Instruct-2507_torch_dist}"
+SAVE_DIR="${SAVE_DIR:-/root/Qwen3-4B-Instruct_tau_bench}"
 
-LOG_ROOT=/data/nfs_87/xky/tb_logs
+LOG_ROOT="${LOG_ROOT:-/root/logs}"
 TS=$(date +%Y%m%d_%H%M%S)
 export TENSORBOARD_DIR="${LOG_ROOT}/tb_qwen3_4b_tau_bench_${TS}"
 LOG_FILE="${LOG_ROOT}/train_qwen3_4b_tau_bench_${TS}.log"
@@ -56,9 +59,10 @@ mkdir -p "${TENSORBOARD_DIR}" "${LOG_ROOT}"
 CKPT_ARGS=(
    --hf-checkpoint "${HF_CKPT}"
    --ref-load "${REF_LOAD}"
+   --save "${SAVE_DIR}"
 )
 
-PROMPT_DATA=/data/nfs_87/xky/datasets/tau-bench/retail_train_tasks.jsonl
+PROMPT_DATA="${PROMPT_DATA:-${TAU_DATA_DIR}/retail_train_tasks.jsonl}"
 ROLLOUT_ARGS=(
    --prompt-data "${PROMPT_DATA}"
    --input-key index
@@ -75,7 +79,7 @@ ROLLOUT_ARGS=(
 
 EVAL_ARGS=(
    --eval-interval 5
-   --eval-prompt-data retail-dev /data/nfs_87/xky/datasets/tau-bench/retail_dev_tasks.jsonl
+   --eval-prompt-data retail-dev "${TAU_DATA_DIR}/retail_dev_tasks.jsonl"
    --n-samples-per-eval-prompt 1
    --eval-max-response-len 4096
    --eval-top-k 1
@@ -117,8 +121,6 @@ OPTIMIZER_ARGS=(
 VLLM_ARGS=(
    --rollout-num-gpus "${ROLLOUT_NUM_GPUS}"
    --rollout-num-gpus-per-engine "${ROLLOUT_GPUS_PER_ENGINE}"
-   --rollout-backend vllm
-   --vllm-weight-sync-mode native
    --vllm-gpu-memory-utilization 0.7
    --vllm-max-model-len 16384
 )
@@ -139,9 +141,9 @@ MISC_ARGS=(
    --use-tensorboard
 )
 
-VIME_PYTHONPATH="${TAU_EXAMPLE}:${VIME_ROOT}:/root/Megatron-LM/:${TAU_BENCH_SRC:-/data/nfs_87/xky/datasets/tau-bench-src/}:/usr/local/lib/python3.12/dist-packages/"
+VIME_PYTHONPATH="${TAU_EXAMPLE}:${VIME_DIR}:/root/Megatron-LM:${TAU_BENCH_SRC}"
 
-echo "VIME_ROOT=${VIME_ROOT}"
+echo "VIME_DIR=${VIME_DIR}"
 echo "TAU_EXAMPLE=${TAU_EXAMPLE}"
 echo "HF_CKPT=${HF_CKPT} REF_LOAD=${REF_LOAD} SAVE=${SAVE_DIR}"
 echo "PROMPT_DATA=${PROMPT_DATA}"
@@ -159,7 +161,7 @@ unset http_proxy https_proxy
 RUNTIME_ENV_JSON='{"env_vars":{"PYTHONPATH":"'"${VIME_PYTHONPATH}"'","CUDA_DEVICE_MAX_CONNECTIONS":"1","NCCL_NVLS_ENABLE":"'"${HAS_NVLINK}"'","TENSORBOARD_DIR":"'"${TENSORBOARD_DIR}"'","VIME_VLLM_SERVER_HEALTH_TIMEOUT_SEC":"900","TAU_BENCH_MOCK":"1","TAU_BENCH_MAX_STEPS":"10"}}'
 
 ray job submit --address="http://127.0.0.1:8265" \
-   --working-dir "${VIME_ROOT}" \
+   --working-dir "${VIME_DIR}" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --train-backend megatron \
