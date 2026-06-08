@@ -23,7 +23,7 @@ the contract a user touches when they flip any parallelism dial.
 from __future__ import annotations
 
 # IMPORTANT: import the helpers (and the megatron stub it installs) BEFORE
-# any slime import. Spawned workers re-import this module from scratch, so
+# any vime import. Spawned workers re-import this module from scratch, so
 # the same ordering must hold there — see ``stub_megatron_in_worker``
 # for the worker-side details. pytest's prepend importmode puts
 # ``tests/`` on sys.path so the bare-name import works without an
@@ -295,7 +295,7 @@ def test_rollout_log_real_distributed_multi_key(dp_size, cp_size, tmp_path):
 
 # Keep an explicit reference to silence "unused import" complaints while
 # documenting that importing the helpers module is load-bearing (it
-# installs the megatron stub before slime is touched).
+# installs the megatron stub before vime is touched).
 _ = _cp_dist_helpers
 
 

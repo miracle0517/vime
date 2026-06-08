@@ -17,7 +17,7 @@ end-to-end variants (real torch.distributed) live in
 
 from __future__ import annotations
 
-# Import the helpers BEFORE the slime imports so the megatron stub lands
+# Import the helpers BEFORE the vime imports so the megatron stub lands
 # in sys.modules first. pytest's prepend importmode puts this file's
 # directory (``tests/``) on sys.path, which is what makes the bare-name
 # import work without an ``__init__.py``.

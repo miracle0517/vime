@@ -817,7 +817,7 @@ def _validate_rollout_id_annotated(node, depth=0):
     when a compact / subagent pattern is detected.
 
     "Compact" = the rollout function wraps multiple training samples from one
-    rollout execution into a ``list[Sample]``. In slime's convention the
+    rollout execution into a ``list[Sample]``. In vime's convention the
     default rollout shape is ``list[list[Sample]]`` (depth-2: prompt × rollout)
     so its leaf ``list[Sample]`` lands at depth 1 and we skip validation,
     preserving backward compatibility. A compact rollout adds a third level:

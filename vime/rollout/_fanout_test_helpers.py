@@ -35,7 +35,7 @@ MAX_FANOUT = 3
 # Each invocation appends one line. The test file reads this after train
 # completes to assert the framework actually drove the custom path for
 # every prompt (no silent bypass / no double-submission).
-COUNTER_FILE_ENV = "SLIME_FANOUT_TEST_COUNTER_FILE"
+COUNTER_FILE_ENV = "VIME_FANOUT_TEST_COUNTER_FILE"
 
 
 async def compact_generate(args, sample, sampling_params):
