@@ -12,7 +12,7 @@ are long enough to actually trigger mid-stream aborts, and good enough to
 produce non-zero rewards.
 
 vime counterpart of slime's ``test_qwen3_4B_streaming_partial_rollout`` — the
-only structural change is the rollout engine: the rollout-engine args differ and
+only structural change is the rollout engine: sglang args become vLLM args and
 the generate function points at ``vllm_streaming_rollout``.
 """
 

@@ -109,16 +109,16 @@ def _parse_sse(raw: str) -> list[tuple[str, object]]:
 def test_session_id_comes_from_protocol_fields_not_custom_header():
     assert (
         openai._request_session_id(
-            FakeRequest({"X-Custom-Session-Id": "custom"}),
+            FakeRequest({"X-Vime-Session-Id": "custom"}),
             {"metadata": {"session_id": "meta-session"}, "user": "body-user"},
         )
         == "meta-session"
     )
     assert (
-        openai._request_session_id(FakeRequest({"X-Custom-Session-Id": "custom"}), {"user": "body-user"}) == "body-user"
+        openai._request_session_id(FakeRequest({"X-Vime-Session-Id": "custom"}), {"user": "body-user"}) == "body-user"
     )
     assert (
-        anthropic._request_session_id(FakeRequest({"X-Custom-Session-Id": "custom", "X-Api-Key": "anthropic-key"}))
+        anthropic._request_session_id(FakeRequest({"X-Vime-Session-Id": "custom", "X-Api-Key": "anthropic-key"}))
         == "anthropic-key"
     )
     assert (
