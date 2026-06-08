@@ -948,7 +948,6 @@ def _start_router(
     if prefill_urls is not None:
         router_args.prefill_urls = prefill_urls
         router_args.decode_urls = decode_urls
-        router_args.disable_health_check = True
 
     logger.info(f"Launch router with args: {router_args}")
 
