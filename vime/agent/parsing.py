@@ -97,8 +97,12 @@ def parse_tool_uses(
         try:
             from vllm.tool_parsers import ToolParserManager
 
-            parser = ToolParserManager.get_tool_parser(tool_parser_name)(tokenizer)
-            info = parser.extract_tool_calls(body_text, _empty_chat_request(tools_schema))
+            request = _empty_chat_request(tools_schema)
+            # Some parsers (e.g. qwen3coder) coerce argument types from the
+            # tools passed at construction, so hand them the validated schema
+            # in addition to the request.
+            parser = ToolParserManager.get_tool_parser(tool_parser_name)(tokenizer, tools=request.tools)
+            info = parser.extract_tool_calls(body_text, request)
             if info.tools_called:
                 # vLLM returns the text with tool-call markup stripped; ``None``
                 # means the whole output was the tool call (no leftover text).

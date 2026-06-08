@@ -89,7 +89,7 @@ ROLLOUT_ARGS=(
 claude-code's tool invocations are parsed from the model output. By default the
 adapter uses the built-in XML tool-call fallback (`parse_xml_tool_uses`), which
 handles the `<tool_call><function=...>` text Qwen3-Coder emits, so no extra
-engine-side parser configuration is required. (The adapter can optionally
+vLLM-side parser configuration is required. (The adapter can optionally
 delegate to vLLM's reasoning/function-call parsers (`vllm.reasoning` /
 `vllm.tool_parsers`) when `vllm_tool_call_parser` / `vllm_reasoning_parser` are
 set on `args`, but this is not used by this example and is not wired into
