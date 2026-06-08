@@ -198,13 +198,7 @@ OPTIMIZER_ARGS=(
    --use-precision-aware-optimizer
 )
 
-# ============ rollout engine (vLLM) ============
-# vLLM EngineArgs are passed with a --vllm- prefix (e.g.
-# --vllm-gpu-memory-utilization, --vllm-data-parallel-size,
-# --vllm-enable-expert-parallel). See docs/en/get_started/usage.md for the
-# full argument surface. --vllm-tool-call-parser / --vllm-reasoning-parser
-# name the parsers the agent adapter uses to parse Qwen3.6's tool-call and
-# reasoning output.
+# ============ rollout engine ============
 VLLM_ARGS=(
    --rollout-num-gpus 64
    --rollout-num-gpus-per-engine ${ROLLOUT_TP_SIZE}
