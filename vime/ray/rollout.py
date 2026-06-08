@@ -916,13 +916,7 @@ def _start_router(
     prefill_urls: list | None = None,
     decode_urls: list | None = None,
 ) -> tuple[str, int, int]:
-    """Start the rollout HTTP gateway (vllm-router).
-
-    Default: allocate an endpoint and let engines self-register. For vLLM PD
-    disaggregation (SkyRL-style) the caller pre-allocates the endpoint, starts
-    engines first, then calls with ``bind`` + static ``prefill_urls``/``decode_urls``;
-    engines do not self-register.
-    """
+    """Start the rollout HTTP gateway (vllm-router)."""
     if bind is not None:
         router_ip, router_port = bind
     else:
