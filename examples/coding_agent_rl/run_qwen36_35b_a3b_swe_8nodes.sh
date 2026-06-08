@@ -202,13 +202,17 @@ OPTIMIZER_ARGS=(
 # vLLM EngineArgs are passed with a --vllm- prefix (e.g.
 # --vllm-gpu-memory-utilization, --vllm-data-parallel-size,
 # --vllm-enable-expert-parallel). See docs/en/get_started/usage.md for the
-# full argument surface.
+# full argument surface. --vllm-tool-call-parser / --vllm-reasoning-parser
+# name the parsers the agent adapter uses to parse Qwen3.6's tool-call and
+# reasoning output.
 VLLM_ARGS=(
    --rollout-num-gpus 64
    --rollout-num-gpus-per-engine ${ROLLOUT_TP_SIZE}
    --vllm-gpu-memory-utilization ${ROLLOUT_MEM_UTILIZATION}
    --vllm-data-parallel-size ${ROLLOUT_DP_SIZE}
    --vllm-enable-expert-parallel
+   --vllm-tool-call-parser qwen3_coder
+   --vllm-reasoning-parser qwen3
    --prefill-num-servers 1
 )
 # Speculative decoding (EAGLE): vLLM takes one JSON dict.
