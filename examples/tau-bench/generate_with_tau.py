@@ -349,6 +349,9 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
 
     initial_obs = env.reset()
     wiki = initial_obs.get("wiki", "")
+    short_wiki_chars = os.environ.get("TAU_SHORT_WIKI")
+    if short_wiki_chars is not None:
+        wiki = wiki[: int(short_wiki_chars)]
     tools_info = initial_obs.get("tools_info", [])
     tools_section = _build_tools_section(tools_info)
 
