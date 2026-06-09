@@ -1,6 +1,8 @@
 #!/bin/bash
 
 # for rerun the task
+pkill -9 -f "vllm serve"
+sleep 3
 ray stop --force
 pkill -9 ray
 pkill -9 python
@@ -13,10 +15,7 @@ set -ex
 # will prevent ray from buffering stdout/stderr
 export PYTHONUNBUFFERED=1
 
-NUM_GPUS=8
-
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-VIME_ROOT="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen2.5-0.5B.sh"
 
 CKPT_ARGS=(
@@ -110,26 +109,21 @@ MISC_ARGS=(
 )
 
 # launch the master node of ray in container
-export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
-
-# Build the runtime environment JSON with proper variable substitution.
-RUNTIME_ENV_JSON="{
-  \"env_vars\": {
-    \"PYTHONPATH\": \"${VIME_ROOT}:/root/Megatron-LM/\",
-    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_ALGO\": \"Ring\",
-    \"NVTE_ALLOW_NONDETERMINISTIC_ALGO\": \"0\",
-    \"CUBLAS_WORKSPACE_CONFIG\": \":4096:8\"
-  }
-}"
+ray start --head --node-ip-address 127.0.0.1 --num-gpus 8 --disable-usage-stats
 
 ray job submit --address="http://127.0.0.1:8265" \
-   --runtime-env-json="${RUNTIME_ENV_JSON}" \
+   --runtime-env-json='{
+     "env_vars": {
+        "PYTHONPATH": "/root/Megatron-LM",
+        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+        "NCCL_ALGO": "Ring",
+        "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8"
+     }
+   }' \
    -- python3 train.py \
-   --train-backend megatron \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node ${NUM_GPUS} \
+   --actor-num-gpus-per-node 8 \
    --colocate \
    --calculate-per-token-loss \
    ${MODEL_ARGS[@]} \
