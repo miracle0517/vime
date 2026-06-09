@@ -13,8 +13,6 @@ set -ex
 # will prevent ray from buffering stdout/stderr
 export PYTHONUNBUFFERED=1
 
-# Bitwise reproduction depends on a fixed parallel/reduction layout, so the GPU
-# count is pinned here (matching the upstream recipe) rather than auto-detected.
 NUM_GPUS=8
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
@@ -116,7 +114,6 @@ export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 # Build the runtime environment JSON with proper variable substitution.
-# The NCCL_ALGO / NVTE / CUBLAS settings below are required for bitwise determinism.
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"${VIME_ROOT}:/root/Megatron-LM/\",
