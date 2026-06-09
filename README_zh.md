@@ -20,9 +20,7 @@ Vime 继承了 slime 广泛的模型支持，包括：
 
 ## 定位
 
-vLLM 社区横向支持许多 LLM post-training 框架，包括 [NeMo RL](https://github.com/NVIDIA-NeMo/RL)、[OpenRLHF](https://github.com/openrlhf/openrlhf)、[verl](https://github.com/verl-project/verl) 等。我们创建了 Vime 项目，是因为一些 post-training 用户喜欢 slime，但 slime 维护者没有足够精力维护 vLLM 集成。Vime 并不是这些框架的竞争者；相反，我们希望它能与它们共存，为用户提供更多选择。vLLM 社区也会持续支持这些 post-training 框架中的 vLLM 集成。
-
-我们不期望大量新的 post-training 相关功能直接加入 Vime。欢迎 bugfix 和性能优化。
+vLLM 社区横向支持许多 LLM post-training 框架，包括 [NeMo RL](https://github.com/NVIDIA-NeMo/RL)、[OpenRLHF](https://github.com/openrlhf/openrlhf)、[verl](https://github.com/verl-project/verl) 等。我们创建了 Vime 项目，旨在将 slime 经过验证的训练范式无缝引入 vLLM 生态系统，提供一个可用于生产的桥梁，对齐两个项目的快速迭代节奏。Vime 并不是这些框架的竞争者；相反，我们希望它能与它们共存，为用户提供更多选择。vLLM 社区也会持续支持这些 post-training 框架中的 vLLM 集成。
 
 ## 目录
 
