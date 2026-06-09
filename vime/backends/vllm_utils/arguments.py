@@ -234,9 +234,13 @@ def add_vllm_arguments(parser):
             "true determinism — seed alone does not control kernel selection."
         ),
     )
-    # vime-only orchestration knob: not part of vllm's CLI but read by
-    # UpdateWeightFromDistributed._use_vllm_packed() to choose packed
-    # broadcast vs per-bucket NCCL for dense models.
+    parser.add_argument(
+        "--vllm-tool-call-parser",
+        dest="vllm_tool_call_parser",
+        type=str,
+        default=None,
+        help="vLLM tool-call parser name for agent output parsing (e.g. qwen3_coder).",
+    )
     _vllm_packed = parser.add_mutually_exclusive_group()
     _vllm_packed.add_argument(
         "--vllm-weight-sync-packed",
@@ -357,6 +361,7 @@ _VIME_ORCHESTRATION_DESTS = frozenset(
         "vllm_server_concurrency",
         "vllm_enable_deterministic_inference",
         "vllm_weight_sync_packed",
+        "vllm_tool_call_parser",
         # vime-only flags for fine-grained deployment; consumed in vime/ray/rollout.py
         # (start_rollout_servers / _resolve_vllm_config) and must NOT be forwarded to
         # the per-engine "vllm serve" subprocess.

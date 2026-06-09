@@ -24,32 +24,29 @@ class ParsedModelOutput:
 def parse_model_output(
     raw_output: str,
     *,
+    tokenizer,
     tools_schema: list[dict] | None,
     tool_parser_name: str | None,
     reasoning_parser_name: str | None,
 ) -> ParsedModelOutput:
     """Parse raw model text into reasoning, visible text, and tool uses.
 
-    When ``reasoning_parser_name`` / ``tool_parser_name`` are set the heavy
-    format-specific work is delegated to SGLang's reasoning and function-call
-    parsers (imported lazily, so they are only required when explicitly
-    enabled). The coding-agent example leaves both unset and relies on the XML
-    fallback, which covers the Anthropic-style tool-call text that some
-    coding-agent models still emit occasionally.
+    The heavy format-specific work is delegated to vLLM's reasoning and
+    tool-call parsers. The XML fallback covers Anthropic-style tool-call
+    text that some coding-agent models still emit occasionally.
     """
     reasoning, body_text = "", raw_output
     if reasoning_parser_name:
-        from sglang.srt.parser.reasoning_parser import ReasoningParser
+        from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+        from vllm.reasoning import ReasoningParserManager
 
-        r, b = ReasoningParser(
-            model_type=reasoning_parser_name,
-            stream_reasoning=False,
-        ).parse_non_stream(raw_output)
+        parser = ReasoningParserManager.get_reasoning_parser(reasoning_parser_name)(tokenizer)
+        r, b = parser.extract_reasoning(raw_output, ChatCompletionRequest(messages=[]))
         reasoning, body_text = r or "", b or ""
         if not reasoning and "</think>" in body_text:
             reasoning, body_text = body_text.split("</think>", 1)
 
-    body_text, tool_uses = parse_tool_uses(body_text, tools_schema, tool_parser_name)
+    body_text, tool_uses = parse_tool_uses(body_text, tools_schema, tool_parser_name, tokenizer)
     return ParsedModelOutput(
         reasoning=reasoning,
         text=(body_text or "").strip(),
@@ -61,27 +58,29 @@ def parse_tool_uses(
     body_text: str,
     tools_schema: list[dict] | None,
     tool_parser_name: str | None,
+    tokenizer,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Parse tool calls from body text and return visible text plus tool uses."""
     tool_uses: list[dict[str, Any]] = []
     if tool_parser_name and tools_schema:
-        from sglang.srt.entrypoints.openai.protocol import Function, Tool
-        from sglang.srt.function_call.function_call_parser import FunctionCallParser
+        from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+        from vllm.tool_parsers import ToolParserManager
 
-        sg_tools = [Tool(type="function", function=Function(**d["function"])) for d in tools_schema]
-        parser = FunctionCallParser(tools=sg_tools, tool_call_parser=tool_parser_name)
-        calls = []
-        if parser.has_tool_call(body_text):
-            try:
-                body_text, calls = parser.parse_non_stream(body_text)
-            except Exception:
-                logger.exception("[agent.parsing] sglang tool-call parsing failed; falling back")
-        for c in calls:
-            try:
-                args = json.loads(c.parameters or "{}")
-            except json.JSONDecodeError:
-                args = {"_raw_arguments": c.parameters}
-            tool_uses.append({"name": c.name or "tool", "input": args})
+        request = ChatCompletionRequest(messages=[], tools=tools_schema)
+        parser = ToolParserManager.get_tool_parser(tool_parser_name)(tokenizer, tools=request.tools)
+        info = None
+        try:
+            info = parser.extract_tool_calls(body_text, request)
+        except Exception:
+            logger.exception("[agent.parsing] vllm tool-call parsing failed; falling back")
+        if info is not None and info.tools_called:
+            body_text = info.content or ""
+            for call in info.tool_calls:
+                try:
+                    args = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {"_raw_arguments": call.function.arguments}
+                tool_uses.append({"name": call.function.name or "tool", "input": args})
 
     if not tool_uses and tools_schema:
         body_text, tool_uses = parse_xml_tool_uses(body_text, tools_schema)
