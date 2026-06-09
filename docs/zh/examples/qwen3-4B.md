@@ -193,7 +193,7 @@ OPTIMIZER_ARGS=(
 
 #### VLLM_ARGS
 
-vLLM 所需的参数，这里 `--rollout-num-gpus-per-engine` 基本对应 vLLM 的 `tensor_parallel_size`，除此之外的 vLLM 参数均通过添加 `--vllm-` 的前缀来传给 vime。
+vLLM 推理所需的参数。vime 默认使用 vLLM 作为 rollout 后端（`rollout.py` 启动 `VLLMEngine`，默认 rollout 函数为 `vime.rollout.vllm_rollout.generate_rollout`），无需额外指定 backend。`--rollout-num-gpus-per-engine` 对应每个 vLLM engine 的 `tensor_parallel_size`；除此之外的 vLLM 参数均通过添加 `--vllm-` 前缀传给 vime（例如 `--vllm-max-model-len`）。
 
 ```bash
 VLLM_ARGS=(
@@ -202,7 +202,9 @@ VLLM_ARGS=(
 )
 ```
 
-⚠️  vime 会用 vLLM router 来调度多个 vLLM server，在不开启 dp attention 的情况下不支持 `dp_size`。
+rollout 并发较高时，还可以通过 `--vllm-` 前缀调节 vLLM scheduler，例如 `--vllm-max-num-seqs`、`--vllm-max-num-batched-tokens`；调试或规避 CUDA graph 相关限制时可加 `--vllm-enforce-eager`。
+
+⚠️  vime 会用 vLLM router 来调度多个 vLLM server。训推一体（`--colocate`）时，训练与推理权重经 CUDA IPC 同步；训推分离时，训练侧经 NCCL 与 vLLM engine 同步权重。
 
 ### dynamic sampling
 
@@ -276,21 +278,22 @@ ray job submit ... \
    ...
 ```
 
-此时，就会分配 2 张卡给训练，6 张卡给推理。
+此时，就会分配 2 张卡给训练，6 张卡给推理。`--rollout-num-gpus` 与 `--actor-num-gpus-per-node` 一样，是传给 `train.py` 的 **Ray 资源参数**：框架据此创建 placement group，并把前若干 bundle 分给训练 actor、后续 bundle 分给 rollout engine（见 `vime/ray/placement_group.py`）。**共卡模式（`--colocate`）下该参数会被忽略**，并自动设为 `actor_num_gpus_per_node * actor_num_nodes`。请勿把 `--rollout-num-gpus` 写在 `VLLM_ARGS` 中。
 
-⚠️  在进行训推分离的时候，每个 vLLM server 上的并发度太大，超过了 vLLM 默认的 cuda graph 的并发度，影响推理速度。可以用以下 2 种方式进行调整：
+训推分离时，`VLLM_ARGS` 仅需配置推理后端相关参数，例如：
 
-1. 通过 `--vllm-server-concurrency` 限制发给一个 vLLM server 的最大并发量，例如：
+```bash
+VLLM_ARGS=(
+   --rollout-num-gpus-per-engine 2
+   --vllm-gpu-memory-utilization 0.9
+   --vllm-max-num-seqs 256
+   --vllm-max-num-batched-tokens 8192
+)
+```
 
-   ```bash
-   --vllm-server-concurrency 160
-    ```
+如需调试或规避 CUDA graph 相关限制，可额外加上 `--vllm-enforce-eager`。
 
-2. 使用 `--vllm-cudagraph-capture-sizes` 增大 vLLM 初始化的 cuda graph 数量，例如：
-
-   ```bash
-   --vllm-cudagraph-capture-sizes 1 2 4 8 $(seq 16 8 256)
-   ```
+⚠️  在训推一体的训练时，megatron 始终会占据一些显存，需要通过 `--vllm-gpu-memory-utilization` 来降低 vLLM 占据的显存比例，并配合 `--train-memory-margin-bytes` 为训练侧预留空间。
 
 ### 异步训练
 
