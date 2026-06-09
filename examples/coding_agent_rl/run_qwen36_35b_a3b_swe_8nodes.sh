@@ -207,13 +207,9 @@ VLLM_ARGS=(
    --vllm-enable-expert-parallel
    --vllm-tool-call-parser qwen3_coder
    --vllm-reasoning-parser qwen3
+   --vllm-speculative-config '{"method":"mtp","num_speculative_tokens":3}'
    --prefill-num-servers 1
 )
-# Speculative decoding (EAGLE): vLLM takes one JSON dict.
-# Uncomment and point "model" at your draft checkpoint.
-# VLLM_ARGS+=(
-#    --vllm-speculative-config '{"method":"eagle","num_speculative_tokens":4,"model":"/path/to/eagle_draft"}'
-# )
 
 MISC_ARGS=(
    --attention-dropout 0.0
