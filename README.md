@@ -20,7 +20,7 @@ Discussion channels:
 
 ## Positioning
 
-The vLLM community horizontally supports many LLM post-training frameworks, including [NeMo RL](https://github.com/NVIDIA-NeMo/RL), [OpenRLHF](https://github.com/openrlhf/openrlhf), [verl](https://github.com/verl-project/verl), and so on. We build the Vime project because some post-training users like slime but the slime maintainers don't have the bandwidth to maintain the vLLM integration. Vime is not meant to be a competitor to these frameworks; instead, we hope it can coexist and provide more options for users. The vLLM community will continue to support the vLLM integration in these post-training frameworks.
+The vLLM community horizontally supports many LLM post-training frameworks, including [NeMo RL](https://github.com/NVIDIA-NeMo/RL), [OpenRLHF](https://github.com/openrlhf/openrlhf), [verl](https://github.com/verl-project/verl), and so on. We built the Vime project because some post-training users like slime, but the slime maintainers don't have the bandwidth to maintain the vLLM integration. Vime is not meant to be a competitor to these frameworks; instead, we hope it can coexist and provide more options for users. The vLLM community will continue to support the vLLM integration in these post-training frameworks.
 
 We don't expect heavy new post-training related features to be directly added to Vime. Bugfixes and performance optimizations are welcome.
 
