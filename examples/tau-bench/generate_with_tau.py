@@ -11,7 +11,6 @@ import uuid
 from typing import Any
 
 import numpy as np
-import vllm_tool_parser
 from openai_tool_adapter import create_openai_adapter
 from tau_bench.agents.tool_calling_agent import RESPOND_ACTION_NAME
 from tau_bench.envs import get_env
@@ -452,7 +451,6 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
                     break
 
             response_text = state.tokenizer.decode(new_tokens, skip_special_tokens=False) if new_tokens else ""
-            response_for_env = vllm_tool_parser._strip_special_tokens(response_text)
             train_tokens = list(new_tokens)
             train_logprobs = list(new_logprobs)
             train_loss_mask = [1] * len(train_tokens)
@@ -516,7 +514,7 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
                 sample.status = Sample.Status.ABORTED
                 break
 
-            observation, done, step_info = env.step(response_for_env or response_text)
+            observation, done, step_info = env.step(response_text)
 
             if done:
                 base_reward = observation.get("reward", 0.0)
