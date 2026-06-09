@@ -44,7 +44,6 @@ class UpdateWeightFromDistributed:
     """
     Update distributed engines via NCCL. Each PP rank: group "vime-pp_{pp_rank}",
     only DP=TP=0 broadcasts. Non-expert (TP) and expert (EP) params separate.
-    Subclasses override ``_send_weights`` / ``_on_chunk`` to inject per-mode behaviour.
     """
 
     def __init__(
@@ -66,7 +65,6 @@ class UpdateWeightFromDistributed:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
-        self.update_weight_metrics: dict[str, float] = {}
         self._hf_weight_iterator = (
             HfWeightIteratorBase.create(
                 args=args,
@@ -77,13 +75,6 @@ class UpdateWeightFromDistributed:
             if args.megatron_to_hf_mode == "bridge"
             else None
         )
-
-    def pop_metrics(self) -> dict[str, float]:
-        """
-        Return and clear ``update_weight_metrics``. Drained by the actor onto the rollout/step log.
-        """
-        out, self.update_weight_metrics = self.update_weight_metrics, {}
-        return out
 
     def connect_rollout_engines(
         self,
@@ -167,8 +158,7 @@ class UpdateWeightFromDistributed:
     def _send_weights(self, pbar: tqdm | None) -> None:
         """
         Non-expert (TP) pass → barrier → expert (EP) pass → barrier. Each iterator
-        yields broadcast-ready chunks (bucketing happens internally); subclasses
-        override ``_on_chunk`` to inject per-chunk behaviour.
+        yields broadcast-ready chunks (bucketing happens internally).
         """
         use_vllm_packed = self._use_vllm_packed()
         if self._hf_weight_iterator is not None:
@@ -179,20 +169,13 @@ class UpdateWeightFromDistributed:
             logger.info("Using vLLM packed weight sync (bucketed; metadata + trainer_send_weights per bucket)")
 
         for hf_chunk in self._iter_non_expert_chunks():
-            self._on_chunk(hf_chunk)
             self._update_bucket_weights_from_distributed(hf_chunk, pbar=pbar, packed=use_vllm_packed)
         dist.barrier(group=get_gloo_group())
 
         if not use_vllm_packed:
             for hf_chunk in self._iter_expert_chunks():
-                self._on_chunk(hf_chunk)
                 self._update_bucket_weights_from_distributed(hf_chunk, pbar=pbar, packed=False)
             dist.barrier(group=get_gloo_group())
-
-    def _on_chunk(self, hf_chunk: list[tuple[str, torch.Tensor]]) -> None:
-        """
-        Hook for each HF chunk in ``_send_weights`` before its broadcast. No-op by default.
-        """
 
     def _sync_bridge_weights_to_rollout_engines(self, pbar: tqdm | None, *, use_vllm_packed: bool) -> None:
         """
@@ -206,7 +189,6 @@ class UpdateWeightFromDistributed:
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
             if self._is_pp_src_rank:
                 hf_named_tensors = list(hf_named_tensors)
-                self._on_chunk(hf_named_tensors)
                 self._update_bucket_weights_from_distributed(hf_named_tensors, pbar=pbar, packed=use_vllm_packed)
 
         dist.barrier(group=get_gloo_group())
