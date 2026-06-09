@@ -109,16 +109,16 @@ def _parse_sse(raw: str) -> list[tuple[str, object]]:
 def test_session_id_comes_from_protocol_fields_not_custom_header():
     assert (
         openai._request_session_id(
-            FakeRequest({"X-Slime-Session-Id": "custom"}),
+            FakeRequest({"X-Vime-Session-Id": "custom"}),
             {"metadata": {"session_id": "meta-session"}, "user": "body-user"},
         )
         == "meta-session"
     )
     assert (
-        openai._request_session_id(FakeRequest({"X-Slime-Session-Id": "custom"}), {"user": "body-user"}) == "body-user"
+        openai._request_session_id(FakeRequest({"X-Vime-Session-Id": "custom"}), {"user": "body-user"}) == "body-user"
     )
     assert (
-        anthropic._request_session_id(FakeRequest({"X-Slime-Session-Id": "custom", "X-Api-Key": "anthropic-key"}))
+        anthropic._request_session_id(FakeRequest({"X-Vime-Session-Id": "custom", "X-Api-Key": "anthropic-key"}))
         == "anthropic-key"
     )
     assert (
@@ -138,7 +138,7 @@ def test_anthropic_translation_keeps_tool_results_and_tool_schema():
             "content": [
                 {"type": "thinking", "thinking": "plan"},
                 {"type": "text", "text": "ok"},
-                {"type": "tool_use", "name": "lookup", "input": {"q": "slime"}},
+                {"type": "tool_use", "name": "lookup", "input": {"q": "vime"}},
             ],
         },
         {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "u1", "content": "result"}]},
@@ -156,7 +156,7 @@ def test_anthropic_translation_keeps_tool_results_and_tool_schema():
             "role": "assistant",
             "content": "ok",
             "reasoning_content": "plan",
-            "tool_calls": [{"function": {"name": "lookup", "arguments": {"q": "slime"}}}],
+            "tool_calls": [{"function": {"name": "lookup", "arguments": {"q": "vime"}}}],
         },
         {"role": "tool", "content": "result"},
     ]
@@ -185,7 +185,7 @@ def test_openai_translation_and_responses_input_shapes():
                     {
                         "id": "call_1",
                         "type": "function",
-                        "function": {"name": "lookup", "arguments": {"q": "slime"}},
+                        "function": {"name": "lookup", "arguments": {"q": "vime"}},
                     }
                 ],
             },
@@ -210,7 +210,7 @@ def test_openai_translation_and_responses_input_shapes():
                 {
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": "lookup", "arguments": '{"q": "slime"}'},
+                    "function": {"name": "lookup", "arguments": '{"q": "vime"}'},
                 }
             ],
         },
@@ -313,7 +313,7 @@ def test_openai_chat_completion_streaming_returns_tool_call_delta(monkeypatch):
 
     async def run_case():
         monkeypatch.setattr(openai, "_generate", fake_generate)
-        raw = "use it <tool_call><function=lookup><parameter=query>slime</parameter></function></tool_call>"
+        raw = "use it <tool_call><function=lookup><parameter=query>vime</parameter></function></tool_call>"
         tokenizer = ToyTokenizer({(451,): raw})
         adapter = openai.OpenAIAdapter(tokenizer=tokenizer, vllm_url="http://unused")
         adapter.open_session("sid-chat-tool-stream", sampling_defaults={"max_new_tokens": 8})
@@ -350,7 +350,7 @@ def test_openai_chat_completion_streaming_returns_tool_call_delta(monkeypatch):
         assert any(c["choices"][0]["delta"] == {"content": "use it"} for c in chunks)
         assert tool_delta["tool_calls"][0]["index"] == 0
         assert tool_delta["tool_calls"][0]["function"]["name"] == "lookup"
-        assert tool_delta["tool_calls"][0]["function"]["arguments"] == '{"query": "slime"}'
+        assert tool_delta["tool_calls"][0]["function"]["arguments"] == '{"query": "vime"}'
         assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
         assert segments[0].response_ids == [451]
 
@@ -364,7 +364,7 @@ def test_openai_responses_endpoint_returns_function_calls(monkeypatch):
 
     async def run_case():
         monkeypatch.setattr(openai, "_generate", fake_generate)
-        raw = "look <tool_call><function=lookup><parameter=query>slime</parameter></function></tool_call>"
+        raw = "look <tool_call><function=lookup><parameter=query>vime</parameter></function></tool_call>"
         tokenizer = ToyTokenizer({(301,): raw})
         adapter = openai.OpenAIAdapter(tokenizer=tokenizer, vllm_url="http://unused")
         adapter.open_session("sid-responses", sampling_defaults={"max_new_tokens": 8})
@@ -399,7 +399,7 @@ def test_openai_responses_endpoint_returns_function_calls(monkeypatch):
         assert output_types == ["message", "function_call"]
         assert data["output"][0]["content"][0]["text"] == "look"
         assert function_call["name"] == "lookup"
-        assert function_call["arguments"] == '{"query": "slime"}'
+        assert function_call["arguments"] == '{"query": "vime"}'
         assert segments[0].response_ids == [301]
 
     asyncio.run(run_case())
@@ -414,7 +414,7 @@ def test_openai_responses_streaming_preserves_function_call_output(monkeypatch):
 
     async def run_case():
         monkeypatch.setattr(openai, "_generate", fake_generate)
-        raw = "<tool_call><function=lookup><parameter=query>slime</parameter></function></tool_call>"
+        raw = "<tool_call><function=lookup><parameter=query>vime</parameter></function></tool_call>"
         tokenizer = ToyTokenizer({(551,): raw})
         adapter = openai.OpenAIAdapter(tokenizer=tokenizer, vllm_url="http://unused")
         adapter.open_session("sid-responses-tool-stream", sampling_defaults={"max_new_tokens": 8})
@@ -450,7 +450,7 @@ def test_openai_responses_streaming_preserves_function_call_output(monkeypatch):
         assert created["type"] == "response.created"
         assert [item["type"] for item in created["response"]["output"]] == ["function_call"]
         assert completed_call["name"] == "lookup"
-        assert completed_call["arguments"] == '{"query": "slime"}'
+        assert completed_call["arguments"] == '{"query": "vime"}'
         assert segments[0].response_ids == [551]
 
     asyncio.run(run_case())
@@ -616,7 +616,7 @@ def test_openai_responses_multiturn_uses_vllm_tokens_for_training_segment():
         upstream_server = TestServer(upstream_app)
         await upstream_server.start_server()
 
-        tool_raw = "<tool_call><function=lookup><parameter=query>slime</parameter></function></tool_call>"
+        tool_raw = "<tool_call><function=lookup><parameter=query>vime</parameter></function></tool_call>"
         tokenizer = ScriptedTokenizer(
             prompts=[
                 [10, 11],
@@ -637,7 +637,7 @@ def test_openai_responses_multiturn_uses_vllm_tokens_for_training_segment():
                 headers={"Authorization": "Bearer sid-openai-token"},
                 json={
                     "model": "actor",
-                    "input": "find slime",
+                    "input": "find vime",
                     "max_output_tokens": 5,
                     "tools": [
                         {
@@ -657,12 +657,12 @@ def test_openai_responses_multiturn_uses_vllm_tokens_for_training_segment():
                 json={
                     "model": "actor",
                     "input": [
-                        {"role": "user", "content": "find slime"},
+                        {"role": "user", "content": "find vime"},
                         function_call,
                         {
                             "type": "function_call_output",
                             "call_id": function_call["call_id"],
-                            "output": "found slime",
+                            "output": "found vime",
                         },
                     ],
                     "max_output_tokens": 7,
@@ -684,7 +684,7 @@ def test_openai_responses_multiturn_uses_vllm_tokens_for_training_segment():
         assert first.status == 200
         assert second.status == 200
         assert function_call["name"] == "lookup"
-        assert function_call["arguments"] == '{"query": "slime"}'
+        assert function_call["arguments"] == '{"query": "vime"}'
         assert second_data["output"][0]["content"][0]["text"] == "done"
         assert [req["token_ids"] for req in upstream.requests] == [[10, 11], [10, 11, 20, 21, 30, 31]]
         assert upstream.routing_keys == ["sid-openai-token", "sid-openai-token"]
@@ -712,7 +712,7 @@ def test_anthropic_messages_multiturn_uses_vllm_tokens_for_training_segment():
         upstream_server = TestServer(upstream_app)
         await upstream_server.start_server()
 
-        tool_raw = "<tool_call><function=lookup><parameter=query>slime</parameter></function></tool_call>"
+        tool_raw = "<tool_call><function=lookup><parameter=query>vime</parameter></function></tool_call>"
         tokenizer = ScriptedTokenizer(
             prompts=[
                 [110, 111],
@@ -737,7 +737,7 @@ def test_anthropic_messages_multiturn_uses_vllm_tokens_for_training_segment():
                 json={
                     "model": "actor",
                     "max_tokens": 5,
-                    "messages": [{"role": "user", "content": [{"type": "text", "text": "find slime"}]}],
+                    "messages": [{"role": "user", "content": [{"type": "text", "text": "find vime"}]}],
                     "tools": [
                         {
                             "name": "lookup",
@@ -756,7 +756,7 @@ def test_anthropic_messages_multiturn_uses_vllm_tokens_for_training_segment():
                     "model": "actor",
                     "max_tokens": 7,
                     "messages": [
-                        {"role": "user", "content": [{"type": "text", "text": "find slime"}]},
+                        {"role": "user", "content": [{"type": "text", "text": "find vime"}]},
                         {"role": "assistant", "content": first_data["content"]},
                         {
                             "role": "user",
@@ -764,7 +764,7 @@ def test_anthropic_messages_multiturn_uses_vllm_tokens_for_training_segment():
                                 {
                                     "type": "tool_result",
                                     "tool_use_id": tool_use["id"],
-                                    "content": "found slime",
+                                    "content": "found vime",
                                 }
                             ],
                         },
@@ -786,7 +786,7 @@ def test_anthropic_messages_multiturn_uses_vllm_tokens_for_training_segment():
         assert first.status == 200
         assert second.status == 200
         assert tool_use["name"] == "lookup"
-        assert tool_use["input"] == {"query": "slime"}
+        assert tool_use["input"] == {"query": "vime"}
         assert second_data["content"] == [{"type": "text", "text": "anthropic done"}]
         assert [req["token_ids"] for req in upstream.requests] == [[110, 111], [110, 111, 120, 121, 130]]
         assert upstream.routing_keys == ["sid-anthropic-token", "sid-anthropic-token"]

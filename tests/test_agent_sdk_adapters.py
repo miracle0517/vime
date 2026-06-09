@@ -52,7 +52,7 @@ def test_openai_agents_sdk_responses_runs_tool_loop_against_adapter(monkeypatch)
         monkeypatch.setattr(openai, "_generate", fake_generate)
         tokenizer = SDKTokenizer(
             [
-                "<tool_call><function=lookup><parameter=query>slime</parameter></function></tool_call>",
+                "<tool_call><function=lookup><parameter=query>vime</parameter></function></tool_call>",
                 "final after tool",
             ]
         )
@@ -82,7 +82,7 @@ def test_openai_agents_sdk_responses_runs_tool_loop_against_adapter(monkeypatch)
             model_settings=agents.ModelSettings(max_tokens=4),
         )
         try:
-            result = await agents.Runner.run(agent, "find slime")
+            result = await agents.Runner.run(agent, "find vime")
         finally:
             await client.close()
             await oai.close()
@@ -94,16 +94,16 @@ def test_openai_agents_sdk_responses_runs_tool_loop_against_adapter(monkeypatch)
         assert calls[0]["body"]["tools"][0]["name"] == "lookup"
         assert calls[1]["body"]["input"][-1] == {
             "call_id": calls[1]["body"]["input"][-2]["call_id"],
-            "output": "found slime",
+            "output": "found vime",
             "type": "function_call_output",
         }
         assert tokenizer.rendered[0][0] == [
             {"role": "system", "content": "Use lookup."},
-            {"role": "user", "content": "find slime"},
+            {"role": "user", "content": "find vime"},
         ]
         assert tokenizer.rendered[1][0][-1] == {
             "role": "tool",
-            "content": "found slime",
+            "content": "found vime",
             "tool_call_id": calls[1]["body"]["input"][-2]["call_id"],
         }
         assert segments[0].metadata["segment_kind"] == "final"
@@ -179,7 +179,7 @@ def test_openai_sdk_chat_completion_streaming_runs_against_adapter(monkeypatch):
 
         monkeypatch.setattr(openai, "_generate", fake_generate)
         tokenizer = SDKTokenizer(
-            ["streamed via sdk <tool_call><function=lookup><parameter=query>slime</parameter></function></tool_call>"]
+            ["streamed via sdk <tool_call><function=lookup><parameter=query>vime</parameter></function></tool_call>"]
         )
         adapter = openai.OpenAIAdapter(tokenizer=tokenizer, vllm_url="http://unused")
         client = TestClient(TestServer(adapter.app))
@@ -233,7 +233,7 @@ def test_openai_sdk_chat_completion_streaming_runs_against_adapter(monkeypatch):
         segments = await adapter.finish_session("sdk-openai-chat-stream")
         assert "".join(text_parts) == "streamed via sdk"
         assert tool_names == ["lookup"]
-        assert tool_arguments == ['{"query": "slime"}']
+        assert tool_arguments == ['{"query": "vime"}']
         assert finish_reasons == ["tool_calls"]
         assert usages[-1].prompt_tokens == 2
         assert usages[-1].completion_tokens == 1

@@ -34,8 +34,8 @@ BASE_DIR=${BASE_DIR:-"/root"}
 CKPT_ARGS=(
    --hf-checkpoint ${BASE_DIR}/MiniMax-M2.5
    --ref-load ${BASE_DIR}/MiniMax-M2.5_torch_dist
-   --load ${BASE_DIR}/MiniMax-M2.5_slime/
-   --save ${BASE_DIR}/MiniMax-M2.5_slime/
+   --load ${BASE_DIR}/MiniMax-M2.5_vime/
+   --save ${BASE_DIR}/MiniMax-M2.5_vime/
    --save-interval 20
    --megatron-to-hf-mode raw
    --model-name minimax_m2

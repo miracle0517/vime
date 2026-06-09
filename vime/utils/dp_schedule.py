@@ -2,7 +2,7 @@
 
 Pure-Python logic that decides, for one rollout's worth of sample lengths,
 how to group samples into micro-batches and which DP rank owns each mbs.
-Lives outside the ray/sglang-importing modules so it can be unit-tested
+Lives outside the ray/vllm-importing modules so it can be unit-tested
 under CPU-only CI.
 
 The scheduling philosophy is **pack first, distribute second**:

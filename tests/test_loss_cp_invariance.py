@@ -7,7 +7,7 @@ after the optimizer-side all-reduce is identical regardless of CP size*.
 
 Why this matters
 ----------------
-Slime's loss prescaling + Megatron's per-mb scaling + DDP's grad
+Vime's loss prescaling + Megatron's per-mb scaling + DDP's grad
 averaging compose into one big formula. Any time we touch any one of
 those three layers the numbers should land in the same place. Until
 this test existed we only had end-to-end report-formula checks
@@ -18,12 +18,12 @@ Mapping to Megatron source
 --------------------------
 We reproduce, for each spawned rank, the exact sequence Megatron applies
 when a 3-tuple ``(loss, num_tokens, log)`` comes back from the loss
-function with ``calculate_per_token_loss=False`` — slime's per-rollout-
+function with ``calculate_per_token_loss=False`` — vime's per-rollout-
 mean path:
 
   1. Loss function pre-scales::
          loss *= num_microbatches / step_global_batch_size * (dp * cp)
-     See ``slime/backends/megatron_utils/loss.py:1209-1215``.
+     See ``vime/backends/megatron_utils/loss.py:1209-1215``.
   2. Megatron divides by ``clamp(num_tokens, 1)`` then by
      ``num_microbatches``::
          output_tensor /= torch.clamp(num_tokens, min=1)  # num_tokens=1 → no-op
@@ -45,7 +45,7 @@ contain ``cp`` anywhere, so the grad norm must be identical for any
 What this test does NOT exercise: the actual Megatron model classes, the
 real DDP buffer code, fused optimizers, mixed-precision. We use a plain
 ``nn.Linear`` with manual all-reduce-average to simulate steps 1-4 above.
-The contract here is on *our* scaling math (steps 1 + 4 are slime's;
+The contract here is on *our* scaling math (steps 1 + 4 are vime's;
 step 2 is what Megatron does to our 3-tuple). If Megatron later changes
 step 2 — e.g. drops the ``/= num_microbatches`` — this test won't catch
 it, but the real GPU integration suite (``test_qwen2.5_0.5B_short.py``)
@@ -54,7 +54,7 @@ will.
 
 from __future__ import annotations
 
-# Megatron stub must land in sys.modules first; the slime imports inside
+# Megatron stub must land in sys.modules first; the vime imports inside
 # the worker pick it up via this same module. pytest's prepend importmode
 # puts ``tests/`` on sys.path so the bare-name import works without an
 # ``__init__.py``; mp.spawn children inherit the parent's sys.path.
@@ -85,8 +85,8 @@ def _grad_norm_worker(
     """One spawned rank.
 
     Builds a tiny ``nn.Linear`` model (deterministic init via ``seed``),
-    runs slime's per-rollout-mean loss reducer with the rank's share of
-    the four-rollout fixture, applies the slime-side prescaling, then
+    runs vime's per-rollout-mean loss reducer with the rank's share of
+    the four-rollout fixture, applies the vime-side prescaling, then
     Megatron's per-mb scaling, then ``.backward()``, then a manual
     all-reduce-average across the dp-with-cp group (mirroring DDP's
     ``average_in_collective=False`` path with
@@ -151,7 +151,7 @@ def _grad_norm_worker(
         reducer = get_sum_of_sample_mean(my_tl, my_rl, my_masks, my_denoms)
         loss = reducer(output)
 
-        # === Step 1: slime's per-rollout-mean prescaling ======================
+        # === Step 1: vime's per-rollout-mean prescaling ======================
         # loss.py:1209-1215. ``mpu.get_data_parallel_world_size(with_context_parallel=True)``
         # is the dp-with-cp world size, which is ``world_size`` in this setup.
         loss = loss * num_microbatches / step_global_batch_size * world_size
@@ -160,10 +160,10 @@ def _grad_norm_worker(
         # schedules.py:258-264 — for the 3-tuple, not-per-token-loss path:
         #     output_tensor /= torch.clamp(num_tokens, min=1)
         #     output_tensor /= num_microbatches
-        # slime passes num_tokens=1 in this path (loss.py:1221), so the
+        # vime passes num_tokens=1 in this path (loss.py:1221), so the
         # first divide is a no-op; we keep it explicit to mirror the
         # source faithfully.
-        num_tokens_for_scaling = torch.tensor(1.0)  # slime's placeholder
+        num_tokens_for_scaling = torch.tensor(1.0)  # vime's placeholder
         loss = loss / torch.clamp(num_tokens_for_scaling, min=1.0)
         loss = loss / num_microbatches
 
@@ -218,7 +218,7 @@ def _run_grad_norm_worker(dp_size: int, cp_size: int, tmp_path) -> float:
 #   - (1, 4) deeper CP-only
 #   - (4, 1) deeper DP-only
 # The full 3*3 matrix lives in test_metric_report_dist.py — here we just
-# want enough coverage to catch a sign/factor regression in the slime
+# want enough coverage to catch a sign/factor regression in the vime
 # prescaling math.
 _PARALLELISM_CASES = [(1, 1), (2, 1), (1, 2), (2, 2), (1, 4), (4, 1)]
 

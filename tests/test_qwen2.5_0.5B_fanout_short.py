@@ -44,7 +44,7 @@ import tempfile
 
 import vime.utils.external_utils.command_utils as U
 
-TIGHT_DEVICE_MEMORY = U.get_bool_env_var("SLIME_TEST_TIGHT_DEVICE_MEMORY", "1")
+TIGHT_DEVICE_MEMORY = U.get_bool_env_var("VIME_TEST_TIGHT_DEVICE_MEMORY", "1")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
@@ -54,8 +54,8 @@ NUM_GPUS = 4
 # through to the Ray-submitted job via an env var so all worker
 # processes write to the same path.
 FANOUT_COUNTER_FILE = os.environ.get(
-    "SLIME_FANOUT_TEST_COUNTER_FILE",
-    os.path.join(tempfile.gettempdir(), "slime_fanout_test_counter.log"),
+    "VIME_FANOUT_TEST_COUNTER_FILE",
+    os.path.join(tempfile.gettempdir(), "vime_fanout_test_counter.log"),
 )
 
 
@@ -190,7 +190,7 @@ def execute():
         megatron_model_type=MODEL_TYPE,
         # Make the counter path visible inside the Ray-submitted job
         # (helper picks it up via os.environ).
-        extra_env_vars={"SLIME_FANOUT_TEST_COUNTER_FILE": FANOUT_COUNTER_FILE},
+        extra_env_vars={"VIME_FANOUT_TEST_COUNTER_FILE": FANOUT_COUNTER_FILE},
     )
 
     # Post-train assertion: compact_generate must have been called exactly

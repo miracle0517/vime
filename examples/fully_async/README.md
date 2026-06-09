@@ -3,8 +3,7 @@
 This example shows a simple way to make rollout generation **fully asynchronous**: a single global worker is created once and then keeps running in the background, continuously pulling prompts and launching generation tasks. Training only needs to fetch already finished results. This removes the per‑step wait that happens in the normal synchronous style.
 
 ## Files
-The fully-async worker has been **promoted from this example into the core package** — it now lives in
-`vime/rollout/fully_async_rollout.py`. This directory keeps only the launch script:
+The worker itself lives in `vime.rollout.fully_async_rollout`; this directory is just the launch script:
 * `run-qwen3-4b-fully_async.sh`: example launch script with Qwen3‑4B.
 
 ## Prerequisite

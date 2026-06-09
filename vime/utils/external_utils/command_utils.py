@@ -108,14 +108,8 @@ def execute_train(
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
     exec_command(
-        # vLLM renames its VRAM-holding subprocesses via set_process_title()
-        # (VLLM::EngineCore, VLLM::Worker_TP*, vllm::router), so their cmdline no
-        # longer contains "vllm serve". Matching only the launcher would leave the
-        # engine/worker children holding GPU memory and leak it into the next run.
-        # Match both the launcher and the renamed children; the [v]/[M] bracket
-        # trick keeps this pattern from matching pkill's own cmdline. This targets
-        # exactly the vLLM tree, so the old indiscriminate `pkill -9 python`
-        # (dangerous on colocate/shared nodes) is no longer needed.
+        # vLLM renames its subprocesses (VLLM::EngineCore / Worker_TP*), so match
+        # the renamed children too; the [v]/[M] brackets avoid matching pkill itself.
         "pkill -9 -f '[v]llm serve|VLL[M]::'; "
         "sleep 3; "
         f"{'' if external_ray else 'ray stop --force; '}"
