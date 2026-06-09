@@ -336,6 +336,12 @@ def build_vllm_subprocess_env(server_args: dict[str, Any]) -> dict[str, str]:
     env.setdefault("NCCL_CUMEM_ENABLE", "0")
     env["CUDA_VISIBLE_DEVICES"] = server_args["visible_devices"]
     env.setdefault("VLLM_SERVER_DEV_MODE", "1")
+    # --vllm-enable-deterministic-inference promises (in its help text) to export
+    # VLLM_BATCH_INVARIANT=1 to the engine subprocess so attention / comm / MM kernels
+    # pick batch-invariant variants; the per-sample seed alone does not control kernel
+    # selection. Forwarding the flag is orchestration-only, so set the env here.
+    if getattr(args, "vllm_enable_deterministic_inference", False):
+        env["VLLM_BATCH_INVARIANT"] = "1"
     if getattr(args, "colocate", False):
         import vime
 
