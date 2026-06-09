@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
 import os
 import uuid
 from typing import Any
 
+import numpy as np
 from openai_tool_adapter import create_openai_adapter
 from tau_bench.agents.tool_calling_agent import RESPOND_ACTION_NAME
 from tau_bench.envs import get_env
@@ -15,10 +18,8 @@ from tau_bench.types import Action, RunConfig
 
 from vime.rollout.vllm_rollout import (
     GenerateState,
-    _apply_vllm_routed_experts,
     _build_inference_sampling_params,
     _coerce_flat_int_token_ids,
-    _inference_generate_tokens_and_logprobs,
     _mm_render_response_to_generate_body,
 )
 from vime.utils.http_utils import post
@@ -28,6 +29,30 @@ logger = logging.getLogger(__name__)
 
 # Defaults formerly in tau_bench_config.yaml
 _TAU_DEFAULT_MAX_TURNS = 10
+
+
+def _parse_choice_tokens_and_logprobs(choice: dict[str, Any]) -> tuple[list[int], list[float]]:
+    new_tokens = choice.get("token_ids") or []
+    log_probs: list[float] = []
+    lp = choice.get("logprobs")
+    if isinstance(lp, dict):
+        content_items = lp.get("content") or []
+        log_probs = [float(item.get("logprob", 0.0)) if isinstance(item, dict) else 0.0 for item in content_items]
+    if not log_probs:
+        log_probs = [0.0] * len(new_tokens)
+    return new_tokens, log_probs
+
+
+def _maybe_apply_routed_experts(args: Any, sample: Sample, choice: dict[str, Any]) -> None:
+    if choice.get("routed_experts") is None:
+        return
+    raw = base64.b64decode(choice["routed_experts"].encode("ascii"), validate=True)
+    arr = np.load(io.BytesIO(raw), allow_pickle=False)
+    sample.rollout_routed_experts = np.ascontiguousarray(arr.astype(np.int32, copy=True)).reshape(
+        len(sample.tokens) - 1,
+        args.num_layers,
+        args.moe_router_topk,
+    )
 
 
 def _ensure_tau_args(args: Any) -> None:
@@ -414,7 +439,7 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
             output = await post(f"{base_url}/inference/v1/generate", body, headers=headers)
             choice = output["choices"][0]
             finish_reason = choice.get("finish_reason") or "stop"
-            new_tokens, new_logprobs = _inference_generate_tokens_and_logprobs(choice)
+            new_tokens, new_logprobs = _parse_choice_tokens_and_logprobs(choice)
 
             if not new_tokens:
                 if finish_reason in ("abort", "cancelled"):
@@ -474,7 +499,7 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
 
             response_tokens.extend(new_tokens)
             append_response_window(train_tokens, train_loss_mask, train_logprobs)
-            _apply_vllm_routed_experts(args, sample, choice)
+            _maybe_apply_routed_experts(args, sample, choice)
 
             messages.append({"role": "assistant", "content": response_text})
 
