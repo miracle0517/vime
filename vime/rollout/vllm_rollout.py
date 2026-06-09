@@ -60,13 +60,17 @@ def _coerce_flat_int_token_ids(ids: Any) -> list[int]:
 def _prepare_prompt_ids(sample: Sample, tokenizer, processor: Any) -> list[int]:
     raw_multimodal_inputs = sample.multimodal_inputs or {}
     has_multimodal_inputs = any(value is not None for value in raw_multimodal_inputs.values())
-    reuse_existing_input_ids = bool(sample.tokens) and (sample.multimodal_train_inputs is not None or not has_multimodal_inputs)
+    reuse_existing_input_ids = bool(sample.tokens) and (
+        sample.multimodal_train_inputs is not None or not has_multimodal_inputs
+    )
 
     if processor and has_multimodal_inputs and not reuse_existing_input_ids:
         processor_output = processor(text=sample.prompt, **build_processor_kwargs(raw_multimodal_inputs))
         prompt_ids = processor_output["input_ids"][0]
         if sample.multimodal_train_inputs is None:
-            sample.multimodal_train_inputs = {k: v for k, v in processor_output.items() if k not in _PROCESSOR_PROMPT_KEYS} or None
+            sample.multimodal_train_inputs = {
+                k: v for k, v in processor_output.items() if k not in _PROCESSOR_PROMPT_KEYS
+            } or None
         return _coerce_flat_int_token_ids(prompt_ids)
 
     if reuse_existing_input_ids:
@@ -210,7 +214,9 @@ def _mm_render_response_to_generate_body(render_data: Any, model: str) -> dict[s
             body["cache_salt"] = p["cache_salt"]
         return body
 
-    raise ValueError("chat/render: unexpected JSON shape; expected a dict with token_ids or [conversation, engine_prompts] list")
+    raise ValueError(
+        "chat/render: unexpected JSON shape; expected a dict with token_ids or [conversation, engine_prompts] list"
+    )
 
 
 def _find_token_subsequence(haystack: list[int], needle: list[int], start: int = 0) -> int:
@@ -248,7 +254,10 @@ def _align_mm_feature_placeholders_to_tokens(generate_body: dict[str, Any], toke
             offset = int(entry.get("offset", -1))
             length = int(entry.get("length", -1))
             if offset < 0 or length <= 0 or offset + length > len(render_token_ids):
-                raise ValueError(f"Cannot align vLLM {modality} placeholder: invalid render range offset={offset}, length={length}, render_len={len(render_token_ids)}")
+                raise ValueError(
+                    f"Cannot align vLLM {modality} placeholder: invalid render range "
+                    f"offset={offset}, length={length}, render_len={len(render_token_ids)}"
+                )
             ordered_entries.append((offset, str(modality), entry))
 
     search_start = 0
@@ -257,7 +266,10 @@ def _align_mm_feature_placeholders_to_tokens(generate_body: dict[str, Any], toke
         placeholder_tokens = render_token_ids[render_offset : render_offset + length]
         offset = _find_token_subsequence(token_ids, placeholder_tokens, search_start)
         if offset < 0:
-            raise ValueError(f"Cannot align vLLM {modality} placeholder from render offset={render_offset}, length={length}: placeholder token slice not found in canonical token_ids")
+            raise ValueError(
+                f"Cannot align vLLM {modality} placeholder from render offset={render_offset}, length={length}: "
+                "placeholder token slice not found in canonical token_ids"
+            )
         entry["offset"] = offset
         entry["length"] = len(placeholder_tokens)
         search_start = offset + len(placeholder_tokens)
@@ -271,11 +283,15 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     state = GenerateState(args)
     base = f"http://{args.vllm_router_ip}:{args.vllm_router_port}"
 
-    assert sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED, f"Sample status is {sample.status}"
+    assert (
+        sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
+    ), f"Sample status is {sample.status}"
 
     prompt_ids = _prepare_prompt_ids(sample, state.tokenizer, state.processor)
 
-    assert sampling_params["max_new_tokens"] >= 0, f"max_new_tokens: {sampling_params['max_new_tokens']} should not be less than 0"
+    assert (
+        sampling_params["max_new_tokens"] >= 0
+    ), f"max_new_tokens: {sampling_params['max_new_tokens']} should not be less than 0"
     if sampling_params["max_new_tokens"] == 0:
         sample.status = Sample.Status.TRUNCATED
         return sample
@@ -334,7 +350,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     lp = choice.get("logprobs")
     if isinstance(lp, dict):
         content_items = lp.get("content") or []
-        new_response_log_probs = [float(item.get("logprob", 0.0)) if isinstance(item, dict) else 0.0 for item in content_items]
+        new_response_log_probs = [
+            float(item.get("logprob", 0.0)) if isinstance(item, dict) else 0.0 for item in content_items
+        ]
     if not new_response_log_probs:
         new_response_log_probs = [0.0] * len(new_response_tokens)
 
@@ -455,7 +473,9 @@ async def generate_and_rm(
     target="group",
     attrs_getter=lambda args, group, sampling_params, evaluation=False: {"group_size": len(group)},
 )
-async def generate_and_rm_group(args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False) -> list[Sample] | list[list[Sample]]:
+async def generate_and_rm_group(
+    args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
+) -> list[Sample] | list[list[Sample]]:
     # ``generate_and_rm`` may return either a ``Sample`` or a ``list[Sample]``
     # depending on whether the ``--custom-generate-function-path`` callable
     # emits one trainable sample or several (e.g. multi-turn agent rollouts
@@ -478,7 +498,9 @@ async def generate_and_rm_group(args: Namespace, group: list[Sample], sampling_p
         if getattr(args, "vllm_enable_deterministic_inference", False):
             seed = state.group_sampling_seeds[idx]
             current_sampling_params["seed"] = seed
-        tasks.append(asyncio.create_task(generate_and_rm(args, sample, current_sampling_params, evaluation=evaluation)))
+        tasks.append(
+            asyncio.create_task(generate_and_rm(args, sample, current_sampling_params, evaluation=evaluation))
+        )
 
     group = await asyncio.gather(*tasks)
 
@@ -548,7 +570,9 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     return aborted_samples
 
 
-async def generate_rollout_async(args: Namespace, rollout_id: int, data_source: Callable[[int], list[list[Sample]]]) -> tuple[RolloutFnTrainOutput, list[list[Sample]]]:
+async def generate_rollout_async(
+    args: Namespace, rollout_id: int, data_source: Callable[[int], list[list[Sample]]]
+) -> tuple[RolloutFnTrainOutput, list[list[Sample]]]:
     """An example to implement the generate_rollout function for an rule based rm rollout generation.
 
     Args:
@@ -566,7 +590,9 @@ async def generate_rollout_async(args: Namespace, rollout_id: int, data_source: 
     state = GenerateState(args)
 
     # instantiate data filters
-    dynamic_filter = load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path is not None else None
+    dynamic_filter = (
+        load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path is not None else None
+    )
 
     metric_gatherer = MetricGatherer()
 
@@ -620,7 +646,9 @@ async def generate_rollout_async(args: Namespace, rollout_id: int, data_source: 
 
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
-    all_samples = sorted(all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
+    all_samples = sorted(
+        all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index
+    )
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
@@ -652,7 +680,9 @@ async def eval_rollout(args: Namespace, rollout_id: int) -> tuple[dict[str, dict
     return RolloutFnEvalOutput(data=results), []
 
 
-async def eval_rollout_single_dataset(args: Namespace, rollout_id: int, dataset_cfg: EvalDatasetConfig) -> dict[str, dict[str, list[Any]]]:
+async def eval_rollout_single_dataset(
+    args: Namespace, rollout_id: int, dataset_cfg: EvalDatasetConfig
+) -> dict[str, dict[str, list[Any]]]:
     """An example to implement the eval_rollout function for an rule based rm rollout generation.
 
     Args:
@@ -727,7 +757,11 @@ async def eval_rollout_single_dataset(args: Namespace, rollout_id: int, dataset_
         sample = await coro
         if do_print:
             logged_sample = sample[0] if isinstance(sample, list) else sample
-            logger.info(f"eval_rollout_single_dataset example data: {[str(logged_sample.prompt) + logged_sample.response]} reward={logged_sample.reward}")
+            logger.info(
+                "eval_rollout_single_dataset example data: "
+                f"{[str(logged_sample.prompt) + logged_sample.response]} "
+                f"reward={logged_sample.reward}"
+            )
             do_print = False
         if isinstance(sample, list):
             data.extend(sample)
@@ -748,7 +782,9 @@ async def eval_rollout_single_dataset(args: Namespace, rollout_id: int, dataset_
     }
 
 
-def generate_rollout(args: Namespace, rollout_id: int, data_source: Any, evaluation: bool = False) -> RolloutFnTrainOutput | RolloutFnEvalOutput:
+def generate_rollout(
+    args: Namespace, rollout_id: int, data_source: Any, evaluation: bool = False
+) -> RolloutFnTrainOutput | RolloutFnEvalOutput:
     """An example to implement the generate_rollout function for an rule based rm rollout generation.
 
     Args:
