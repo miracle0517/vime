@@ -56,7 +56,7 @@ export VLLM_RPC_TIMEOUT="${VLLM_RPC_TIMEOUT:-1800000}"
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/vime:/root/Megatron-LM\",
+    \"PYTHONPATH\": \"/root/Megatron-LM\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"VLLM_RPC_TIMEOUT\": \"${VLLM_RPC_TIMEOUT}\"
   }
@@ -216,7 +216,7 @@ launch_train_for_profiling() {
 
   RUNTIME_ENV_JSON="{
     \"env_vars\": {
-      \"PYTHONPATH\": \"${VIME_ROOT}:/root/Megatron-LM\",
+      \"PYTHONPATH\": \"/root/Megatron-LM\",
       \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
       \"VLLM_RPC_TIMEOUT\": \"${VLLM_RPC_TIMEOUT}\"
     }
