@@ -100,7 +100,6 @@ class _State(metaclass=SingletonMeta):
         self.adapter = AnthropicAdapter(
             tokenizer=self.tokenizer,
             vllm_url=vllm_url,
-            model=args.hf_checkpoint,
             tool_parser=self.tool_parser,
             reasoning_parser=self.reasoning_parser,
         )

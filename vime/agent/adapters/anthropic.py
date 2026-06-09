@@ -58,7 +58,7 @@ class AnthropicAdapter(BaseAdapter):
 
     session_cls = Session
 
-    def __init__(self, *, tokenizer, vllm_url, tool_parser=None, reasoning_parser=None, model=None) -> None:
+    def __init__(self, *, tokenizer, vllm_url, tool_parser=None, reasoning_parser=None) -> None:
         super().__init__(
             tokenizer=tokenizer,
             vllm_url=vllm_url,
