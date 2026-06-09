@@ -93,14 +93,18 @@ class UpdateWeightFromDistributed:
         # For TP:
         #   1. AllGather parameters to rank 0
         #   2. Broadcast parameters from rank 0 to all vLLM engines
-        self._is_pp_src_rank = mpu.get_data_parallel_rank(with_context_parallel=True) == 0 and mpu.get_tensor_model_parallel_rank() == 0
+        self._is_pp_src_rank = (
+            mpu.get_data_parallel_rank(with_context_parallel=True) == 0 and mpu.get_tensor_model_parallel_rank() == 0
+        )
         pp_rank = mpu.get_pipeline_model_parallel_rank()
         if self._is_pp_src_rank:
             self._group_name = f"vime-pp_{pp_rank}"
 
         if self._is_pp_src_rank:
             if self._model_update_groups is not None:
-                disconnect_rollout_engines_from_distributed(self.args, self._group_name, self._model_update_groups, self.rollout_engines)
+                disconnect_rollout_engines_from_distributed(
+                    self.args, self._group_name, self._model_update_groups, self.rollout_engines
+                )
             self._model_update_groups = connect_rollout_engines_from_distributed(
                 self.args,
                 self._group_name,
@@ -111,7 +115,9 @@ class UpdateWeightFromDistributed:
     def disconnect_rollout_engines(self) -> None:
         if not getattr(self, "_is_pp_src_rank", False) or self._model_update_groups is None:
             return
-        disconnect_rollout_engines_from_distributed(self.args, self._group_name, self._model_update_groups, self.rollout_engines)
+        disconnect_rollout_engines_from_distributed(
+            self.args, self._group_name, self._model_update_groups, self.rollout_engines
+        )
         self._model_update_groups = None
 
     @torch.no_grad()
@@ -244,7 +250,9 @@ class UpdateWeightFromDistributed:
         for name, param in params:
             param = all_gather_param(name, param)
             param_size = param.numel() * param.element_size()
-            if (buffer_size + param_size) * mpu.get_expert_model_parallel_world_size() > self.args.update_weight_buffer_size:
+            if (
+                buffer_size + param_size
+            ) * mpu.get_expert_model_parallel_world_size() > self.args.update_weight_buffer_size:
                 hf_chunk = self._ep_gather_and_convert(batch)
                 if hf_chunk:
                     yield hf_chunk
@@ -274,7 +282,10 @@ class UpdateWeightFromDistributed:
         all_gathered_params = [[] for _ in range(mpu.get_expert_model_parallel_world_size())]
         handles = []
         for i, (_name, param) in enumerate(named_tensors):
-            params = [torch.empty_like(param.data, device=torch.cuda.current_device()) for _ in range(mpu.get_expert_model_parallel_world_size())]
+            params = [
+                torch.empty_like(param.data, device=torch.cuda.current_device())
+                for _ in range(mpu.get_expert_model_parallel_world_size())
+            ]
             handle = dist.all_gather(params, param.data, group=mpu.get_expert_model_parallel_group(), async_op=True)
             handles.append(handle)
             for ep_rank, names in enumerate(all_names):
@@ -440,7 +451,10 @@ def update_weights_from_distributed(
         for engine in rollout_engines
     ]
 
-    named_gpu_iter = ((name, (param.data if hasattr(param, "data") else param).contiguous()) for name, param in converted_named_tensors)
+    named_gpu_iter = (
+        (name, (param.data if hasattr(param, "data") else param).contiguous())
+        for name, param in converted_named_tensors
+    )
     NCCLWeightTransferEngine.trainer_send_weights(
         named_gpu_iter,
         NCCLTrainerSendWeightsArgs(group=group, packed=packed),
