@@ -68,7 +68,7 @@ megatron:
         "--kl-coef 0.00 "
         "--entropy-coef 0.00 "
         "--eps-clip 4e-4 "
-        "--num-critic-only-steps 3 "
+        "--num-critic-only-steps 2 "
         "--normalize-advantages "
     )
 
