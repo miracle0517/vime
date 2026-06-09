@@ -354,9 +354,7 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
     args = server_args["args"]
     topology: VllmEngineTopology = server_args["topology"]
     env = build_vllm_subprocess_env(server_args)
-    # Bind to all interfaces so the router on the head node can reach
-    # engines placed on other nodes in a multi-node Ray cluster.
-    host_for_subprocess = "0.0.0.0"
+    host_for_subprocess = (server_args["host"] or "127.0.0.1").strip("[]")
 
     cmd = [
         "vllm",
