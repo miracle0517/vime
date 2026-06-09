@@ -234,12 +234,6 @@ def add_vllm_arguments(parser):
             "true determinism — seed alone does not control kernel selection."
         ),
     )
-    # vime-only orchestration knob: not part of vllm's engine CLI. Names the
-    # vLLM tool-call parser the agent adapter uses to parse model output (vime
-    # runs the engine in raw token-generation mode, so the adapter parses
-    # client-side). Mirrors slime's --sglang-tool-call-parser; read by
-    # examples/coding_agent_rl. (--vllm-reasoning-parser is NOT hand-added — it
-    # is auto-generated from AsyncEngineArgs.reasoning_parser.)
     parser.add_argument(
         "--vllm-tool-call-parser",
         dest="vllm_tool_call_parser",
@@ -247,9 +241,6 @@ def add_vllm_arguments(parser):
         default=None,
         help="vLLM tool-call parser name for agent output parsing (e.g. qwen3_coder).",
     )
-    # vime-only orchestration knob: not part of vllm's CLI but read by
-    # UpdateWeightFromDistributed._use_vllm_packed() to choose packed
-    # broadcast vs per-bucket NCCL for dense models.
     _vllm_packed = parser.add_mutually_exclusive_group()
     _vllm_packed.add_argument(
         "--vllm-weight-sync-packed",
