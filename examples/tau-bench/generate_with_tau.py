@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 import numpy as np
+import vllm_tool_parser
 from openai_tool_adapter import create_openai_adapter
 from tau_bench.agents.tool_calling_agent import RESPOND_ACTION_NAME
 from tau_bench.envs import get_env
@@ -72,13 +73,8 @@ def _ensure_tau_args(args: Any) -> None:
 
 async def batched_tau_bench_rm(args, samples, **kwargs) -> list[float] | float:
     if isinstance(samples, Sample):
-        reward = samples.reward if samples.reward is not None else 0.0
-        if os.environ.get("TAU_E2E_MINIMAL") == "1":
-            reward += 0.01
-        return reward
+        return samples.reward if samples.reward is not None else 0.0
     rewards = [s.reward if s.reward is not None else 0.0 for s in samples]
-    if os.environ.get("TAU_E2E_MINIMAL") == "1":
-        rewards = [r + 0.01 * (i + 1) for i, r in enumerate(rewards)]
     max_r = max(rewards) if rewards else 1.0
     if max_r > 0:
         rewards = [r / max_r for r in rewards]
@@ -354,14 +350,10 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
 
     initial_obs = env.reset()
     wiki = initial_obs.get("wiki", "")
+    short_wiki_chars = os.environ.get("TAU_SHORT_WIKI")
+    if short_wiki_chars is not None:
+        wiki = wiki[: int(short_wiki_chars)]
     tools_info = initial_obs.get("tools_info", [])
-    if os.environ.get("TAU_E2E_MINIMAL") == "1":
-        wiki = wiki[:500]
-        tools_info = tools_info[:2]
-    else:
-        short_wiki_chars = os.environ.get("TAU_SHORT_WIKI")
-        if short_wiki_chars is not None:
-            wiki = wiki[: int(short_wiki_chars)]
     tools_section = _build_tools_section(tools_info)
 
     messages: list[dict] = [
@@ -460,6 +452,7 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
                     break
 
             response_text = state.tokenizer.decode(new_tokens, skip_special_tokens=False) if new_tokens else ""
+            response_for_env = vllm_tool_parser._strip_special_tokens(response_text)
             train_tokens = list(new_tokens)
             train_logprobs = list(new_logprobs)
             train_loss_mask = [1] * len(train_tokens)
@@ -523,7 +516,7 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
                 sample.status = Sample.Status.ABORTED
                 break
 
-            observation, done, step_info = env.step(response_text)
+            observation, done, step_info = env.step(response_for_env or response_text)
 
             if done:
                 base_reward = observation.get("reward", 0.0)
