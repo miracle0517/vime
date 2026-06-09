@@ -56,7 +56,7 @@ export VLLM_RPC_TIMEOUT="${VLLM_RPC_TIMEOUT:-1800000}"
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/vime:/root/Megatron-LM\",
+    \"PYTHONPATH\": \"/root/Megatron-LM\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"VLLM_RPC_TIMEOUT\": \"${VLLM_RPC_TIMEOUT}\"
   }
@@ -205,7 +205,7 @@ launch_train_for_profiling() {
 
   # Clean up old Ray / vLLM processes (comment out if not needed)
   ray stop --force || true
-  pkill -9 -f "vllm serve" || true
+  pkill -9 -f '[v]llm serve|VLL[M]::' || true
   sleep 2
 
   ray start --head --node-ip-address 127.0.0.1 --num-gpus 2 --disable-usage-stats
@@ -216,7 +216,7 @@ launch_train_for_profiling() {
 
   RUNTIME_ENV_JSON="{
     \"env_vars\": {
-      \"PYTHONPATH\": \"${VIME_ROOT}:/root/Megatron-LM\",
+      \"PYTHONPATH\": \"/root/Megatron-LM\",
       \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
       \"VLLM_RPC_TIMEOUT\": \"${VLLM_RPC_TIMEOUT}\"
     }
@@ -234,7 +234,6 @@ launch_train_for_profiling() {
       --actor-num-gpus-per-node 1 \
       --rollout-num-gpus 1 \
       --rollout-num-gpus-per-engine 1 \
-      --rollout-backend vllm \
       --rollout-function-path vime.rollout.sleep_rollout.sleep \
       --hf-checkpoint "${HF_CKPT}" \
       --ref-load "${REF_LOAD}" \
