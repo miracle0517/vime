@@ -32,7 +32,7 @@ class Geo3kEnv(BaseInteractionEnv):
     an `answer` argument. We run the math reward checker against the ground truth and
     return feedback for wrong answers. The episode ends when the answer is correct,
     when max_turns is reached, or when the response has no valid tool call; in the
-    last case we still try to score a boxed/text answer, matching SkyRL's env.
+    last case we still try to score a boxed/text answer.
     """
 
     def __init__(self, *, ground_truth: str | None = None, max_turns: int | None = None):
