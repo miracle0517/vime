@@ -3,14 +3,9 @@ This example shows vime training in an agentic multi-turn tool use environment.
 
 
 ## Environment Setup
-Install vime and tau-bench dependencies:
+This example assumes a vime container image. Install tau-bench dependencies:
 
 ```bash
-cd /root/
-git clone https://github.com/vllm-project/vime.git
-cd vime
-pip install -e . --no-deps --no-build-isolation
-# for tau bench
 cd /root/
 git clone https://github.com/JD-ETH/tau-bench.git
 cd tau-bench
