@@ -361,9 +361,6 @@ _VIME_ORCHESTRATION_DESTS = frozenset(
         "vllm_server_concurrency",
         "vllm_enable_deterministic_inference",
         "vllm_weight_sync_packed",
-        # agent-adapter tool-call parser name; consumed by examples/coding_agent_rl
-        # generate.py, never a `vllm serve` flag. (vllm_reasoning_parser is a real
-        # AsyncEngineArgs flag and is intentionally NOT excluded here.)
         "vllm_tool_call_parser",
         # vime-only flags for fine-grained deployment; consumed in vime/ray/rollout.py
         # (start_rollout_servers / _resolve_vllm_config) and must NOT be forwarded to
