@@ -198,30 +198,18 @@ OPTIMIZER_ARGS=(
    --use-precision-aware-optimizer
 )
 
-# ============ rollout engine (vLLM) ============
-# sglang->vLLM arg map (see translation_guide.md "Arg map"):
-#   --sglang-mem-fraction-static  -> --vllm-gpu-memory-utilization
-#   --sglang-dp-size N            -> --vllm-data-parallel-size N
-#   --sglang-ep-size N            -> --vllm-enable-expert-parallel (boolean)
-#   --sglang-{enable-dp-attention,enable-dp-lm-head,moe-dense-tp-size,
-#             mamba-scheduler-strategy}  -> sglang-only, no vLLM equivalent (dropped)
-#   --sglang-{tool-call,reasoning}-parser -> no vLLM arg; coding_agent_rl uses the
-#             XML tool-call fallback (parsers=None), so these are dropped.
-#   --sglang-speculative-* per-field flags -> a single --vllm-speculative-config
-#             JSON dict (commented below; supply your EAGLE draft model to enable).
+# ============ rollout engine ============
 VLLM_ARGS=(
    --rollout-num-gpus 64
    --rollout-num-gpus-per-engine ${ROLLOUT_TP_SIZE}
    --vllm-gpu-memory-utilization ${ROLLOUT_MEM_UTILIZATION}
    --vllm-data-parallel-size ${ROLLOUT_DP_SIZE}
    --vllm-enable-expert-parallel
+   --vllm-tool-call-parser qwen3_coder
+   --vllm-reasoning-parser qwen3
+   --vllm-speculative-config '{"method":"mtp","num_speculative_tokens":3}'
    --prefill-num-servers 1
 )
-# Speculative decoding (EAGLE): vLLM takes one JSON dict rather than the
-# sglang per-field flags. Uncomment and point "model" at your draft checkpoint.
-# VLLM_ARGS+=(
-#    --vllm-speculative-config '{"method":"eagle","num_speculative_tokens":4,"model":"/path/to/eagle_draft"}'
-# )
 
 MISC_ARGS=(
    --attention-dropout 0.0

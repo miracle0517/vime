@@ -86,13 +86,15 @@ ROLLOUT_ARGS=(
 )
 ```
 
-claude-code's tool invocations are parsed from the model output. By default the
-adapter uses the built-in XML tool-call fallback (`parse_xml_tool_uses`), which
-handles the `<tool_call><function=...>` text Qwen3-Coder emits, so no extra
-engine-side parser configuration is required. (The adapter can optionally
-delegate to SGLang's reasoning/function-call parsers when
-`vllm_tool_call_parser` / `vllm_reasoning_parser` are set on `args`, but this is
-not used by this example and is not wired into vime's vLLM arguments.)
+The vLLM server must expose Qwen3.6's tool-call and reasoning parsers so claude-code's tool invocations are parsed correctly:
+
+```bash
+VLLM_ARGS=(
+   --vllm-tool-call-parser qwen3_coder
+   --vllm-reasoning-parser qwen3
+   ...
+)
+```
 
 ## SWE-specific Environment Knobs
 
