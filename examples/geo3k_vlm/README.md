@@ -115,4 +115,10 @@ Our initial geo3k-specific verifier produced "format scores" (**0 and 0.9**) ins
 We fixed this by switching to the default math RM with clean **binary 0/1 rewards**. If you encounter similar precision issues with non-binary rewards, you can change the reward tensor dtype from `torch.float` to `torch.float16` in `vime/ray/rollout.py` (`_post_process_rewards` method) to truncate precision artifacts.
 
 ## B200
-On Blackwell (SM100), vLLM automatically selects FlashAttention 4 for the ViT encoder, so no manual override is needed.
+On Blackwell (SM100), vllm automatically dispatches the ViT encoder to
+FlashAttention 4 (or FA2 fallback) — no manual override is needed
+([vllm/v1/attention/backends/fa_utils.py:81](https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/fa_utils.py#L81)).
+If you hit a kernel issue on a specific model, you can force SDPA with
+`--vllm-mm-encoder-attn-backend TORCH_SDPA`. The HF-side
+`--attn-implementation flash_attention_2` flag is still relevant when the
+model is loaded via Hugging Face Transformers.
