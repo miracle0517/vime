@@ -56,7 +56,7 @@ export VLLM_RPC_TIMEOUT="${VLLM_RPC_TIMEOUT:-1800000}"
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/Megatron-LM\",
+    \"PYTHONPATH\": \"/root/vime:/root/Megatron-LM\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"VLLM_RPC_TIMEOUT\": \"${VLLM_RPC_TIMEOUT}\"
   }
@@ -165,3 +165,165 @@ python tools/analyze_profile.py --profile-dir /root/logs/vllm_profile --all-rank
 | Start OK but empty output dir | Confirm curl hits a worker and returns 200; increase `max_iterations` or send more requests |
 | Router 503 | Confirm the current job's router port; connect directly to a worker |
 | Slow or timed-out stop | Increase `VLLM_RPC_TIMEOUT`; reduce request count |
+
+## 8. Full Runnable Example
+
+The script below assumes a **container** environment, vime at `/root/vime`, models and data under `/root/models` and `/root/data`. Two parts:
+
+1. **`launch_train_for_profiling`**: start train with the profiler (`sleep_rollout`, minimal single-GPU colocate example—adjust GPU layout for your machine).
+2. **`run_profiling_session`**: run profiling from **another terminal** after train is ready.
+
+Save as `/root/vime/run_profiling_demo.sh` and run:
+
+```bash
+#!/usr/bin/env bash
+#
+# Full vime rollout profiling example
+# Usage:
+#   bash /root/vime/run_profiling_demo.sh launch    # terminal 1: start train
+#   bash /root/vime/run_profiling_demo.sh profile   # terminal 2: capture traces after train is ready
+#
+set -euo pipefail
+
+VIME_ROOT="${VIME_ROOT:-/root/vime}"
+HF_CKPT="${HF_CKPT:-/root/models/Qwen3-4B}"
+REF_LOAD="${REF_LOAD:-/root/models/Qwen3-4B_torch_dist}"
+PROMPT_DATA="${PROMPT_DATA:-/root/data/gsm8k/train.parquet}"
+LOG_ROOT="${LOG_ROOT:-/root/logs/vime_profiling}"
+PROFILE_DIR="${PROFILE_DIR:-/root/logs/vllm_profile}"
+TRAIN_LOG="${LOG_ROOT}/train_profiling.log"
+ROUTER_HOST="${ROUTER_HOST:-127.0.0.1}"
+
+mkdir -p "${LOG_ROOT}" "${PROFILE_DIR}"
+
+VLLM_PROFILER_CONFIG_JSON="$(printf \
+  '{"profiler":"torch","torch_profiler_dir":"%s","max_iterations":3,"ignore_frontend":true}' \
+  "${PROFILE_DIR}")"
+
+launch_train_for_profiling() {
+  cd "${VIME_ROOT}"
+
+  # Clean up old Ray / vLLM processes (comment out if not needed)
+  ray stop --force || true
+  pkill -9 -f '[v]llm serve|VLL[M]::' || true
+  sleep 2
+
+  ray start --head --node-ip-address 127.0.0.1 --num-gpus 2 --disable-usage-stats
+
+  source "${VIME_ROOT}/scripts/models/qwen3-4B.sh"
+
+  export VLLM_RPC_TIMEOUT="${VLLM_RPC_TIMEOUT:-1800000}"
+
+  RUNTIME_ENV_JSON="{
+    \"env_vars\": {
+      \"PYTHONPATH\": \"${VIME_ROOT}:/root/Megatron-LM\",
+      \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+      \"VLLM_RPC_TIMEOUT\": \"${VLLM_RPC_TIMEOUT}\"
+    }
+  }"
+
+  echo "=== Launching train; log: ${TRAIN_LOG} ==="
+  echo "=== After engines are up, run: bash $0 profile ==="
+
+  ray job submit --address="http://127.0.0.1:8265" \
+    --runtime-env-json="${RUNTIME_ENV_JSON}" \
+    -- python3 train.py \
+      --train-backend megatron \
+      --colocate \
+      --actor-num-nodes 1 \
+      --actor-num-gpus-per-node 1 \
+      --rollout-num-gpus 1 \
+      --rollout-num-gpus-per-engine 1 \
+      --rollout-function-path vime.rollout.sleep_rollout.sleep \
+      --hf-checkpoint "${HF_CKPT}" \
+      --ref-load "${REF_LOAD}" \
+      --prompt-data "${PROMPT_DATA}" \
+      --input-key question \
+      --label-key label \
+      --apply-chat-template \
+      --rm-type deepscaler \
+      --num-rollout 1 \
+      --rollout-batch-size 4 \
+      --n-samples-per-prompt 1 \
+      --rollout-max-response-len 512 \
+      --global-batch-size 4 \
+      --vllm-gpu-memory-utilization 0.7 \
+      --vllm-profiler-config "${VLLM_PROFILER_CONFIG_JSON}" \
+      ${MODEL_ARGS[@]} \
+      2>&1 | tee "${TRAIN_LOG}"
+}
+
+discover_router_url() {
+  local line port
+  line="$(grep -E 'Router launched at' "${TRAIN_LOG}" | tail -1 || true)"
+  if [[ -z "${line}" ]]; then
+    echo "ERROR: Router not found in ${TRAIN_LOG}. Is train still starting?" >&2
+    exit 1
+  fi
+  # Router launched at 127.0.0.1:3521, Prometheus port: ...
+  port="$(echo "${line}" | sed -n 's/.*Router launched at [^:]*:\([0-9]*\).*/\1/p')"
+  echo "http://${ROUTER_HOST}:${port}"
+}
+
+discover_worker_url() {
+  local router_url="$1"
+  python3 - <<'PY' "${router_url}"
+import json, sys, urllib.request
+router = sys.argv[1]
+with urllib.request.urlopen(f"{router}/workers", timeout=10) as r:
+    workers = json.load(r).get("workers", [])
+if not workers:
+    raise SystemExit("No workers registered")
+print(workers[0]["url"])
+PY
+}
+
+run_profiling_session() {
+  cd "${VIME_ROOT}"
+
+  local router_url worker_url model="${HF_CKPT}"
+  router_url="$(discover_router_url)"
+  worker_url="$(discover_worker_url "${router_url}")"
+
+  echo "=== ROUTER=${router_url} WORKER=${worker_url} PROFILE_DIR=${PROFILE_DIR} ==="
+
+  echo "=== 1/3 start_profile (all workers via router) ==="
+  python tools/profile_rollout.py --router-url "${router_url}" --action start
+
+  echo "=== 2/3 send completions (direct to worker; 3 requests) ==="
+  for i in 1 2 3; do
+    curl -sS -X POST "${worker_url}/v1/completions" \
+      -H "Content-Type: application/json" \
+      -d "{\"model\":\"${model}\",\"prompt\":\"Hello ${i}\",\"max_tokens\":32}" \
+      | head -c 400
+    echo
+  done
+
+  echo "=== 3/3 list trace files (max_iterations=3 auto-stop; add --action stop if needed) ==="
+  sleep 2
+  find "${PROFILE_DIR}" -type f \( -name '*.json*' -o -name 'profiler_out_*' \) | sort
+  echo "Open *.trace.json.gz in https://ui.perfetto.dev/ or run:"
+  echo "  python tools/analyze_profile.py --profile-dir ${PROFILE_DIR} --all-ranks"
+}
+
+case "${1:-}" in
+  launch)  launch_train_for_profiling ;;
+  profile) run_profiling_session ;;
+  *)
+    echo "Usage: $0 {launch|profile}" >&2
+    exit 1
+    ;;
+esac
+```
+
+**Steps:**
+
+```bash
+# Terminal 1: start train (wait until logs show Router launched at ...)
+bash /root/vime/run_profiling_demo.sh launch
+
+# Terminal 2: capture traces
+bash /root/vime/run_profiling_demo.sh profile
+```
+
+Adjust paths at the top of the script (`/root/models/...`, `/root/data/...`) and GPU layout (`actor-num-gpus-per-node`, `rollout-num-gpus`, etc.) as needed.
