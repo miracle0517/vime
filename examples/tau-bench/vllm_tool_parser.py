@@ -1,4 +1,4 @@
-"""Local tool-call parser for vLLM rollout."""
+"""Local tool-call parser for vLLM rollout (vime counterpart of slime's sglang_tool_parser)."""
 
 import json
 import re

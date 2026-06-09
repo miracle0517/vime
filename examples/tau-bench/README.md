@@ -12,8 +12,8 @@ cd vime
 pip install -e . --no-deps --no-build-isolation
 # for tau bench
 cd /root/
-git clone https://github.com/JD-ETH/tau-bench.git tau-bench-src
-cd tau-bench-src
+git clone https://github.com/JD-ETH/tau-bench.git
+cd tau-bench
 git checkout feature/litellm-retry
 pip install -e . --no-deps
 pip install litellm
@@ -57,7 +57,6 @@ Configure tau-bench user simulation via train CLI flags (defaults in `generate_w
 ```
 
 And run:
-
 
 ```bash
 cd /root/vime
