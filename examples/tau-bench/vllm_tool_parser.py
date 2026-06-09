@@ -1,3 +1,5 @@
+"""Local tool-call parser for vLLM rollout."""
+
 import json
 import re
 from typing import Any
@@ -37,7 +39,7 @@ def _parse_qwen25_tools(response: str) -> dict[str, Any]:
 
     if matches:
         parts = tool_call_pattern.split(response)
-        normal_text = parts[0].strip() if parts else ""
+        normal_text = " ".join(parts[i].strip() for i in range(0, len(parts), 2) if parts[i].strip())
         calls = []
         for match in matches:
             match = match.strip()

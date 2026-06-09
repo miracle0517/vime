@@ -14,12 +14,8 @@ sleep 3
 set -ex
 
 export PYTHONUNBUFFERED=1
-export PYTHONBUFFERED=16
 
 unset PYTORCH_CUDA_ALLOC_CONF PYTORCH_ALLOC_CONF
-
-export TAU_BENCH_MOCK=1
-export TAU_BENCH_MAX_STEPS=10
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -35,7 +31,7 @@ ROLLOUT_GPUS_PER_ENGINE="${ROLLOUT_GPUS_PER_ENGINE:-1}"
 TOTAL_GPUS="$((ACTOR_GPUS_PER_NODE + ROLLOUT_NUM_GPUS))"
 echo "TOTAL_GPUS (ray): ${TOTAL_GPUS}  (actor=${ACTOR_GPUS_PER_NODE}, rollout=${ROLLOUT_NUM_GPUS}, per_engine=${ROLLOUT_GPUS_PER_ENGINE})"
 
-VIME_ROOT="${VIME_ROOT:-/data/nfs_87/xky/vime_debug/vime_tau_bench}"
+VIME_ROOT="${VIME_ROOT:-/data/nfs_87/xky/vime_debug/vime_pr142}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 TAU_EXAMPLE="${SCRIPT_DIR}"
 cd "${VIME_ROOT}"
@@ -117,8 +113,6 @@ OPTIMIZER_ARGS=(
 VLLM_ARGS=(
    --rollout-num-gpus "${ROLLOUT_NUM_GPUS}"
    --rollout-num-gpus-per-engine "${ROLLOUT_GPUS_PER_ENGINE}"
-   --rollout-backend vllm
-   --vllm-weight-sync-mode native
    --vllm-gpu-memory-utilization 0.7
    --vllm-max-model-len 16384
 )
@@ -156,7 +150,15 @@ ray start --head \
 
 unset http_proxy https_proxy
 
-RUNTIME_ENV_JSON='{"env_vars":{"PYTHONPATH":"'"${VIME_PYTHONPATH}"'","CUDA_DEVICE_MAX_CONNECTIONS":"1","NCCL_NVLS_ENABLE":"'"${HAS_NVLINK}"'","TENSORBOARD_DIR":"'"${TENSORBOARD_DIR}"'","VIME_VLLM_SERVER_HEALTH_TIMEOUT_SEC":"900","TAU_BENCH_MOCK":"1","TAU_BENCH_MAX_STEPS":"10"}}'
+RUNTIME_ENV_JSON="{
+  \"env_vars\": {
+    \"PYTHONPATH\": \"${VIME_PYTHONPATH}\",
+    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+    \"TENSORBOARD_DIR\": \"${TENSORBOARD_DIR}\",
+    \"VIME_VLLM_SERVER_HEALTH_TIMEOUT_SEC\": \"900\"
+  }
+}"
 
 ray job submit --address="http://127.0.0.1:8265" \
    --working-dir "${VIME_ROOT}" \

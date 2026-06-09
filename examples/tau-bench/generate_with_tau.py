@@ -44,10 +44,6 @@ def _ensure_tau_args(args: Any) -> None:
             setattr(args, key, value)
 
 
-async def tau_bench_rm(args, sample: Sample, **kwargs) -> float:
-    return sample.reward if sample.reward is not None else 0.0
-
-
 async def batched_tau_bench_rm(args, samples, **kwargs) -> list[float] | float:
     if isinstance(samples, Sample):
         return samples.reward if samples.reward is not None else 0.0
@@ -115,9 +111,6 @@ class TauBenchEnv:
         self.turn += 1
         is_final_turn = self.turn >= self.max_turns
 
-        logger.info(
-            f"[env_step_raw] first_20_bytes={response_text[:20].encode('utf-8').hex()}, len={len(response_text)}"
-        )
         openai_result = self.openai_adapter.parse_response_to_openai_format(response_text)
 
         if not openai_result["success"]:
@@ -133,7 +126,6 @@ class TauBenchEnv:
 
         parsed = openai_result["parsed_result"]
         agent_content, calls = parsed["normal_text"], parsed["calls"]
-        logger.info(f"[env_step] response_text={repr(response_text[:200])}, calls={calls}, turn={self.turn}")
 
         if calls:
             self.format_correct_calls += 1
@@ -161,12 +153,8 @@ class TauBenchEnv:
         self.info.update(self._to_dict(env_response.info))
 
         obs_lower = env_response.observation.lower() if env_response.observation else ""
-        logger.info(
-            f"[env_step] action={action.name}, is_tool_call={is_tool_call}, obs_start={repr(obs_lower[:50])}, done={env_response.done}"
-        )
         if is_tool_call and not obs_lower.startswith(("error", "failed", "invalid", "not found")):
             self.successful_tool_calls += 1
-            logger.info(f"[env_step] successful_tool_calls now={self.successful_tool_calls}")
 
         if action.name != RESPOND_ACTION_NAME:
             obs_role = "tool"
@@ -270,12 +258,6 @@ def build_env(sample: Sample | None = None, args: Any | None = None, **_: Any) -
 
 
 def _compute_process_reward(env, base_reward: float) -> float:
-    logger.info(
-        f"[process_reward] env_id={id(env)}, type={type(env).__name__}, "
-        f"successful_tools={getattr(env, 'successful_tool_calls', 'N/A')}, "
-        f"total_tools={getattr(env, 'total_tool_calls', 'N/A')}, "
-        f"format_correct={getattr(env, 'format_correct_calls', 'N/A')}"
-    )
     reward = 0.0
     if base_reward > 0:
         reward += 1.0
@@ -284,11 +266,6 @@ def _compute_process_reward(env, base_reward: float) -> float:
     if env.format_correct_calls > 0:
         reward += 0.05 * env.format_correct_calls
     reward = min(reward, 1.5)
-    logger.info(
-        f"process_reward: base={base_reward}, successful_tools={env.successful_tool_calls}, "
-        f"format_correct={env.format_correct_calls}, total_tools={env.total_tool_calls}, "
-        f"final_reward={reward}"
-    )
     return reward
 
 
@@ -363,9 +340,6 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
     sampling_params["repetition_penalty"] = 1.1
     sampling_params.setdefault("stop", ["</tool_call>"])
     inference_sampling_params = _build_inference_sampling_params(sampling_params)
-    logger.info(
-        f"inference_sampling_params keys={list(inference_sampling_params.keys())}, stop={inference_sampling_params.get('stop')}"
-    )
     max_response_budget = sampling_params.get("max_new_tokens")
 
     def remaining_budget() -> int | None:
@@ -448,9 +422,6 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
                     break
 
             response_text = state.tokenizer.decode(new_tokens, skip_special_tokens=False) if new_tokens else ""
-            logger.info(
-                f"[turn={turn_idx}] finish_reason={finish_reason}, response_text={repr(response_text[:500])}, num_tokens={len(new_tokens)}"
-            )
             train_tokens = list(new_tokens)
             train_logprobs = list(new_logprobs)
             train_loss_mask = [1] * len(train_tokens)
@@ -477,11 +448,6 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
                         break
                 if trunc_token_count == 0:
                     trunc_token_count = len(train_tokens)
-                logger.info(
-                    f"[turn={turn_idx}] STOP_STRING_HIT: '{hit_stop_str}' at pos={hit_stop_pos}, "
-                    f"truncated from {len(train_tokens)} to {trunc_token_count} tokens, "
-                    f"text_truncated={repr(truncated_text[:200])}"
-                )
                 train_tokens = train_tokens[:trunc_token_count]
                 train_logprobs = train_logprobs[:trunc_token_count]
                 train_loss_mask = train_loss_mask[:trunc_token_count]
@@ -564,8 +530,8 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
         sample.response_length = len(sample.loss_mask)
         if sample.status == Sample.Status.PENDING:
             sample.status = Sample.Status.COMPLETED
-        if sample.reward is None or sample.reward == 0.0:
-            sample.reward = _compute_process_reward(env, 0.0)
+        if sample.reward is None:
+            sample.reward = _compute_process_reward(env, getattr(env, "total_reward", 0.0))
         return sample
     finally:
         try:

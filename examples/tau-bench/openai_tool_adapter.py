@@ -2,7 +2,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from tool_parser import parse_tools
+from vllm_tool_parser import parse_tools
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,8 @@ class OpenAIAssistantMessage:
 
 
 class OpenAICompatibleToolCallAdapter:
+    """Adapter that converts vLLM tool-call parsing results to OpenAI compatible format."""
+
     def __init__(self, tools_info: list[dict[str, Any]], parser_type: str = "qwen25"):
         self.tools_info = tools_info
         self.parser_type = parser_type
@@ -29,9 +31,7 @@ class OpenAICompatibleToolCallAdapter:
     def parse_response_to_openai_format(self, response: str) -> dict[str, Any]:
         try:
             parsed = parse_tools(response, self.tools_info, self.parser_type)
-            normal_text = parsed["normal_text"]
-            calls = parsed["calls"]
-            openai_message = self._convert_to_openai_message(normal_text, calls)
+            openai_message = self._convert_to_openai_message(parsed["normal_text"], parsed["calls"])
             return {"openai_message": openai_message, "parsed_result": parsed, "success": True}
         except Exception as e:
             logger.warning(f"Parsing failed with error: {e}")
