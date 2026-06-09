@@ -162,9 +162,6 @@ That last case is the important correctness guard. A re-tokenization mismatch
 can make a string-level conversation look continuous while token-level
 provenance is broken. vime keeps the context needed to continue the agent, but
 does not backprop through tokens whose sampled origin can no longer be proven.
-The unit tests in `tests/test_agent_trajectory.py` cover matched prefixes,
-skipped turns, split-output drift, changed token counts, and prompt-base
-restarts.
 
 ## Fan-out Semantics
 

@@ -58,7 +58,7 @@ def parse_tool_uses(
     body_text: str,
     tools_schema: list[dict] | None,
     tool_parser_name: str | None,
-    tokenizer=None,
+    tokenizer,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Parse tool calls from body text and return visible text plus tool uses."""
     tool_uses: list[dict[str, Any]] = []
