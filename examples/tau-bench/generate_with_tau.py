@@ -57,7 +57,8 @@ def _maybe_apply_routed_experts(args: Any, sample: Sample, choice: dict[str, Any
 
 def _ensure_tau_args(args: Any) -> None:
     if getattr(args, "max_turns", None) is None:
-        args.max_turns = _TAU_DEFAULT_MAX_TURNS
+        env_max = os.environ.get("TAU_MAX_TURNS")
+        args.max_turns = int(env_max) if env_max is not None else _TAU_DEFAULT_MAX_TURNS
     for key, value in (
         ("tau_env", "retail"),
         ("tau_user_model", "openai/local-qwen3-4b"),
