@@ -121,6 +121,9 @@ All set in the launcher; tune per cluster.
 only during generation: each turn clamps the generation length to the remaining
 context. Trajectory merge/export keeps the emitted segments and does not drop
 them for length.
+The Anthropic adapter reuses `--vllm-tool-call-parser` and
+`--vllm-reasoning-parser` for output parsing, so those flags must match the
+served model.
 
 ## String-in, Token-out Trajectories
 
@@ -159,6 +162,9 @@ That last case is the important correctness guard. A re-tokenization mismatch
 can make a string-level conversation look continuous while token-level
 provenance is broken. vime keeps the context needed to continue the agent, but
 does not backprop through tokens whose sampled origin can no longer be proven.
+The unit tests in `tests/test_agent_trajectory.py` cover matched prefixes,
+skipped turns, split-output drift, changed token counts, and prompt-base
+restarts.
 
 ## Fan-out Semantics
 
