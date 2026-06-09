@@ -3,7 +3,6 @@ from argparse import ArgumentParser
 
 import vime.utils.external_utils.command_utils as U
 
-
 ENABLE_EVAL = bool(int(os.environ.get("VIME_TEST_ENABLE_EVAL", "1")))
 
 MODEL_NAME = "Qwen3-4B"

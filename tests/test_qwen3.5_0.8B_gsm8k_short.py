@@ -3,7 +3,6 @@ import os
 import vime.utils.external_utils.command_utils as U
 
 
-
 MODEL_NAME = "Qwen3.5-0.8B"
 MODEL_TYPE = "qwen3.5-0.8B"
 NUM_GPUS = 4
