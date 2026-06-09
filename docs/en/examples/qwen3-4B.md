@@ -193,7 +193,7 @@ OPTIMIZER_ARGS=(
 
 #### VLLM\_ARGS
 
-These are the parameters required by vLLM. Here, `--rollout-num-gpus-per-engine` basically corresponds to vLLM's `tensor_parallel_size`. Other vLLM parameters are passed to vime by adding the `--vllm-` prefix.
+Parameters for vLLM inference. vime uses vLLM as the rollout backend by default (`rollout.py` launches `VLLMEngine`; the default rollout function is `vime.rollout.vllm_rollout.generate_rollout`), so no extra backend flag is needed. `--rollout-num-gpus-per-engine` corresponds to each vLLM engine's `tensor_parallel_size`. Other vLLM parameters are passed to vime with a `--vllm-` prefix (for example, `--vllm-max-model-len`).
 
 ```bash
 VLLM_ARGS=(
@@ -202,7 +202,9 @@ VLLM_ARGS=(
 )
 ```
 
-⚠️ vime uses the vLLM router to schedule multiple vLLM servers. `dp_size` is not supported when DP attention is disabled.
+When rollout concurrency is high, tune the vLLM scheduler via the `--vllm-` prefix—for example, `--vllm-max-num-seqs` and `--vllm-max-num-batched-tokens`. Add `--vllm-enforce-eager` for debugging or to work around CUDA graph limits.
+
+⚠️  vime uses the vLLM router to schedule multiple vLLM servers. With co-located training and inference (`--colocate`), weights are synchronized via CUDA IPC; with decoupled training and inference, the trainer synchronizes weights with vLLM engines over NCCL.
 
 ### Dynamic Sampling
 
@@ -276,21 +278,22 @@ ray job submit ... \
    ...
 ```
 
-In this case, 2 GPUs will be allocated for training, and 6 GPUs will be allocated for inference.
+In this case, 2 GPUs will be allocated for training, and 6 GPUs will be allocated for inference. Like `--actor-num-gpus-per-node`, `--rollout-num-gpus` is a **Ray resource argument** passed to `train.py`: the framework uses it to build the placement group and assign the first bundles to training actors and the remaining bundles to rollout engines (see `vime/ray/placement_group.py`). **Under co-located mode (`--colocate`), this argument is ignored** and is set automatically to `actor_num_gpus_per_node * actor_num_nodes`. Do not put `--rollout-num-gpus` in `VLLM_ARGS`.
 
-⚠️  If the concurrency on each vLLM server is too high, it may exceed vLLM's default CUDA graph concurrency limit, which will affect inference speed. You can adjust this in the following two ways:
+For decoupled training and inference, `VLLM_ARGS` only needs inference-backend settings, for example:
 
-1.  Use `--vllm-server-concurrency` to limit the maximum number of concurrent requests sent to a single vLLM server. For example:
+```bash
+VLLM_ARGS=(
+   --rollout-num-gpus-per-engine 2
+   --vllm-gpu-memory-utilization 0.9
+   --vllm-max-num-seqs 256
+   --vllm-max-num-batched-tokens 8192
+)
+```
 
-    ```bash
-    --vllm-server-concurrency 160
-    ```
+Add `--vllm-enforce-eager` when debugging or to work around CUDA graph limits.
 
-2.  Use `--vllm-cudagraph-capture-sizes` to increase the number of CUDA graphs initialized by vLLM. For example:
-
-    ```bash
-    --vllm-cudagraph-capture-sizes 1 2 4 8 $(seq 16 8 256)
-    ```
+⚠️  When using co-located training and inference, Megatron will always occupy some GPU memory. Reduce vLLM's memory footprint with `--vllm-gpu-memory-utilization`, and reserve headroom for training with `--train-memory-margin-bytes`.
 
 ### Asynchronous Training
 

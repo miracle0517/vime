@@ -1,12 +1,24 @@
-# 性能分析 (Profiling)
+# 性能分析（Profiling）
 
-在 vime 中，我们可以通过 vLLM 提供的 profiling 接口对 rollout 过程进行详细的性能分析。
+在vime中，我们可以通过vLLM提供的profiling接口对**rollout（vLLM推理）**过程做详细的性能分析。Profiling针对vLLM engine侧，不是Megatron训练侧。
 
-## 1. 使 Rollout 进程进入等待状态 (Sleep Rollout)
+典型流程：
 
-为了更自由地进行压力测试和性能分析，我们通常需要让 vime 的 rollout 进程在初始化完成后进入等待状态，而不是立即开始生成。
+- 启动train（sleep_rollout + vllm-profiler-config）
+- 等待vLLM engine与router就绪
+- 从日志确认router/worker地址
+- start_profile
+- 发送少量推理请求
+-（可选）stop_profile；或达到max_iterations后自动落盘
+- 在torch_profiler_dir查看trace文件
 
-你可以通过在启动参数中替换 `rollout_function_path` 来实现，而无需修改代码：
+
+
+## 1. 使Rollout进入等待状态（sleep_rollout）
+
+为了更灵活地压测和profiling，通常让rollout在初始化完成后进入等待，而不是立即开始生成。
+
+在 `train.py` 启动参数中替换 `rollout_function_path` 即可，无需改代码：
 
 ```bash
 python train.py \
@@ -14,60 +26,142 @@ python train.py \
     ... (其他参数)
 ```
 
-该函数会让 rollout 进程进入无限循环等待状态，方便你手动发送请求或运行压测工具。
+该函数会让rollout进程进入无限循环等待，便于手动发HTTP请求或运行压测工具。
 
-## 2. 启用 vLLM Profiler
+## 2. 启用vLLM Profiler（启动train时配置）
 
-vLLM 只有在启动时配置了 profiler config 才会注册 `/start_profile` 与 `/stop_profile` 接口。在 vime 中通过 `--vllm-profiler-config` 转发给 `vllm serve` 子进程：
+vLLM只有在启动时配置了`--profiler-config`，才会注册`/start_profile`与`/stop_profile`路由。在vime中通过**`--vllm-profiler-config`**转发给`vllm serve`子进程。
+
+### 2.1 使用JSON整包传参
 
 ```bash
 --vllm-profiler-config '{"profiler":"torch","torch_profiler_dir":"/root/logs/vllm_profile","max_iterations":3,"ignore_frontend":true}'
 ```
 
-**常用字段说明：**
-* `profiler`: `"torch"` 或 `"cuda"`。
-* `torch_profiler_dir`: trace 输出目录（绝对路径）。
-* `max_iterations`: worker 记录该步数后自动 stop 并落盘。
-* `ignore_frontend`: 建议 `true`，仅 profile worker。
+常用JSON字段：
 
-## 3. 获取 vLLM 引擎列表
+| 字段 | 说明 |
+|------|------|
+| `profiler` | `"torch"` 或 `"cuda"` |
+| `torch_profiler_dir` | trace输出目录（绝对路径） |
+| `max_iterations` | worker记录超过N步后自动stop并落盘（条件为`> N`） |
+| `ignore_frontend` | 建议`true`，仅profile worker，降低前端开销 |
 
-vLLM 引擎（workers）注册在 router 上。你可以通过访问 router 的 `/workers` 接口来获取所有活跃引擎的列表。
+**防止`stop_profile`时RPC超时：** vLLM APIServer与EngineCore/worker之间通过内部RPC通信。手动调用`stop_profile`触发trace落盘可能耗时数分钟，而默认`VLLM_RPC_TIMEOUT`仅**10秒**（10000 ms），容易导致flush中断或trace不完整。Profiling时建议设为**30分钟**（1800000 ms）。
 
-通常 router 地址会在启动日志中打印：
-```
-Router launched at 127.0.0.1:3000
-```
-
-你可以使用 `curl` 查看 workers：
-```bash
-curl http://127.0.0.1:3000/workers
-```
-
-## 4. 使用自动化 Profiling 工具
-
-为了简化对多个引擎同时进行 profiling 的操作，我们提供了一个自动化脚本 `tools/profile_rollout.py`。
-
-### 启动 Profiling
-
-默认情况下，该工具会对所有 worker 启动 profiling：
+该变量须在**启动train、拉起vLLM之前**传入Ray worker环境（仅在本机shell `export`不一定会进入Ray job）。在`ray job submit`的`runtime-env-json`中写入，例如：
 
 ```bash
-python tools/profile_rollout.py --router-url http://127.0.0.1:3000 --action start
+export VLLM_RPC_TIMEOUT="${VLLM_RPC_TIMEOUT:-1800000}"
+
+RUNTIME_ENV_JSON="{
+  \"env_vars\": {
+    \"PYTHONPATH\": \"/root/Megatron-LM\",
+    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+    \"VLLM_RPC_TIMEOUT\": \"${VLLM_RPC_TIMEOUT}\"
+  }
+}"
+
+ray job submit --address=\"http://127.0.0.1:8265\" \
+  --runtime-env-json=\"${RUNTIME_ENV_JSON}\" \
+  -- python3 train.py \
+  ... \
+  --vllm-profiler-config '{\"profiler\":\"torch\",\"torch_profiler_dir\":\"/root/logs/vllm_profile\",...}'
 ```
 
-### 手动停止 Profiling
 
-如果你设置了 `max_iterations`，worker 会自动 stop 并落盘。想要提前停止：
+### 2.2 验证是否生效
+
+启动train后，在日志中确认以下三点（缺任一项说明profiler未正确启用）：
+
+1. **参数已解析**：出现`vllm_profiler_config ... profiler='torch'`（及`torch_profiler_dir`路径）。
+2. **已转发给vLLM子进程**：出现`Launching vLLM server: ... --profiler-config {"profiler":"torch",...}`。
+3. **HTTP路由已注册**：vLLM启动时的路由列表中包含`/start_profile`与`/stop_profile`（否则`POST /start_profile`会返回404）。
+
+## 3. 获取Router与Worker地址
+
+vLLM engine（workers）注册在vllm-router上。启动日志示例：
+
+```text
+Router launched at 127.0.0.1:3521, Prometheus port: 4153
+Ports for engine 0: {'host': '127.0.0.1', 'port': 15000, ...}
+Starting vLLM server on http://127.0.0.1:15000
+```
+
+**注意：router端口每次job可能变化**（默认在3000–4000随机），不要沿用上次端口。可用curl验证：
 
 ```bash
-python tools/profile_rollout.py --router-url http://127.0.0.1:3000 --action stop
+curl http://127.0.0.1:3521/workers
 ```
 
-## 5. 进行压力测试
+返回每个worker的`url`与`is_healthy`。
 
-在 Rollout 进程通过 `sleep_rollout` 处于等待状态时，你可以：
-1. 使用 `tools/profile_rollout.py` 启动 profiling。
-2. 使用压测工具向 router 或直接向引擎发送请求。
-3. 等待 profiling 完成（如果设置了 `max_iterations`）或手动停止。
-4. 在 `torch_profiler_dir` 中获取 `.json` trace 文件，并使用 `chrome://tracing` 或 [Perfetto](https://ui.perfetto.dev/) 查看。
+## 4. 使用`tools/profile_rollout.py`
+
+脚本通过router的`/workers`列表，对所有worker调用`/start_profile`或`/stop_profile`。
+
+### 启动Profiling
+
+```bash
+cd /root/vime
+python tools/profile_rollout.py \
+    --router-url http://127.0.0.1:3521 \
+    --action start
+```
+
+### 停止Profiling（可选）
+
+若在`--vllm-profiler-config`中设置了`max_iterations`，worker在记录足够步数后会**自动stop并落盘**，实践中发完推理后常可直接在`torch_profiler_dir`看到trace，**不必**再手动`stop_profile`。需要提前结束采集时再执行：
+
+```bash
+python tools/profile_rollout.py \
+    --router-url http://127.0.0.1:3521 \
+    --action stop
+```
+
+## 5. 发送推理请求
+
+在sleep_rollout等待期间，执行步骤如下：
+
+1. `profile_rollout.py --action start`
+2. 向router或**直连worker**发送少量completion请求（2～4条即可，trace会很大）
+3. （可选）`profile_rollout.py --action stop`；或等待`max_iterations`触发自动落盘
+4. 在`torch_profiler_dir`查看trace
+
+请求示例（`model`使用HF checkpoint路径）：
+
+```bash
+curl -X POST http://127.0.0.1:15000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"/root/models/Qwen3-4B","prompt":"Hello","max_tokens":32}'
+```
+
+
+## 6. 查看Trace
+
+### Perfetto
+
+1. 打开 [https://ui.perfetto.dev/](https://ui.perfetto.dev/)
+2. **Open trace file**，选择`*.trace.json.gz`
+3. 查看GPU kernel、CPU算子与时间线
+
+### Chrome Tracing
+
+浏览器访问`chrome://tracing`，Load加载trace文件。
+
+### 分析工具
+
+```bash
+cd /root/vime
+python tools/analyze_profile.py --profile-dir /root/logs/vllm_profile --all-ranks
+```
+
+
+## 7. 常见问题
+
+| 现象 | 处理 |
+|------|------|
+| `POST /start_profile` 404 | 用JSON传`--vllm-profiler-config`；重启job |
+| start成功但目录为空 | 确认curl打到worker且返回200；适当增大`max_iterations`或补发推理 |
+| router 503 | 确认当前job的router端口；改直连worker |
+| stop很慢或超时 | 增大`VLLM_RPC_TIMEOUT`；减少请求条数 |
