@@ -101,7 +101,7 @@ For frequently asked questions, please see the [Q&A](docs/en/get_started/qa.md)
 
 ## Acknowledgements
 
-Special thanks to the **slime** community for their great work. Thanks also go to [SkyRL](https://github.com/NovaSky-AI/SkyRL) and [verl](https://github.com/verl-project/verl), whose excellent work we referenced while building Vime. Vime is maintained by the vLLM community.
+Vime builds on ideas and infrastructure from the open-source RL ecosystem. We especially thank the [slime](https://github.com/THUDM/slime) community, whose great work Vime is directly built on. We also thank [SkyRL](https://github.com/NovaSky-AI/SkyRL) and [verl](https://github.com/verl-project/verl), whose excellent work we referenced. Vime is maintained by the vLLM community.
 
 ## Citation
 
