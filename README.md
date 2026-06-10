@@ -22,7 +22,7 @@ Discussion channels:
 
 ## Positioning
 
-The vLLM community horizontally supports many LLM post-training frameworks, including (in alphabetical order) [NeMo RL](https://github.com/NVIDIA-NeMo/RL), [OpenRLHF](https://github.com/openrlhf/openrlhf), [verl](https://github.com/verl-project/verl), and so on. We built the Vime project to seamlessly bring slime's proven training paradigm into the vLLM ecosystem, offering a production-ready bridge that aligns both projects' rapid release cycles. We hope that users with different needs can find the right vLLM-ecosystem choice for their workflows. The vLLM community will continue to support the vLLM integration in these post-training frameworks.
+The vLLM community horizontally supports many LLM post-training frameworks, including (in alphabetical order) [NeMo RL](https://github.com/NVIDIA-NeMo/RL), [OpenRLHF](https://github.com/openrlhf/openrlhf), [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl), [SkyRL](https://github.com/NovaSky-AI/SkyRL), [verl](https://github.com/verl-project/verl), and so on. We built the Vime project to seamlessly bring slime's proven training paradigm into the vLLM ecosystem, offering a production-ready bridge that aligns both projects' rapid release cycles. We hope that users with different needs can find the right vLLM-ecosystem choice for their workflows. The vLLM community will continue to support the vLLM integration in these post-training frameworks.
 
 ## Table of Contents
 
@@ -101,7 +101,7 @@ For frequently asked questions, please see the [Q&A](docs/en/get_started/qa.md)
 
 ## Acknowledgements
 
-Special thanks to the **slime** community for their great work. Vime is used by projects such as [SkyRL](https://github.com/NovaSky-AI/SkyRL) and [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl). We also especially thank [SkyRL](https://github.com/NovaSky-AI/SkyRL) and [verl](https://github.com/verl-project/verl): we referenced their excellent work while building Vime. Vime is maintained by the vLLM community.
+Special thanks to the **slime** community for their great work. We also especially thank [SkyRL](https://github.com/NovaSky-AI/SkyRL) and [verl](https://github.com/verl-project/verl): we referenced their excellent work while building Vime. Vime is maintained by the vLLM community.
 
 ## Citation
 
