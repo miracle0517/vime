@@ -101,7 +101,7 @@ For frequently asked questions, please see the [Q&A](docs/en/get_started/qa.md)
 
 ## Acknowledgements
 
-Special thanks to the **slime** community for their great work. Vime is maintained by the vLLM community.
+Special thanks to the **slime** community for their great work. Vime is used by projects such as [SkyRL](https://github.com/NovaSky-AI/SkyRL) and [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl). We also especially thank [SkyRL](https://github.com/NovaSky-AI/SkyRL) and [verl](https://github.com/verl-project/verl): we referenced their excellent work while building Vime. Vime is maintained by the vLLM community.
 
 ## Citation
 

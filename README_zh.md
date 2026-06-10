@@ -101,7 +101,7 @@ Vime 由 slime 衍生而来。以下上游资源与本仓库文档仍沿用 slim
 
 ## 致谢
 
-特别感谢 **slime** 社区的出色工作。Vime 由 vLLM 社区维护。
+特别感谢 **slime** 社区的出色工作。[SkyRL](https://github.com/NovaSky-AI/SkyRL) 与 [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) 等项目正在使用 Vime。同时特别感谢 [SkyRL](https://github.com/NovaSky-AI/SkyRL) 与 [verl](https://github.com/verl-project/verl)：在构建 Vime 的过程中我们参考了它们的优秀工作。Vime 由 vLLM 社区维护。
 
 ## 引用
 
