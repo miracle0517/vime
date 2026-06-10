@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
-import vllm_router  # noqa: F401 — ensures vllm-router is importable on startup
 from tqdm import tqdm
 
 from vime.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
