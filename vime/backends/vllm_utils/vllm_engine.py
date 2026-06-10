@@ -58,10 +58,13 @@ def _response_json(response: requests.Response) -> dict:
     except requests.exceptions.HTTPError as e:
         e.add_note(f"{response.text=}")
         raise
-    # vLLM sleep/wake endpoints may return 200 with an empty body.
+    # Some vLLM utility endpoints return 200 with an empty or plain-text body.
     if not response.content or not response.content.strip():
         return {"ok": True}
-    return response.json()
+    try:
+        return response.json()
+    except requests.exceptions.JSONDecodeError:
+        return {"ok": True, "text": response.text}
 
 
 def get_base_gpu_id(args, rank):

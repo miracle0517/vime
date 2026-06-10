@@ -16,7 +16,7 @@ from vime.ray.train_actor import TrainRayActor
 from vime.utils import train_dump_utils
 from vime.utils.data import process_rollout_data
 from vime.utils.distributed_utils import get_gloo_group
-from vime.utils.logging_utils import init_tracking
+from vime.utils.logging_utils import finish_tracking, init_tracking
 from vime.utils.memory_utils import clear_memory, print_memory
 from vime.utils.misc import Box
 from vime.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -599,8 +599,9 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
         reconnect_rollout_engines = self.args.offload_train and self.args.use_critic and not self.args.colocate
+        wake_for_lora_update = self.args.offload_train and getattr(self.args, "lora_rank", 0) > 0
 
-        if reconnect_rollout_engines:
+        if reconnect_rollout_engines or wake_for_lora_update:
             self.wake_up()
         elif self.args.offload_train:
             reload_process_groups()
@@ -640,7 +641,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 else:
                     self.weights_backuper.backup("old_actor")
 
-        if reconnect_rollout_engines:
+        if reconnect_rollout_engines or wake_for_lora_update:
             self.sleep()
         elif self.args.offload_train:
             destroy_process_groups()
@@ -674,3 +675,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.weights_backuper.backup(model_tag)
         self._active_model_tag = model_tag
+
+    def dispose(self) -> None:
+        if hasattr(self, "args") and is_megatron_main_rank():
+            finish_tracking(self.args)
