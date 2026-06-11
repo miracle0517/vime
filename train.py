@@ -4,12 +4,14 @@ from vime.ray.placement_group import create_placement_groups, create_rollout_man
 from vime.utils.arguments import parse_args
 from vime.utils.logging_utils import configure_logger, finish_tracking, init_tracking, update_tracking_open_metrics
 from vime.utils.misc import should_run_periodic_action
+from vime.utils.transfer_queue import TransferQueueBridge
 
 
 def train(args):
     configure_logger()
     # allocate the GPUs
     pgs = create_placement_groups(args)
+    TransferQueueBridge.initialize(args)
     init_tracking(args)
 
     # create the rollout manager, with vLLM engines inside.
@@ -63,6 +65,11 @@ def train(args):
         if args.rollout_global_dataset:
             ray.get(rollout_manager.save.remote(rollout_id))
 
+    def clear_transfer_queue_partition(rollout_id):
+        # Driver owns TransferQueue partition lifecycle after all train consumers finish.
+        if TransferQueueBridge.enabled(args):
+            ray.get(rollout_manager.clear_transfer_queue_partition.remote(rollout_id))
+
     # train loop.
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         if args.eval_interval is not None and rollout_id == 0 and not args.skip_eval_before_train:
@@ -78,11 +85,21 @@ def train(args):
         if args.use_critic:
             value_refs = critic_model.async_train(rollout_id, rollout_data_ref)
             if actor_trains_this_step:
-                ray.get(actor_model.async_train(rollout_id, rollout_data_ref, external_data=value_refs))
+                if (
+                    TransferQueueBridge.critic_values_via_transfer_queue(args)
+                    and TransferQueueBridge.critic_values_via_transfer_queue(actor_model.args)
+                    and TransferQueueBridge.critic_values_via_transfer_queue(critic_model.args)
+                ):
+                    actor_refs = actor_model.async_train(rollout_id, rollout_data_ref)
+                    ray.get(value_refs + actor_refs)
+                else:
+                    ray.get(actor_model.async_train(rollout_id, rollout_data_ref, external_data=value_refs))
             else:
                 ray.get(value_refs)
         else:
             ray.get(actor_model.async_train(rollout_id, rollout_data_ref))
+
+        clear_transfer_queue_partition(rollout_id)
 
         if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
             save(rollout_id)
