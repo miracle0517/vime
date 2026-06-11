@@ -28,6 +28,7 @@ from vime.utils.logging_utils import configure_logger, init_tracking
 from vime.utils.metric_utils import compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
 from vime.utils.misc import Box, group_by, load_function
 from vime.utils.types import Sample
+from vime.utils.transfer_queue import TransferQueueBridge
 
 from ..utils.metric_utils import has_repetition
 from .rollout_validation import validate_server_group_gpu_indices
@@ -383,6 +384,7 @@ class RolloutManager:
         init_tracking(args, primary=False)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
+        self.transfer_queue = TransferQueueBridge.connect(args)
 
         self._health_monitors = []
         if not self.args.debug_train_only and self.args.use_fault_tolerance:
@@ -436,6 +438,7 @@ class RolloutManager:
     def dispose(self):
         for monitor in self._health_monitors:
             monitor.stop()
+        self.transfer_queue.close()
         logging_utils.finish_tracking(self.args)
 
     @property
@@ -492,8 +495,15 @@ class RolloutManager:
             # if debug rollout only, we don't convert samples to train data and directly return
             return
         data = self._convert_samples_to_train_data(data)
+        if TransferQueueBridge.enabled(self.args):
+            self.transfer_queue.transfer_rollout_data(rollout_id, data)
+            return None
+
         return self._split_train_data_by_dp(data)
 
+    def clear_transfer_queue_partition(self, rollout_id):
+        self.transfer_queue.clear_partition(rollout_id)
+        
     def eval(self, rollout_id):
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data

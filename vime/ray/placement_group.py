@@ -6,6 +6,8 @@ import ray
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from vime.utils.transfer_queue import TransferQueueBridge
+
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
 
@@ -145,6 +147,21 @@ def create_training_models(args, pgs, rollout_manager):
         )
         if args.megatron_config_path is None:
             critic_args.disable_param_buffers_cpu_backup = False
+
+        critic_values_via_tq = (
+            TransferQueueBridge.critic_values_via_transfer_queue(args)
+            and TransferQueueBridge.critic_values_via_transfer_queue(actor_args)
+            and TransferQueueBridge.critic_values_via_transfer_queue(critic_args)
+        )
+        if TransferQueueBridge.enabled(args) and not critic_values_via_tq:
+            logger.warning(
+                "TransferQueue critic values write-back is disabled because actor/critic TQ constraints do not both "
+                "hold. Base context_parallel_size=%s, actor context_parallel_size=%s, "
+                "critic context_parallel_size=%s; using Ray ObjectRef values.",
+                getattr(args, "context_parallel_size", 1),
+                getattr(actor_args, "context_parallel_size", 1),
+                getattr(critic_args, "context_parallel_size", 1),
+            )
 
         critic_model = allocate_train_group(
             args=critic_args,

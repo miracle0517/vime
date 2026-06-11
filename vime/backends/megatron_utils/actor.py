@@ -3,6 +3,7 @@ import os
 import random
 from argparse import Namespace
 from contextlib import nullcontext
+from typing import Any
 
 import numpy as np
 import ray
@@ -22,6 +23,7 @@ from vime.utils.misc import Box
 from vime.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from vime.utils.routing_replay import RoutingReplay
 from vime.utils.timer import Timer, inverse_timer, timer, with_defer
+from vime.utils.transfer_queue import CRITIC_VALUE_FIELDS, TransferQueueBridge
 from vime.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
@@ -58,6 +60,7 @@ class MegatronTrainRayActor(TrainRayActor):
         super().init(args, role, with_ref, with_opd_teacher)
 
         init(args)
+        self.transfer_queue = TransferQueueBridge.connect(args)
 
         if is_megatron_main_rank():
             init_tracking(args, primary=False, role=role)
@@ -279,6 +282,88 @@ class MegatronTrainRayActor(TrainRayActor):
             ]
         return rollout_data
 
+    def _get_rollout_data_from_transfer_queue(self, rollout_id: int) -> tuple[RolloutBatch, Any]:
+        task_name = "critic_train" if self.role == "critic" else "actor_train"
+        rollout_data = None
+        batch_meta = None
+        data_fields = (
+            TransferQueueBridge.actor_train_data_fields(self.args)
+            if self.role == "actor"
+            else TransferQueueBridge.default_train_data_fields(self.args)
+        )
+        while rollout_data is None:
+            rollout_data, batch_meta = self.transfer_queue.get_data(
+                rollout_id,
+                task_name=task_name,
+                data_fields=data_fields,
+            )
+        return self._postprocess_transfer_queue_rollout_data(rollout_data), batch_meta
+
+    def _postprocess_transfer_queue_rollout_data(self, rollout_data: RolloutBatch) -> RolloutBatch:
+        rollout_data["tokens"] = [
+            torch.as_tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]
+        ]
+        rollout_data["loss_masks"] = [
+            torch.as_tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
+        ]
+        if "multimodal_train_inputs" in rollout_data:
+            rollout_data["multimodal_train_inputs"] = [
+                (
+                    {
+                        key: (
+                            torch.from_numpy(v.copy()).to(device=torch.cuda.current_device())
+                            if isinstance(v, np.ndarray)
+                            else v.to(device=torch.cuda.current_device())
+                        )
+                        for key, v in mm_dict.items()
+                    }
+                    if mm_dict is not None
+                    else None
+                )
+                for mm_dict in rollout_data["multimodal_train_inputs"]
+            ]
+
+        if self.args.qkv_format == "bshd":
+            max_seq_len = max(rollout_data["total_lengths"])
+            pad_size = mpu.get_tensor_model_parallel_world_size() * self.args.data_pad_size_multiplier
+            max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
+            rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
+
+        for key in ["rollout_log_probs", "teacher_log_probs"]:
+            if key not in rollout_data:
+                continue
+            rollout_data[key] = [
+                torch.as_tensor(
+                    slice_log_prob_with_cp(
+                        log_prob,
+                        total_length,
+                        response_length,
+                        self.args.qkv_format,
+                        rollout_data["max_seq_lens"][i] if self.args.qkv_format == "bshd" else None,
+                    ),
+                    device=torch.cuda.current_device(),
+                    dtype=torch.float32,
+                )
+                for i, (log_prob, total_length, response_length) in enumerate(
+                    zip(
+                        rollout_data[key],
+                        rollout_data["total_lengths"],
+                        rollout_data["response_lengths"],
+                        strict=False,
+                    )
+                )
+            ]
+        if "rollout_routed_experts" in rollout_data:
+            rollout_data["rollout_routed_experts"] = [
+                torch.as_tensor(r, dtype=torch.long) for r in rollout_data["rollout_routed_experts"]
+            ]
+        if "values" in rollout_data:
+            rollout_data["values"] = [
+                torch.as_tensor(value, dtype=torch.float32, device=torch.cuda.current_device())
+                for value in rollout_data["values"]
+            ]
+        return rollout_data
+
     def _switch_model(self, target_tag: str) -> None:
         if target_tag not in self.weights_backuper.backup_tags:
             raise ValueError(f"Cannot switch to unknown model tag: {target_tag}")
@@ -318,6 +403,12 @@ class MegatronTrainRayActor(TrainRayActor):
             batch = data_iterator[0].get_next(["rollout_routed_experts", "tokens"])
             rollout_routed_experts = batch["rollout_routed_experts"]
             tokens = batch["tokens"]
+            rollout_routed_experts = [
+                r.reshape(r.shape[0], self.args.num_layers, self.args.moe_router_topk)
+                if getattr(r, "ndim", 0) == 2
+                else r
+                for r in rollout_routed_experts
+            ]
             assert len(rollout_routed_experts) == len(tokens)
             for a, b in zip(rollout_routed_experts, tokens, strict=False):
                 assert a.shape[0] == b.shape[0] - 1, f"{a.shape}, {b.shape}"
@@ -388,10 +479,14 @@ class MegatronTrainRayActor(TrainRayActor):
             self.wake_up()
 
         with timer("data_preprocess"):
-            rollout_data = self._get_rollout_data(rollout_data_ref)
+            batch_meta = None
+            if TransferQueueBridge.enabled(self.args):
+                rollout_data, batch_meta = self._get_rollout_data_from_transfer_queue(rollout_id)
+            else:
+                rollout_data = self._get_rollout_data(rollout_data_ref)
 
         if self.role == "critic":
-            result = self.train_critic(rollout_id, rollout_data)
+            result = self.train_critic(rollout_id, rollout_data, batch_meta=batch_meta)
         else:
             self.train_actor(rollout_id, rollout_data, external_data=external_data)
             result = None
@@ -402,7 +497,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         return result
 
-    def train_critic(self, rollout_id: int, rollout_data: RolloutBatch):
+    def train_critic(self, rollout_id: int, rollout_data: RolloutBatch, batch_meta=None):
         """Train critic and return CPU values (used as old-values for the next actor train)."""
         data_iterator = get_data_iterator(rollout_data)
         num_microbatches = rollout_data["num_microbatches"]
@@ -427,7 +522,21 @@ class MegatronTrainRayActor(TrainRayActor):
         if mpu.is_pipeline_last_stage() and "values" in rollout_data:
             from vime.backends.megatron_utils.data import tensors_to_cpu
 
-            return {"values": tensors_to_cpu(rollout_data["values"])}
+            values = tensors_to_cpu(rollout_data["values"])
+            if TransferQueueBridge.critic_values_via_transfer_queue(self.args):
+                if mpu.get_tensor_model_parallel_rank() == 0:
+                    if batch_meta is None:
+                        raise ValueError("TransferQueue critic values write-back requires batch_meta.")
+                    self.transfer_queue.put_data(
+                        rollout_id,
+                        {"values": values},
+                        data_fields=CRITIC_VALUE_FIELDS,
+                        batch_meta=batch_meta,
+                    )
+                return {}
+            return {"values": values}
+        if TransferQueueBridge.critic_values_via_transfer_queue(self.args):
+            return {}
         return {}
 
     def train_actor(self, rollout_id: int, rollout_data: RolloutBatch, external_data=None) -> None:
