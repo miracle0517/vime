@@ -1325,6 +1325,52 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_transfer_queue_arguments(parser):
+            parser.add_argument(
+                "--use-transfer-queue",
+                action="store_true",
+                default=False,
+                help=(
+                    "Use TransferQueue as the rollout-to-training data plane. "
+                    "Rollout writes partition train_{rollout_id}; training actors read it by DP rank."
+                ),
+            )
+            parser.add_argument(
+                "--num-data-storage-units",
+                type=int,
+                default=1,
+                help="Number of TransferQueue SimpleStorageUnit actors.",
+            )
+            parser.add_argument(
+                "--max-staleness",
+                type=int,
+                default=0,
+                help="Maximum number of unconsumed TransferQueue train partitions allowed before rollout waits.",
+            )
+            parser.add_argument(
+                "--polling-mode",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help="Whether the TransferQueue controller uses polling mode for metadata.",
+            )
+            parser.add_argument(
+                "--transfer-queue-staleness-poll-interval",
+                type=float,
+                default=1.0,
+                help="Seconds to wait between TransferQueue staleness checks.",
+            )
+            parser.add_argument(
+                "--transfer-queue-extra-data-fields",
+                type=str,
+                nargs="*",
+                default=[],
+                help=(
+                    "Extra rollout data fields to request from TransferQueue, useful for custom losses or "
+                    "custom convert_samples_to_train_data outputs."
+                ),
+            )
+            return parser
+        
         def add_custom_megatron_plugins_arguments(parser):
             """
             Add custom Megatron plugins arguments.
@@ -1401,6 +1447,7 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
         parser = add_rollout_buffer_arguments(parser)
+        parser = add_transfer_queue_arguments(parser)
         parser = add_mtp_training_arguments(parser)
         parser = add_ci_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
@@ -1725,6 +1772,19 @@ def vime_validate_args(args):
             "will not instantiate vLLM servers and will only run the training process."
         )
         args.debug_train_only = True
+
+    if not hasattr(args, "tq_config"):
+        args.tq_config = None
+
+    if args.use_transfer_queue:
+        if args.debug_train_only:
+            raise ValueError("--use-transfer-queue is not supported with --debug-train-only/load_debug_rollout_data.")
+        if args.use_dynamic_global_batch_size:
+            raise ValueError("--use-transfer-queue currently requires a fixed global batch size.")
+        if args.max_staleness < 0:
+            raise ValueError("--max-staleness must be >= 0.")
+        if args.num_data_storage_units <= 0:
+            raise ValueError("--num-data-storage-units must be > 0.")
 
     args.use_critic = args.advantage_estimator == "ppo"
     # Critic always uses the same GPU count as actor.

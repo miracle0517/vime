@@ -4,12 +4,13 @@ from vime.ray.placement_group import create_placement_groups, create_rollout_man
 from vime.utils.arguments import parse_args
 from vime.utils.logging_utils import configure_logger, finish_tracking, init_tracking, update_tracking_open_metrics
 from vime.utils.misc import should_run_periodic_action
-
+from vime.utils.transfer_queue import initialize_transfer_queue
 
 def train(args):
     configure_logger()
     # allocate the GPUs
     pgs = create_placement_groups(args)
+    initialize_transfer_queue(args)
     init_tracking(args)
 
     # create the rollout manager, with vLLM engines inside.
@@ -81,6 +82,8 @@ def train(args):
                 ray.get(actor_model.async_train(rollout_id, rollout_data_ref, external_data=value_refs))
             else:
                 ray.get(value_refs)
+                if args.use_transfer_queue:
+                    ray.get(rollout_manager.clear_transfer_queue_partition.remote(rollout_id))
         else:
             ray.get(actor_model.async_train(rollout_id, rollout_data_ref))
 

@@ -5,7 +5,7 @@ from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from vime.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
-
+from vime.utils.transfer_queue import transfer_queue_env_vars
 
 class RayTrainGroup:
     """
@@ -57,6 +57,7 @@ class RayTrainGroup:
             "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": os.environ.get("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", "1"),
             **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
             **self.args.train_env_vars,
+            **transfer_queue_env_vars(self.args),
         }
 
         if self.args.offload_train and self.args.train_backend == "megatron":
