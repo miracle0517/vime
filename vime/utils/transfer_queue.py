@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import time
@@ -23,6 +24,8 @@ SHARD_METADATA_ACTOR_NAME_ATTR = "transfer_queue_shard_metadata_actor_name"
 SHARD_METADATA_ACTOR_NAME_PREFIX = "vime_transfer_queue_shard_metadata"
 
 _SHARD_METADATA_ACTOR_CLS = None
+NON_SAMPLE_TRAIN_DATA_FIELDS = {"global_batch_sizes", "num_microbatches", "micro_batch_indices"}
+NON_TENSOR_TRAIN_DATA_FIELDS = {"metadata", "multimodal_train_inputs", "prompt", *NON_SAMPLE_TRAIN_DATA_FIELDS}
 
 REQUIRED_TRAIN_DATA_FIELDS = [
     "tokens",
@@ -201,8 +204,9 @@ class TransferQueueBridge:
             raise ValueError(
                 "args.tq_config is missing. TransferQueueBridge.initialize(args) must run before actors start."
             )
+        os.environ.update(cls.env_vars(args))
         tq = _import_transfer_queue()
-        tq.init(args.tq_config)
+        tq.init(conf=args.tq_config)
         return cls(args, tq.get_client())
 
     def close(self) -> None:
@@ -273,6 +277,11 @@ class TransferQueueBridge:
         TensorDict = _import_tensordict()
         if not data:
             return TensorDict({}, batch_size=0 if batch_size is None else batch_size, device=device)
+        if batch_size is None:
+            batch_size_int = len(next(iter(data.values())))
+        else:
+            batch_size_int = int(batch_size[0]) if isinstance(batch_size, torch.Size) else int(batch_size)
+        data = cls._expand_non_sample_fields(data, batch_size_int)
 
         def nesting_depth(value):
             if isinstance(value, list) and value:
@@ -309,7 +318,7 @@ class TransferQueueBridge:
                 result[key] = torch.nested.as_nested_tensor(tensors, layout=torch.jagged)
                 continue
 
-            if key in {"metadata", "multimodal_train_inputs", "prompt"}:
+            if key in NON_TENSOR_TRAIN_DATA_FIELDS:
                 result[key] = value
                 continue
 
@@ -339,6 +348,14 @@ class TransferQueueBridge:
                 raise ValueError(f"TransferQueue field '{key}' has unsupported nesting depth {depth}; max depth is 2.")
 
         return TensorDict(result, batch_size=batch_size, device=device)
+
+    @staticmethod
+    def _expand_non_sample_fields(data: dict[str, Any], batch_size: int) -> dict[str, Any]:
+        data = dict(data)
+        for key in NON_SAMPLE_TRAIN_DATA_FIELDS:
+            if key in data:
+                data[key] = [copy.deepcopy(data[key]) for _ in range(batch_size)]
+        return data
 
     def transfer_rollout_data(self, rollout_id: int, train_data: dict[str, Any]) -> None:
         """Write one rollout partition to TransferQueue."""
@@ -511,6 +528,9 @@ class TransferQueueBridge:
             "raw_reward",
             "truncated",
             "sample_indices",
+            "global_batch_sizes",
+            "num_microbatches",
+            "micro_batch_indices",
         ]
         if getattr(args, "use_rollout_logprobs", False):
             fields.append("rollout_log_probs")
@@ -574,7 +594,10 @@ class TransferQueueBridge:
             try:
                 shard_metadata = self._get_shard_metadata(partition_id)
                 if batch_size is None:
-                    batch_size = self._get_batch_size_from_shard_metadata(partition_id, shard_metadata)
+                    if shard_metadata is not None:
+                        batch_size = self._get_batch_size_from_shard_metadata(partition_id, shard_metadata)
+                    else:
+                        batch_size = self._fallback_batch_size(partition_id, mpu)
                 batch_meta = client.get_meta(
                     data_fields=data_fields,
                     batch_size=batch_size,
@@ -618,6 +641,22 @@ class TransferQueueBridge:
         cls._validate_shard_metadata(partition_id, shard_metadata)
         return shard_metadata[SHARD_SIZE_FIELD]
 
+    def _fallback_batch_size(self, partition_id: str, mpu) -> int:
+        total_batch_size = self.args.rollout_batch_size * self.args.n_samples_per_prompt
+        dp_size = mpu.get_data_parallel_world_size(with_context_parallel=False)
+        if total_batch_size % dp_size != 0:
+            raise ValueError(
+                f"TransferQueue shard metadata is missing for partition={partition_id}, "
+                "and rollout_batch_size*n_samples_per_prompt is not divisible by DP size."
+            )
+        batch_size = total_batch_size // dp_size
+        logger.warning(
+            "TransferQueue shard metadata is missing for partition=%s; fallback to uniform DP batch_size=%s.",
+            partition_id,
+            batch_size,
+        )
+        return batch_size
+
     @staticmethod
     def _apply_shard_metadata(rollout_data: dict[str, Any], shard_metadata: dict[str, Any] | None) -> None:
         if shard_metadata is None:
@@ -655,7 +694,10 @@ class TransferQueueBridge:
 
         rollout_data = {}
         for key, value in data.items():
-            if key in {"metadata", "multimodal_train_inputs", "prompt"}:
+            if key in NON_SAMPLE_TRAIN_DATA_FIELDS:
+                items = cls._unwrap_non_tensor_stack(value, NonTensorData)
+                rollout_data[key] = items[0] if items else []
+            elif key in {"metadata", "multimodal_train_inputs", "prompt"}:
                 rollout_data[key] = cls._unwrap_non_tensor_stack(value, NonTensorData)
             elif (
                 "lengths" in key

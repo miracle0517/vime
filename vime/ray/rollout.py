@@ -755,9 +755,17 @@ class RolloutManager:
         return train_data
 
     def set_train_parallel_config(self, config: dict):
+        current_config = getattr(self, "train_parallel_config", None)
+        if current_config is not None and int(current_config.get("dp_size", 0)) > int(config.get("dp_size", 0)):
+            logger.warning(
+                "Ignore train_parallel_config with smaller dp_size: current=%s, new=%s",
+                current_config,
+                config,
+            )
+            return
         self.train_parallel_config = config
 
-    def _build_train_data_shards_by_dp(self, data):
+    def _build_train_data_shards_by_dp(self, data, train_parallel_config: dict | None = None):
         """Compute the DP/mbs schedule and package each rank's rollout_data.
 
         The schedule itself is computed by
@@ -770,13 +778,14 @@ class RolloutManager:
         global_batch_size`` regardless of how many training samples each
         rollout produced.
         """
-        dp_size = self.train_parallel_config["dp_size"]
+        train_parallel_config = train_parallel_config or self.train_parallel_config
+        dp_size = train_parallel_config["dp_size"]
         total_lengths = [len(t) for t in data["tokens"]]
         data["total_lengths"] = total_lengths
 
         partitions, micro_batch_indices, num_microbatches, global_batch_sizes = build_dp_schedule(
             self.args,
-            self.train_parallel_config,
+            train_parallel_config,
             total_lengths,
             global_batch_size=self.args.global_batch_size,
             rollout_indices=data["rollout_ids"],
@@ -821,11 +830,23 @@ class RolloutManager:
         """Compute the DP/mbs schedule and return Ray refs for the non-TQ path."""
         return [Box(ray.put(rollout_data)) for rollout_data in self._build_train_data_shards_by_dp(data)]
 
+    def _transfer_queue_train_parallel_config(self) -> dict:
+        config = dict(self.train_parallel_config)
+        expected_dp_size = TransferQueueBridge.data_parallel_size(self.args)
+        if int(config["dp_size"]) != expected_dp_size:
+            logger.warning(
+                "Adjust TransferQueue train_parallel_config dp_size from %s to %s.",
+                config["dp_size"],
+                expected_dp_size,
+            )
+            config["dp_size"] = expected_dp_size
+        return config
+
     def _split_train_data_for_transfer_queue(self, data):
         """Return per-DP TQ payloads plus small per-rank metadata for the TQ bridge."""
         rollout_data_by_dp = []
         shard_metadata = []
-        for rollout_data in self._build_train_data_shards_by_dp(data):
+        for rollout_data in self._build_train_data_shards_by_dp(data, self._transfer_queue_train_parallel_config()):
             rollout_data = dict(rollout_data)
             partition = rollout_data.pop("partition")
             metadata = {
@@ -834,6 +855,13 @@ class RolloutManager:
                 "num_microbatches": rollout_data.pop("num_microbatches"),
                 "micro_batch_indices": rollout_data.pop("micro_batch_indices"),
             }
+            rollout_data.update(
+                {
+                    "global_batch_sizes": metadata["global_batch_sizes"],
+                    "num_microbatches": metadata["num_microbatches"],
+                    "micro_batch_indices": metadata["micro_batch_indices"],
+                }
+            )
 
             for key in ["raw_reward", "total_lengths"]:
                 if key not in rollout_data:
