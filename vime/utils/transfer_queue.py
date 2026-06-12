@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import time
@@ -14,9 +15,25 @@ from slime.utils.async_utils import run
 logger = logging.getLogger(__name__)
 
 TRAIN_PARTITION_PREFIX = "train_"
+FIELD_MANIFEST_SEPARATOR = "_fields_"
+SHARD_SIZE_SEPARATOR = "_n_"
 ACTOR_TRAIN_TASK = "actor_train"
 CRITIC_TRAIN_TASK = "critic_train"
 CRITIC_VALUE_FIELDS = ["values"]
+NON_SAMPLE_TRAIN_DATA_FIELDS = {
+    "partition",
+    "total_lengths",
+    "raw_reward",
+    "global_batch_sizes",
+    "num_microbatches",
+    "micro_batch_indices",
+}
+NON_TENSOR_TRAIN_DATA_FIELDS = {
+    "metadata",
+    "multimodal_train_inputs",
+    "prompt",
+    *NON_SAMPLE_TRAIN_DATA_FIELDS,
+}
 
 REQUIRED_TRAIN_DATA_FIELDS = [
     "tokens",
@@ -166,8 +183,11 @@ class TransferQueueBridge:
         if missing:
             raise ValueError(f"TransferQueue rollout data is missing required fields: {missing}")
 
-        train_data = cls.add_total_lengths(train_data)
+        train_data = dict(train_data)
         batch_size = len(train_data["tokens"])
+
+        if "total_lengths" not in train_data:
+            train_data = cls.add_total_lengths(train_data)
 
         if "raw_reward" not in train_data:
             train_data["raw_reward"] = list(train_data["rewards"])
@@ -189,6 +209,11 @@ class TransferQueueBridge:
         TensorDict = _import_tensordict()
         if not data:
             return TensorDict({}, batch_size=0 if batch_size is None else batch_size, device=device)
+        if batch_size is None:
+            batch_size_int = len(next(iter(data.values())))
+        else:
+            batch_size_int = int(batch_size[0]) if isinstance(batch_size, torch.Size) else int(batch_size)
+        data = cls._expand_non_sample_fields(data, batch_size_int)
 
         def nesting_depth(value):
             if isinstance(value, list) and value:
@@ -225,7 +250,7 @@ class TransferQueueBridge:
                 result[key] = torch.nested.as_nested_tensor(tensors, layout=torch.jagged)
                 continue
 
-            if key in {"metadata", "multimodal_train_inputs", "prompt"}:
+            if key in NON_TENSOR_TRAIN_DATA_FIELDS:
                 result[key] = value
                 continue
 
@@ -256,19 +281,52 @@ class TransferQueueBridge:
 
         return TensorDict(result, batch_size=batch_size, device=device)
 
+    @staticmethod
+    def _expand_non_sample_fields(data: dict[str, Any], batch_size: int) -> dict[str, Any]:
+        data = dict(data)
+        for key in NON_SAMPLE_TRAIN_DATA_FIELDS:
+            if key in data:
+                data[key] = [copy.deepcopy(data[key]) for _ in range(batch_size)]
+        return data
+
     def transfer_rollout_data(self, rollout_id: int, train_data: dict[str, Any]) -> None:
         """Write one rollout partition to TransferQueue."""
-        client = self._require_client()
+        self.transfer_rollout_data_shard(rollout_id, train_data, dp_rank=None, wait_for_staleness=True)
+
+    def transfer_rollout_data_shards(self, rollout_id: int, train_data_by_dp: list[dict[str, Any]]) -> None:
+        """Write per-DP rollout shards to TransferQueue."""
         self.wait_for_staleness()
+        for dp_rank, train_data in enumerate(train_data_by_dp):
+            self.transfer_rollout_data_shard(rollout_id, train_data, dp_rank=dp_rank, wait_for_staleness=False)
+
+    def transfer_rollout_data_shard(
+        self,
+        rollout_id: int,
+        train_data: dict[str, Any],
+        *,
+        dp_rank: int | None,
+        wait_for_staleness: bool,
+    ) -> None:
+        """Write one rollout partition or one already-DP-sharded partition."""
+        client = self._require_client()
+        if wait_for_staleness:
+            self.wait_for_staleness()
         train_data = self.normalize_train_data(train_data)
-        rollout_batch = self.dict_to_tensordict(train_data, batch_size=len(train_data["tokens"]))
-        metadata = run(client.async_put(data=rollout_batch, partition_id=self.partition_id(rollout_id)))
-        self._set_total_length_custom_meta(metadata, train_data["total_lengths"])
+        batch_size = len(train_data["tokens"])
+        rollout_batch = self.dict_to_tensordict(train_data, batch_size=batch_size)
+        partition_id = self.partition_id(
+            rollout_id,
+            dp_rank=dp_rank,
+            shard_size=batch_size if dp_rank is not None else None,
+            fields=train_data.keys() if dp_rank is not None else None,
+        )
+        metadata = run(client.async_put(data=rollout_batch, partition_id=partition_id))
+        self._set_total_length_custom_meta(metadata, self._sample_total_lengths(train_data))
         logger.info(
             "Transferred rollout_id=%s to TransferQueue partition=%s with %s samples; fields=%s",
             rollout_id,
-            self.partition_id(rollout_id),
-            len(train_data["tokens"]),
+            partition_id,
+            batch_size,
             sorted(train_data.keys()),
         )
 
@@ -308,6 +366,19 @@ class TransferQueueBridge:
         metadata.update_custom_meta([{"total_lengths": int(length)} for length in total_lengths])
         run(self._require_client().async_set_custom_meta(metadata))
 
+    @staticmethod
+    def _sample_total_lengths(train_data: dict[str, Any]) -> list[int]:
+        total_lengths = train_data.get("total_lengths")
+        batch_size = len(train_data["tokens"])
+        if total_lengths is None:
+            return [len(tokens) for tokens in train_data["tokens"]]
+        if len(total_lengths) == batch_size:
+            return total_lengths
+        partition = train_data.get("partition")
+        if partition is not None:
+            return [total_lengths[i] for i in partition]
+        return [len(tokens) for tokens in train_data["tokens"]]
+
     def wait_for_staleness(self) -> None:
         """Apply simple partition-count backpressure before writing a new rollout."""
         client = self._require_client()
@@ -315,12 +386,16 @@ class TransferQueueBridge:
         poll_interval = float(getattr(self.args, "transfer_queue_staleness_poll_interval", 1.0))
         while True:
             partitions = run(client.async_get_partition_list())
-            train_partitions = [p for p in partitions if str(p).startswith(TRAIN_PARTITION_PREFIX)]
-            if len(train_partitions) <= max_staleness:
+            train_rollouts = {
+                rollout_key
+                for partition in partitions
+                if (rollout_key := self._partition_rollout_key(partition)) is not None
+            }
+            if len(train_rollouts) <= max_staleness:
                 return
             logger.info(
-                "TransferQueue staleness backpressure: %s train partitions > max_staleness=%s; waiting %.2fs",
-                len(train_partitions),
+                "TransferQueue staleness backpressure: %s train rollouts > max_staleness=%s; waiting %.2fs",
+                len(train_rollouts),
                 max_staleness,
                 poll_interval,
             )
@@ -329,12 +404,42 @@ class TransferQueueBridge:
     def clear_partition(self, rollout_id: int) -> None:
         if not self.enabled(self.args) or self.client is None:
             return
-        run(self.client.async_clear_partition(partition_id=self.partition_id(rollout_id)))
-        logger.info("Cleared TransferQueue partition %s", self.partition_id(rollout_id))
+        base_partition_id = self.partition_id(rollout_id)
+        partitions = run(self.client.async_get_partition_list())
+        target_partitions = [
+            partition
+            for partition in partitions
+            if str(partition) == base_partition_id or str(partition).startswith(f"{base_partition_id}_dp_")
+        ]
+        if not target_partitions:
+            target_partitions = [base_partition_id]
+        for partition in target_partitions:
+            run(self.client.async_clear_partition(partition_id=partition))
+        logger.info("Cleared TransferQueue partitions %s", target_partitions)
 
     @staticmethod
-    def partition_id(rollout_id: int) -> str:
-        return f"{TRAIN_PARTITION_PREFIX}{rollout_id}"
+    def partition_id(
+        rollout_id: int,
+        dp_rank: int | None = None,
+        shard_size: int | None = None,
+        fields=None,
+    ) -> str:
+        partition_id = f"{TRAIN_PARTITION_PREFIX}{rollout_id}"
+        if dp_rank is not None:
+            partition_id = f"{partition_id}_dp_{dp_rank}"
+        if shard_size is not None:
+            partition_id = f"{partition_id}{SHARD_SIZE_SEPARATOR}{shard_size}"
+        if fields is not None:
+            partition_id = f"{partition_id}{FIELD_MANIFEST_SEPARATOR}{'.'.join(sorted(fields))}"
+        return partition_id
+
+    @staticmethod
+    def _partition_rollout_key(partition_id) -> str | None:
+        partition_id = str(partition_id)
+        if not partition_id.startswith(TRAIN_PARTITION_PREFIX):
+            return None
+        suffix = partition_id[len(TRAIN_PARTITION_PREFIX) :]
+        return suffix.split("_dp_", 1)[0]
 
     @classmethod
     def default_train_data_fields(cls, args: Namespace) -> list[str]:
@@ -347,15 +452,18 @@ class TransferQueueBridge:
             "raw_reward",
             "truncated",
             "sample_indices",
+            "multimodal_train_inputs",
+            "partition",
+            "rollout_ids",
+            "rollout_mask_sums",
+            "global_batch_sizes",
+            "num_microbatches",
+            "micro_batch_indices",
+            "round_number",
+            "rollout_log_probs",
+            "rollout_routed_experts",
+            "teacher_log_probs",
         ]
-        if getattr(args, "use_rollout_logprobs", False):
-            fields.append("rollout_log_probs")
-        if getattr(args, "use_rollout_routing_replay", False):
-            fields.append("rollout_routed_experts")
-        if getattr(args, "multimodal_keys", None) is not None:
-            fields.append("multimodal_train_inputs")
-        if getattr(args, "use_opd", False) and getattr(args, "opd_type", None) == "sglang":
-            fields.append("teacher_log_probs")
         for field in getattr(args, "transfer_queue_extra_data_fields", []) or []:
             if field not in fields:
                 fields.append(field)
@@ -392,17 +500,26 @@ class TransferQueueBridge:
         data_fields = data_fields or self.default_train_data_fields(self.args)
         total_batch_size = self.args.rollout_batch_size * self.args.n_samples_per_prompt
         dp_size = mpu.get_data_parallel_world_size(with_context_parallel=False)
-        if total_batch_size % dp_size != 0:
-            raise ValueError(
-                "TransferQueue requires rollout_batch_size*n_samples_per_prompt to be divisible by DP size: "
-                f"total_batch_size={total_batch_size}, dp_size={dp_size}"
-            )
-        batch_size = total_batch_size // dp_size
+        dp_rank = mpu.get_data_parallel_rank(with_context_parallel=False)
+        partition_id, batch_size, available_fields = self._resolve_read_partition(
+            rollout_id, dp_rank, total_batch_size, dp_size
+        )
+        if available_fields is not None:
+            deferred_fields = set(CRITIC_VALUE_FIELDS) if self.critic_values_via_transfer_queue(self.args) else set()
+            requested_fields = data_fields
+            data_fields = [field for field in data_fields if field in available_fields or field in deferred_fields]
+            skipped_fields = sorted(set(requested_fields) - set(data_fields) - deferred_fields)
+            if skipped_fields:
+                logger.debug(
+                    "Skipped TransferQueue fields absent from shard manifest: partition=%s fields=%s",
+                    partition_id,
+                    skipped_fields,
+                )
         sampling_config = {
-            "dp_rank": mpu.get_data_parallel_rank(with_context_parallel=False),
+            "dp_rank": dp_rank,
             "task_name": task_name,
             "batch_index": 0,
-            "partition_id": self.partition_id(rollout_id),
+            "partition_id": partition_id,
         }
 
         should_fetch = (
@@ -415,7 +532,7 @@ class TransferQueueBridge:
             batch_meta = client.get_meta(
                 data_fields=data_fields,
                 batch_size=batch_size,
-                partition_id=self.partition_id(rollout_id),
+                partition_id=partition_id,
                 sampling_config=sampling_config,
                 task_name=task_name,
             )
@@ -423,7 +540,7 @@ class TransferQueueBridge:
                 payload = [client.get_data(batch_meta), batch_meta]
                 logger.info(
                     "Fetched TransferQueue data: partition=%s task=%s dp_rank=%s batch_size=%s fields=%s",
-                    self.partition_id(rollout_id),
+                    partition_id,
                     task_name,
                     sampling_config["dp_rank"],
                     batch_meta.size,
@@ -438,6 +555,50 @@ class TransferQueueBridge:
         if rollout_data is None:
             return None, None
         return self.tensordict_to_rollout_data(rollout_data), batch_meta
+
+    def _resolve_read_partition(
+        self,
+        rollout_id: int,
+        dp_rank: int,
+        total_batch_size: int,
+        dp_size: int,
+    ) -> tuple[str, int, set[str] | None]:
+        base_partition_id = self.partition_id(rollout_id)
+        shard_prefix = self.partition_id(rollout_id, dp_rank=dp_rank) + SHARD_SIZE_SEPARATOR
+        partitions = [str(partition) for partition in run(self._require_client().async_get_partition_list())]
+        shard_partitions = [partition for partition in partitions if partition.startswith(shard_prefix)]
+        rollout_shard_partitions = [
+            partition for partition in partitions if partition.startswith(f"{base_partition_id}_dp_")
+        ]
+        if shard_partitions:
+            if len(shard_partitions) != 1:
+                raise ValueError(
+                    f"Expected one TransferQueue shard partition for rollout_id={rollout_id}, dp_rank={dp_rank}, "
+                    f"got {shard_partitions}"
+                )
+            partition_id = shard_partitions[0]
+            shard_suffix = partition_id[len(shard_prefix) :]
+            batch_size_text, _, field_manifest = shard_suffix.partition(FIELD_MANIFEST_SEPARATOR)
+            try:
+                batch_size = int(batch_size_text)
+            except (IndexError, ValueError) as exc:
+                raise ValueError(f"Invalid TransferQueue shard partition id: {partition_id}") from exc
+            available_fields = set(field_manifest.split(".")) if field_manifest else None
+            return partition_id, batch_size, available_fields
+
+        if rollout_shard_partitions:
+            raise ValueError(
+                "TransferQueue shard partition is missing for this DP rank: "
+                f"rollout_id={rollout_id}, dp_rank={dp_rank}, existing_shards={rollout_shard_partitions}"
+            )
+
+        if total_batch_size % dp_size != 0:
+            raise ValueError(
+                "TransferQueue requires rollout_batch_size*n_samples_per_prompt to be divisible by DP size when "
+                "reading a non-sharded partition: "
+                f"total_batch_size={total_batch_size}, dp_size={dp_size}"
+            )
+        return base_partition_id, total_batch_size // dp_size, None
 
     @staticmethod
     def _broadcast_payload(payload: list[Any], device: torch.device) -> None:
@@ -468,7 +629,10 @@ class TransferQueueBridge:
 
         rollout_data = {}
         for key, value in data.items():
-            if key in {"metadata", "multimodal_train_inputs", "prompt"}:
+            if key in NON_SAMPLE_TRAIN_DATA_FIELDS:
+                items = cls._unwrap_non_tensor_stack(value, NonTensorData)
+                rollout_data[key] = items[0] if items else []
+            elif key in {"metadata", "multimodal_train_inputs", "prompt"}:
                 rollout_data[key] = cls._unwrap_non_tensor_stack(value, NonTensorData)
             elif (
                 "lengths" in key
@@ -478,6 +642,8 @@ class TransferQueueBridge:
                     "raw_reward",
                     "truncated",
                     "sample_indices",
+                    "rollout_ids",
+                    "rollout_mask_sums",
                     "round_number",
                 }
             ):

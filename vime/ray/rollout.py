@@ -496,7 +496,7 @@ class RolloutManager:
             return
         data = self._convert_samples_to_train_data(data)
         if TransferQueueBridge.enabled(self.args):
-            self.transfer_queue.transfer_rollout_data(rollout_id, data)
+            self.transfer_queue.transfer_rollout_data_shards(rollout_id, self._build_train_data_by_dp(data))
             return None
 
         return self._split_train_data_by_dp(data)
@@ -756,10 +756,8 @@ class RolloutManager:
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config
 
-    def _split_train_data_by_dp(self, data):
-        """Compute the DP/mbs schedule and package each rank's rollout_data
-        into a Ray Box. The schedule itself is computed by
-        :func:`build_dp_schedule` so it stays unit-testable without Ray/vllm.
+    def _build_train_data_by_dp(self, data):
+        """Compute the DP/mbs schedule and package each rank's rollout_data.
 
         Step split is by rollout id (``samples[i].rollout_id``, falling back
         to ``samples[i].index``); each step holds exactly
@@ -781,7 +779,7 @@ class RolloutManager:
         )
 
         # Package per-rank rollout_data
-        rollout_data_refs = []
+        rollout_data_by_dp = []
         for r in range(dp_size):
             partition = partitions[r]
             rollout_data = {"partition": partition}
@@ -812,8 +810,12 @@ class RolloutManager:
             rollout_data["global_batch_sizes"] = global_batch_sizes
             rollout_data["num_microbatches"] = num_microbatches
             rollout_data["micro_batch_indices"] = micro_batch_indices[r]
-            rollout_data_refs.append(Box(ray.put(rollout_data)))
-        return rollout_data_refs
+            rollout_data_by_dp.append(rollout_data)
+        return rollout_data_by_dp
+
+    def _split_train_data_by_dp(self, data):
+        """Compute the DP/mbs schedule and return Ray refs for the non-TQ path."""
+        return [Box(ray.put(rollout_data)) for rollout_data in self._build_train_data_by_dp(data)]
 
 
 def _validate_rollout_id_annotated(node, depth=0):

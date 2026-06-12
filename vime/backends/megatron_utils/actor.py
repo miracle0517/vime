@@ -300,6 +300,12 @@ class MegatronTrainRayActor(TrainRayActor):
         return self._postprocess_transfer_queue_rollout_data(rollout_data), batch_meta
 
     def _postprocess_transfer_queue_rollout_data(self, rollout_data: RolloutBatch) -> RolloutBatch:
+        partition = rollout_data.pop("partition", None)
+        if partition is not None and "total_lengths" in rollout_data:
+            total_lengths = rollout_data["total_lengths"]
+            Timer().seq_lens = total_lengths
+            if len(total_lengths) != len(rollout_data["tokens"]):
+                rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
         rollout_data["tokens"] = [
             torch.as_tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]
         ]
