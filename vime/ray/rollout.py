@@ -496,7 +496,8 @@ class RolloutManager:
             return
         data = self._convert_samples_to_train_data(data)
         if TransferQueueBridge.enabled(self.args):
-            self.transfer_queue.transfer_rollout_data(rollout_id, data)
+            rollout_data_by_dp, shard_metadata_by_dp = self._split_train_data_for_transfer_queue(data)
+            self.transfer_queue.transfer_rollout_data_shards(rollout_id, rollout_data_by_dp, shard_metadata_by_dp)
             return None
 
         return self._split_train_data_by_dp(data)
@@ -756,9 +757,10 @@ class RolloutManager:
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config
 
-    def _split_train_data_by_dp(self, data):
-        """Compute the DP/mbs schedule and package each rank's rollout_data
-        into a Ray Box. The schedule itself is computed by
+    def _build_train_data_shards_by_dp(self, data):
+        """Compute the DP/mbs schedule and package each rank's rollout_data.
+
+        The schedule itself is computed by
         :func:`build_dp_schedule` so it stays unit-testable without Ray/vllm.
 
         Step split is by rollout id (``samples[i].rollout_id``, falling back
@@ -781,7 +783,7 @@ class RolloutManager:
         )
 
         # Package per-rank rollout_data
-        rollout_data_refs = []
+        rollout_data_by_dp = []
         for r in range(dp_size):
             partition = partitions[r]
             rollout_data = {"partition": partition}
@@ -812,8 +814,36 @@ class RolloutManager:
             rollout_data["global_batch_sizes"] = global_batch_sizes
             rollout_data["num_microbatches"] = num_microbatches
             rollout_data["micro_batch_indices"] = micro_batch_indices[r]
-            rollout_data_refs.append(Box(ray.put(rollout_data)))
-        return rollout_data_refs
+            rollout_data_by_dp.append(rollout_data)
+        return rollout_data_by_dp
+
+    def _split_train_data_by_dp(self, data):
+        """Compute the DP/mbs schedule and return Ray refs for the non-TQ path."""
+        return [Box(ray.put(rollout_data)) for rollout_data in self._build_train_data_shards_by_dp(data)]
+
+    def _split_train_data_for_transfer_queue(self, data):
+        """Return per-DP TQ payloads plus small per-rank metadata for the TQ bridge."""
+        rollout_data_by_dp = []
+        shard_metadata = []
+        for rollout_data in self._build_train_data_shards_by_dp(data):
+            rollout_data = dict(rollout_data)
+            partition = rollout_data.pop("partition")
+            metadata = {
+                "tq_shard_size": len(rollout_data["tokens"]),
+                "global_batch_sizes": rollout_data.pop("global_batch_sizes"),
+                "num_microbatches": rollout_data.pop("num_microbatches"),
+                "micro_batch_indices": rollout_data.pop("micro_batch_indices"),
+            }
+
+            for key in ["raw_reward", "total_lengths"]:
+                if key not in rollout_data:
+                    continue
+                if len(rollout_data[key]) != len(partition):
+                    rollout_data[key] = [rollout_data[key][j] for j in partition]
+
+            rollout_data_by_dp.append(rollout_data)
+            shard_metadata.append(metadata)
+        return rollout_data_by_dp, shard_metadata
 
 
 def _validate_rollout_id_annotated(node, depth=0):

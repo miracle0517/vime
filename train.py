@@ -76,6 +76,8 @@ def train(args):
             ray.get(rollout_manager.eval.remote(rollout_id))
 
         rollout_data_ref = ray.get(rollout_manager.generate.remote(rollout_id))
+        if TransferQueueBridge.enabled(args):
+            rollout_data_ref = None
 
         if args.offload_rollout:
             ray.get(rollout_manager.offload.remote())
