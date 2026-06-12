@@ -300,6 +300,7 @@ class MegatronTrainRayActor(TrainRayActor):
         return self._postprocess_transfer_queue_rollout_data(rollout_data), batch_meta
 
     def _postprocess_transfer_queue_rollout_data(self, rollout_data: RolloutBatch) -> RolloutBatch:
+        Timer().seq_lens = rollout_data["total_lengths"]
         rollout_data["tokens"] = [
             torch.as_tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]
         ]

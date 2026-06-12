@@ -187,6 +187,8 @@ class TransferQueueBridge:
     ):
         """Convert slime rollout data into the TensorDict format expected by TransferQueue."""
         TensorDict = _import_tensordict()
+        from tensordict.tensorclass import NonTensorData
+
         if not data:
             return TensorDict({}, batch_size=0 if batch_size is None else batch_size, device=device)
 
@@ -211,6 +213,11 @@ class TransferQueueBridge:
             tensors = [torch.tensor(seq, dtype=dtype, device=device) for seq in value]
             return torch.nested.as_nested_tensor(tensors, layout=torch.jagged)
 
+        def non_tensor_stack(value):
+            if not value:
+                return NonTensorData([], batch_size=0 if batch_size is None else batch_size)
+            return torch.stack([NonTensorData(item) for item in value], 0)
+
         result = {}
         for key, value in data.items():
             if not isinstance(value, list):
@@ -226,7 +233,7 @@ class TransferQueueBridge:
                 continue
 
             if key in {"metadata", "multimodal_train_inputs", "prompt"}:
-                result[key] = value
+                result[key] = non_tensor_stack(value)
                 continue
 
             if value and isinstance(value[0], torch.Tensor):
@@ -248,9 +255,15 @@ class TransferQueueBridge:
             if depth == 0:
                 result[key] = torch.empty(0, device=device)
             elif depth == 1:
-                result[key] = tensor_1d(value)
+                try:
+                    result[key] = tensor_1d(value)
+                except (TypeError, ValueError):
+                    result[key] = non_tensor_stack(value)
             elif depth == 2:
-                result[key] = tensor_2d(value)
+                try:
+                    result[key] = tensor_2d(value)
+                except (TypeError, ValueError):
+                    result[key] = non_tensor_stack(value)
             else:
                 raise ValueError(f"TransferQueue field '{key}' has unsupported nesting depth {depth}; max depth is 2.")
 
@@ -347,6 +360,7 @@ class TransferQueueBridge:
             "raw_reward",
             "truncated",
             "sample_indices",
+            "rollout_log_probs"
         ]
         if getattr(args, "use_rollout_logprobs", False):
             fields.append("rollout_log_probs")
@@ -437,7 +451,37 @@ class TransferQueueBridge:
         rollout_data, batch_meta = payload
         if rollout_data is None:
             return None, None
-        return self.tensordict_to_rollout_data(rollout_data), batch_meta
+        rollout_data = self.tensordict_to_rollout_data(rollout_data)
+        self._ensure_schedule_fields(rollout_data)
+        return rollout_data, batch_meta
+
+    def _ensure_schedule_fields(self, rollout_data: dict[str, Any]) -> None:
+        schedule_fields = {"global_batch_sizes", "num_microbatches", "micro_batch_indices"}
+        if schedule_fields.issubset(rollout_data):
+            return
+
+        from megatron.core import mpu
+
+        from vime.utils.dp_schedule import build_dp_schedule
+
+        total_lengths = rollout_data["total_lengths"]
+        local_batch_size = len(total_lengths)
+        train_parallel_config = {
+            "dp_size": 1,
+            "cp_size": mpu.get_context_parallel_world_size(),
+            "vpp_size": mpu.get_virtual_pipeline_model_parallel_world_size() or 1,
+            "microbatch_group_size_per_vp_stage": 1,
+        }
+        _, micro_batch_indices, num_microbatches, _ = build_dp_schedule(
+            self.args,
+            train_parallel_config,
+            total_lengths,
+            global_batch_size=local_batch_size,
+            rollout_indices=list(range(local_batch_size)),
+        )
+        rollout_data["global_batch_sizes"] = [getattr(self.args, "global_batch_size", None) or local_batch_size]
+        rollout_data["num_microbatches"] = num_microbatches
+        rollout_data["micro_batch_indices"] = micro_batch_indices[0]
 
     @staticmethod
     def _broadcast_payload(payload: list[Any], device: torch.device) -> None:
@@ -490,6 +534,8 @@ class TransferQueueBridge:
 
     @staticmethod
     def _unwrap_non_tensor_stack(value, non_tensor_data_cls):
+        if non_tensor_data_cls and isinstance(value, non_tensor_data_cls):
+            value = value.data
         output = []
         for item in list(value):
             raw = item.data if non_tensor_data_cls and isinstance(item, non_tensor_data_cls) else item
