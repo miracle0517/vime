@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 TRAIN_PARTITION_PREFIX = "train_"
 ACTOR_TRAIN_TASK = "actor_train"
 CRITIC_TRAIN_TASK = "critic_train"
-CRITIC_VALUE_FIELDS = ["values"]
 
 REQUIRED_TRAIN_DATA_FIELDS = [
     "tokens",
@@ -92,13 +91,6 @@ class TransferQueueBridge:
             args.num_data_storage_units,
             args.max_staleness,
         )
-        if getattr(args, "use_critic", False) and not cls.critic_values_via_transfer_queue(args):
-            logger.warning(
-                "TransferQueue critic values write-back is disabled because context_parallel_size=%s; "
-                "critic values will use the existing Ray ObjectRef path.",
-                getattr(args, "context_parallel_size", 1),
-            )
-
     @classmethod
     def env_vars(cls, args: Namespace) -> dict[str, str]:
         if not cls.enabled(args):
@@ -285,36 +277,6 @@ class TransferQueueBridge:
             sorted(train_data.keys()),
         )
 
-    def put_data(
-        self,
-        rollout_id: int,
-        data: dict[str, Any],
-        *,
-        data_fields: list[str],
-        batch_meta=None,
-    ) -> None:
-        """Write derived fields back to an existing TransferQueue batch."""
-        if not self.enabled(self.args) or self.client is None:
-            return
-
-        missing = [field for field in data_fields if field not in data]
-        if missing:
-            raise ValueError(f"TransferQueue write-back data is missing fields: {missing}")
-
-        payload = {field: data[field] for field in data_fields}
-        batch_size = len(next(iter(payload.values()))) if payload else 0
-        rollout_batch = self.dict_to_tensordict(payload, batch_size=batch_size)
-        if batch_meta is None:
-            raise ValueError("TransferQueue write-back requires batch_meta from the matching get_meta/get_data call.")
-
-        run(self.client.async_put(data=rollout_batch, metadata=batch_meta))
-        logger.info(
-            "Wrote TransferQueue fields: partition=%s fields=%s samples=%s",
-            self.partition_id(rollout_id),
-            data_fields,
-            batch_size,
-        )
-
     def _set_total_length_custom_meta(self, metadata, total_lengths: list[int]) -> None:
         if metadata is None or getattr(metadata, "size", 0) == 0 or not hasattr(metadata, "update_custom_meta"):
             return
@@ -373,23 +335,6 @@ class TransferQueueBridge:
         for field in getattr(args, "transfer_queue_extra_data_fields", []) or []:
             if field not in fields:
                 fields.append(field)
-        return fields
-
-    @classmethod
-    def critic_values_via_transfer_queue(cls, args: Namespace) -> bool:
-        return (
-            cls.enabled(args)
-            and getattr(args, "use_critic", False)
-            and int(getattr(args, "context_parallel_size", 1)) == 1
-        )
-
-    @classmethod
-    def actor_train_data_fields(cls, args: Namespace) -> list[str]:
-        fields = cls.default_train_data_fields(args)
-        if cls.critic_values_via_transfer_queue(args):
-            for field in CRITIC_VALUE_FIELDS:
-                if field not in fields:
-                    fields.append(field)
         return fields
 
     def get_data(

@@ -23,7 +23,7 @@ from vime.utils.misc import Box
 from vime.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from vime.utils.routing_replay import RoutingReplay
 from vime.utils.timer import Timer, inverse_timer, timer, with_defer
-from vime.utils.transfer_queue import CRITIC_VALUE_FIELDS, TransferQueueBridge
+from vime.utils.transfer_queue import TransferQueueBridge
 from vime.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
@@ -286,11 +286,7 @@ class MegatronTrainRayActor(TrainRayActor):
         task_name = "critic_train" if self.role == "critic" else "actor_train"
         rollout_data = None
         batch_meta = None
-        data_fields = (
-            TransferQueueBridge.actor_train_data_fields(self.args)
-            if self.role == "actor"
-            else TransferQueueBridge.default_train_data_fields(self.args)
-        )
+        data_fields = TransferQueueBridge.default_train_data_fields(self.args)
         while rollout_data is None:
             rollout_data, batch_meta = self.transfer_queue.get_data(
                 rollout_id,
@@ -487,7 +483,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_data = self._get_rollout_data(rollout_data_ref)
 
         if self.role == "critic":
-            result = self.train_critic(rollout_id, rollout_data, batch_meta=batch_meta)
+            result = self.train_critic(rollout_id, rollout_data)
         else:
             self.train_actor(rollout_id, rollout_data, external_data=external_data)
             result = None
@@ -498,7 +494,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         return result
 
-    def train_critic(self, rollout_id: int, rollout_data: RolloutBatch, batch_meta=None):
+    def train_critic(self, rollout_id: int, rollout_data: RolloutBatch):
         """Train critic and return CPU values (used as old-values for the next actor train)."""
         data_iterator = get_data_iterator(rollout_data)
         num_microbatches = rollout_data["num_microbatches"]
@@ -524,20 +520,7 @@ class MegatronTrainRayActor(TrainRayActor):
             from vime.backends.megatron_utils.data import tensors_to_cpu
 
             values = tensors_to_cpu(rollout_data["values"])
-            if TransferQueueBridge.critic_values_via_transfer_queue(self.args):
-                if mpu.get_tensor_model_parallel_rank() == 0:
-                    if batch_meta is None:
-                        raise ValueError("TransferQueue critic values write-back requires batch_meta.")
-                    self.transfer_queue.put_data(
-                        rollout_id,
-                        {"values": values},
-                        data_fields=CRITIC_VALUE_FIELDS,
-                        batch_meta=batch_meta,
-                    )
-                return {}
             return {"values": values}
-        if TransferQueueBridge.critic_values_via_transfer_queue(self.args):
-            return {}
         return {}
 
     def train_actor(self, rollout_id: int, rollout_data: RolloutBatch, external_data=None) -> None:

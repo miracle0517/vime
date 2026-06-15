@@ -85,15 +85,7 @@ def train(args):
         if args.use_critic:
             value_refs = critic_model.async_train(rollout_id, rollout_data_ref)
             if actor_trains_this_step:
-                if (
-                    TransferQueueBridge.critic_values_via_transfer_queue(args)
-                    and TransferQueueBridge.critic_values_via_transfer_queue(actor_model.args)
-                    and TransferQueueBridge.critic_values_via_transfer_queue(critic_model.args)
-                ):
-                    actor_refs = actor_model.async_train(rollout_id, rollout_data_ref)
-                    ray.get(value_refs + actor_refs)
-                else:
-                    ray.get(actor_model.async_train(rollout_id, rollout_data_ref, external_data=value_refs))
+                ray.get(actor_model.async_train(rollout_id, rollout_data_ref, external_data=value_refs))
             else:
                 ray.get(value_refs)
         else:
