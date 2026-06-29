@@ -1385,6 +1385,11 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
             )
+            parser.add_argument(
+                "--log-rank-loss",
+                action="store_true",
+                help="Log per-rank train loss values from the framework training loop.",
+            )
             return parser
 
         # Add custom arguments in front to prevent overwritten some vime arguments.

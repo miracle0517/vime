@@ -39,6 +39,40 @@ from .model_provider import get_model_provider_func
 logger = logging.getLogger(__name__)
 
 
+def _metric_to_float(value) -> float:
+    if isinstance(value, torch.Tensor):
+        return float(value.detach().float().mean().item())
+    return float(value)
+
+
+def _mpu_int(name: str, default: int = -1, **kwargs) -> int:
+    func = getattr(mpu, name, None)
+    if func is None:
+        return default
+    try:
+        return int(func(**kwargs))
+    except TypeError:
+        return int(func())
+
+
+def _log_rank_loss(accumulated_step_id: int, role_tag: str, loss_dict: dict) -> None:
+    if "loss" not in loss_dict:
+        return
+
+    payload = {
+        "step": accumulated_step_id,
+        "rank": torch.distributed.get_rank() if torch.distributed.is_initialized() else -1,
+        "world_size": torch.distributed.get_world_size() if torch.distributed.is_initialized() else -1,
+        "tp_rank": _mpu_int("get_tensor_model_parallel_rank"),
+        "pp_rank": _mpu_int("get_pipeline_model_parallel_rank"),
+        "dp_rank": _mpu_int("get_data_parallel_rank", with_context_parallel=True),
+        "cp_rank": _mpu_int("get_context_parallel_rank"),
+        "ep_rank": _mpu_int("get_expert_model_parallel_rank"),
+        "loss": _metric_to_float(loss_dict["loss"]),
+    }
+    logger.info(f"{role_tag}rank_loss {accumulated_step_id}: {payload}")
+
+
 def _disable_tqdm_for_non_main_rank() -> bool:
     return not (
         mpu.get_data_parallel_rank(with_context_parallel=True) == 0
@@ -773,15 +807,19 @@ def train(
 
                     check_mtp_loss(mtp_losses)
 
+        accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
+        role = getattr(model[0], "role", "actor")
+        role_tag = "" if role == "actor" else f"{role}-"
+
+        if getattr(args, "log_rank_loss", False):
+            _log_rank_loss(accumulated_step_id, role_tag, loss_dict)
+
         # per train step log.
         if (
             mpu.get_data_parallel_rank(with_context_parallel=True) == 0
             and mpu.get_tensor_model_parallel_rank() == 0
             and mpu.get_pipeline_model_parallel_rank() == mpu.get_pipeline_model_parallel_world_size() - 1
         ):
-            accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
-            role = getattr(model[0], "role", "actor")
-            role_tag = "" if role == "actor" else f"{role}-"
             log_dict = {
                 f"train/{role_tag}{key}": val.mean().item() if isinstance(val, torch.Tensor) else val
                 for key, val in loss_dict.items()
