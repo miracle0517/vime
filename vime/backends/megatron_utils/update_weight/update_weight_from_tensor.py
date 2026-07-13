@@ -283,11 +283,42 @@ class _VLLMHijack:
     def _patch_npu_worker() -> None:
         from vllm_ascend.worker.worker import NPUWorker
 
+        _VLLMHijack._patch_shape_changing_moe_restore()
+
         if getattr(NPUWorker, "_npu_worker_patched", False):
             return
 
         _VLLMHijack._patch_one_worker(NPUWorker)
         NPUWorker._npu_worker_patched = True
+
+    @staticmethod
+    def _patch_shape_changing_moe_restore() -> None:
+        from vllm.model_executor.model_loader.reload import layerwise
+
+        if getattr(layerwise, "_vime_moe_restore_patched", False):
+            return
+
+        def _copy_and_restore_kernel_tensors(layer: torch.nn.Module, info) -> None:
+            assert info.kernel_tensors is not None
+            parameters, buffers = info.kernel_tensors
+            for name, param in parameters.items():
+                updated = getattr(layer, name)
+                if param.shape == updated.shape:
+                    param.data.copy_(updated)
+                elif name in {"w13_weight", "w2_weight"} and param.shape == updated.transpose(-2, -1).shape:
+                    parameters[name] = updated
+                else:
+                    raise RuntimeError(
+                        f"Unexpected kernel tensor shape change for {name}: "
+                        f"{tuple(param.shape)} -> {tuple(updated.shape)}"
+                    )
+            for name, buffer in buffers.items():
+                if name in layer._buffers:
+                    buffer.data.copy_(getattr(layer, name))
+            layerwise._place_kernel_tensors(layer, info)
+
+        layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
+        layerwise._vime_moe_restore_patched = True
 
     @staticmethod
     def _patch_one_worker(worker_cls: type) -> None:
@@ -315,8 +346,40 @@ class _VLLMHijack:
             _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
             _orig(self, is_checkpoint_format=is_checkpoint_format)
 
+        def _patched_wake_up(self, tags: list[str] | None = None) -> None:
+            from vllm_ascend import envs as envs_ascend
+            from vllm_ascend.device_allocator.camem import CaMemAllocator
+
+            if envs_ascend.VLLM_ASCEND_ENABLE_NZ:
+                raise ValueError(
+                    "FRACTAL_NZ mode may cause model parameter precision issues in RL; "
+                    "set VLLM_ASCEND_ENABLE_NZ=0."
+                )
+            CaMemAllocator.get_instance().wake_up(tags=tags)
+
+            model = self.model_runner.model
+            if tags is None or "weights" in tags:
+                hidden_size = self.vllm_config.model_config.hf_config.hidden_size
+                for name, param in model.named_parameters():
+                    if "w2_weight" in name and param.shape[2] == hidden_size:
+                        transposed = param.transpose(1, 2)
+                    elif "w13_weight" in name and param.shape[1] == hidden_size:
+                        transposed = param.transpose(1, 2)
+                    else:
+                        continue
+                    parent_name, param_name = name.rsplit(".", 1)
+                    parent = model.get_submodule(parent_name)
+                    setattr(parent, param_name, torch.nn.Parameter(transposed, requires_grad=False))
+
+            if self._sleep_saved_buffers:
+                for name, buffer in model.named_buffers():
+                    if name in self._sleep_saved_buffers:
+                        buffer.data.copy_(self._sleep_saved_buffers[name].data)
+                self._sleep_saved_buffers = {}
+
         worker_cls.load_model = _patched_load_model  # type: ignore[attr-defined]
         worker_cls.start_weight_update = _patched_start_weight_update  # type: ignore[attr-defined]
+        worker_cls.wake_up = _patched_wake_up  # type: ignore[attr-defined]
 
     @staticmethod
     def patch_moe_weight_loader(model: torch.nn.Module) -> None:

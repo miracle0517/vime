@@ -305,6 +305,40 @@ def test_send_to_colocated_engine_uses_native_npu_ipc_engine(upw_vllm, monkeypat
 
 
 @pytest.mark.unit
+def test_moe_restore_keeps_new_runtime_layout(upw_vllm, monkeypatch):
+    layerwise = types.ModuleType("vllm.model_executor.model_loader.reload.layerwise")
+    layerwise._place_kernel_tensors = MagicMock()
+    reload_mod = types.ModuleType("vllm.model_executor.model_loader.reload")
+    reload_mod.layerwise = layerwise
+    model_loader = types.ModuleType("vllm.model_executor.model_loader")
+    model_loader.reload = reload_mod
+    model_executor = types.ModuleType("vllm.model_executor")
+    model_executor.model_loader = model_loader
+    vllm = types.ModuleType("vllm")
+    vllm.model_executor = model_executor
+    for name, module in {
+        "vllm": vllm,
+        "vllm.model_executor": model_executor,
+        "vllm.model_executor.model_loader": model_loader,
+        "vllm.model_executor.model_loader.reload": reload_mod,
+        "vllm.model_executor.model_loader.reload.layerwise": layerwise,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    upw_vllm._VLLMHijack._patch_shape_changing_moe_restore()
+
+    layer = torch.nn.Module()
+    layer.w13_weight = torch.nn.Parameter(torch.zeros(2, 4, 3))
+    old_layout = torch.nn.Parameter(torch.zeros(2, 3, 4))
+    info = types.SimpleNamespace(kernel_tensors=({"w13_weight": old_layout}, {}))
+
+    layerwise._copy_and_restore_kernel_tensors(layer, info)
+
+    assert info.kernel_tensors[0]["w13_weight"] is layer.w13_weight
+    layerwise._place_kernel_tensors.assert_called_once_with(layer, info)
+
+
+@pytest.mark.unit
 def test_send_hf_params_returns_only_distributed_refs(upw_vllm):
     obj = _make_instance(upw_vllm)
     obj.rollout_engines = [RecordingVLLMEngine()]
