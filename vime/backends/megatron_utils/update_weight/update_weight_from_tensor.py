@@ -265,9 +265,10 @@ class _VLLMHijack:
     """vLLM worker extension helpers.
 
     On NPU:
-    - Patches NPUWorker.load_model and NPUWorker.start_weight_update to fix
+    - Patches NPUWorker model loading and online weight updates to fix
       MoE weight_loader missing on EP (a vLLM bug where w13_weight/w2_weight
-      params lack weight_loader attr when EP is enabled).
+      params lack weight_loader attr when EP is enabled), shape-changing MoE
+      reload, and sleep-mode allocation tracking.
     - Patches ApplyRotaryEmb.__init__ to skip flash_attn import
       (mindspeed/megatron backends introduce flash_attn as a dummy module,
       but vllm_ascend does not use it).
@@ -277,11 +278,44 @@ class _VLLMHijack:
     def _patch_npu_worker() -> None:
         from vllm_ascend.worker.worker import NPUWorker
 
+        _VLLMHijack._patch_shape_changing_moe_restore()
+
         if getattr(NPUWorker, "_npu_worker_patched", False):
             return
 
         _VLLMHijack._patch_one_worker(NPUWorker)
         NPUWorker._npu_worker_patched = True
+
+    @staticmethod
+    def _patch_shape_changing_moe_restore() -> None:
+        from vllm.model_executor.model_loader.reload import layerwise
+
+        if getattr(layerwise, "_vime_moe_restore_patched", False):
+            return
+
+        def _copy_and_restore_kernel_tensors(layer: torch.nn.Module, info) -> None:
+            assert info.kernel_tensors is not None
+            parameters, buffers = info.kernel_tensors
+            for name, param in parameters.items():
+                updated = getattr(layer, name)
+                if param.shape == updated.shape:
+                    param.data.copy_(updated)
+                elif name in {"w13_weight", "w2_weight"} and param.shape == updated.transpose(-2, -1).shape:
+                    # Keep the CaMem-managed storage and only change its view.
+                    param.data = param.data.transpose(-2, -1)
+                    param.data.copy_(updated)
+                else:
+                    raise RuntimeError(
+                        f"Unexpected kernel tensor shape change for {name}: "
+                        f"{tuple(param.shape)} -> {tuple(updated.shape)}"
+                    )
+            for name, buffer in buffers.items():
+                if name in layer._buffers:
+                    buffer.data.copy_(getattr(layer, name))
+            layerwise._place_kernel_tensors(layer, info)
+
+        layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
+        layerwise._vime_moe_restore_patched = True
 
     @staticmethod
     def _patch_one_worker(worker_cls: type) -> None:

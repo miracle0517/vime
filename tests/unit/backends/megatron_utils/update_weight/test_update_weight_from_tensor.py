@@ -306,6 +306,75 @@ def test_send_to_colocated_engine_uses_native_npu_ipc_engine(upw_vllm, monkeypat
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("param_name", ["w13_weight", "w2_weight"])
+def test_moe_restore_keeps_new_runtime_layout(upw_vllm, monkeypatch, param_name):
+    layerwise = types.ModuleType("vllm.model_executor.model_loader.reload.layerwise")
+    layerwise._place_kernel_tensors = MagicMock()
+    reload_mod = types.ModuleType("vllm.model_executor.model_loader.reload")
+    reload_mod.layerwise = layerwise
+    model_loader = types.ModuleType("vllm.model_executor.model_loader")
+    model_loader.reload = reload_mod
+    model_executor = types.ModuleType("vllm.model_executor")
+    model_executor.model_loader = model_loader
+    vllm = types.ModuleType("vllm")
+    vllm.model_executor = model_executor
+    for name, module in {
+        "vllm": vllm,
+        "vllm.model_executor": model_executor,
+        "vllm.model_executor.model_loader": model_loader,
+        "vllm.model_executor.model_loader.reload": reload_mod,
+        "vllm.model_executor.model_loader.reload.layerwise": layerwise,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    upw_vllm._VLLMHijack._patch_shape_changing_moe_restore()
+
+    layer = torch.nn.Module()
+    updated_layout = torch.nn.Parameter(torch.arange(24).reshape(2, 3, 4).transpose(1, 2).float())
+    layer.register_parameter(param_name, updated_layout)
+    old_layout = torch.nn.Parameter(torch.zeros(2, 3, 4))
+    old_data_ptr = old_layout.data_ptr()
+    info = types.SimpleNamespace(kernel_tensors=({param_name: old_layout}, {}))
+
+    layerwise._copy_and_restore_kernel_tensors(layer, info)
+
+    assert info.kernel_tensors[0][param_name] is old_layout
+    assert old_layout.data_ptr() == old_data_ptr
+    assert old_layout.shape == updated_layout.shape
+    assert old_layout.stride() == updated_layout.stride()
+    torch.testing.assert_close(old_layout, updated_layout)
+    layerwise._place_kernel_tensors.assert_called_once_with(layer, info)
+
+
+@pytest.mark.unit
+def test_npu_worker_patch_keeps_native_update_and_wake_up(upw_vllm):
+    class FakeWorker:
+        def load_model(self):
+            pass
+
+        def start_weight_update(self, is_checkpoint_format=True):
+            pass
+
+        def update_weights(self, update_info):
+            pass
+
+        def finish_weight_update(self):
+            pass
+
+        def wake_up(self, tags=None):
+            pass
+
+    native_update_weights = FakeWorker.update_weights
+    native_finish_weight_update = FakeWorker.finish_weight_update
+    native_wake_up = FakeWorker.wake_up
+    upw_vllm._VLLMHijack._patch_one_worker(FakeWorker)
+
+    assert FakeWorker.update_weights is native_update_weights
+    assert FakeWorker.finish_weight_update is native_finish_weight_update
+    assert FakeWorker.wake_up is native_wake_up
+
+
+@pytest.mark.unit
 def test_send_hf_params_returns_only_distributed_refs(upw_vllm):
     obj = _make_instance(upw_vllm)
     obj.rollout_engines = [RecordingVLLMEngine()]
