@@ -347,8 +347,14 @@ def test_moe_restore_keeps_new_runtime_layout(upw_vllm, monkeypatch, param_name)
 
 
 @pytest.mark.unit
-def test_npu_worker_patch_keeps_native_update_and_wake_up(upw_vllm):
+def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm):
+    wake_quant_configs = []
+
     class FakeWorker:
+        def __init__(self):
+            self.vllm_config = types.SimpleNamespace(quant_config=None)
+            self.moe_transposed = False
+
         def load_model(self):
             pass
 
@@ -362,7 +368,9 @@ def test_npu_worker_patch_keeps_native_update_and_wake_up(upw_vllm):
             pass
 
         def wake_up(self, tags=None):
-            pass
+            wake_quant_configs.append(self.vllm_config.quant_config)
+            if self.vllm_config.quant_config is None and (tags is None or "weights" in tags):
+                self.moe_transposed = True
 
     native_update_weights = FakeWorker.update_weights
     native_finish_weight_update = FakeWorker.finish_weight_update
@@ -371,7 +379,14 @@ def test_npu_worker_patch_keeps_native_update_and_wake_up(upw_vllm):
 
     assert FakeWorker.update_weights is native_update_weights
     assert FakeWorker.finish_weight_update is native_finish_weight_update
-    assert FakeWorker.wake_up is native_wake_up
+    assert FakeWorker.wake_up is not native_wake_up
+
+    worker = FakeWorker()
+    worker.wake_up(tags=["weights"])
+
+    assert wake_quant_configs[0] is not None
+    assert not worker.moe_transposed
+    assert worker.vllm_config.quant_config is None
 
 
 @pytest.mark.unit
