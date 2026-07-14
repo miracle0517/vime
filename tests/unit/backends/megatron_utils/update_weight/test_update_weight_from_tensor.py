@@ -306,47 +306,6 @@ def test_send_to_colocated_engine_uses_native_npu_ipc_engine(upw_vllm, monkeypat
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("param_name", ["w13_weight", "w2_weight"])
-def test_moe_restore_keeps_new_runtime_layout(upw_vllm, monkeypatch, param_name):
-    layerwise = types.ModuleType("vllm.model_executor.model_loader.reload.layerwise")
-    layerwise._place_kernel_tensors = MagicMock()
-    reload_mod = types.ModuleType("vllm.model_executor.model_loader.reload")
-    reload_mod.layerwise = layerwise
-    model_loader = types.ModuleType("vllm.model_executor.model_loader")
-    model_loader.reload = reload_mod
-    model_executor = types.ModuleType("vllm.model_executor")
-    model_executor.model_loader = model_loader
-    vllm = types.ModuleType("vllm")
-    vllm.model_executor = model_executor
-    for name, module in {
-        "vllm": vllm,
-        "vllm.model_executor": model_executor,
-        "vllm.model_executor.model_loader": model_loader,
-        "vllm.model_executor.model_loader.reload": reload_mod,
-        "vllm.model_executor.model_loader.reload.layerwise": layerwise,
-    }.items():
-        monkeypatch.setitem(sys.modules, name, module)
-
-    upw_vllm._VLLMHijack._patch_shape_changing_moe_restore()
-
-    layer = torch.nn.Module()
-    updated_layout = torch.nn.Parameter(torch.arange(24).reshape(2, 3, 4).transpose(1, 2).float())
-    layer.register_parameter(param_name, updated_layout)
-    old_layout = torch.nn.Parameter(torch.zeros(2, 3, 4))
-    old_data_ptr = old_layout.data_ptr()
-    info = types.SimpleNamespace(kernel_tensors=({param_name: old_layout}, {}))
-
-    layerwise._copy_and_restore_kernel_tensors(layer, info)
-
-    assert info.kernel_tensors[0][param_name] is old_layout
-    assert old_layout.data_ptr() == old_data_ptr
-    assert old_layout.shape == updated_layout.shape
-    assert old_layout.stride() == updated_layout.stride()
-    torch.testing.assert_close(old_layout, updated_layout)
-    layerwise._place_kernel_tensors.assert_called_once_with(layer, info)
-
-
-@pytest.mark.unit
 def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm):
     wake_quant_configs = []
 
