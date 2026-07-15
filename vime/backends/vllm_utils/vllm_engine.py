@@ -8,13 +8,17 @@ User-facing vLLM knobs remain on ``train.py`` as ``--vllm-*`` (see ``arguments.p
 
 from __future__ import annotations
 
+import atexit
 import base64
+import ctypes
 import dataclasses
 import ipaddress
 import logging
 import multiprocessing
 import os
 import pickle
+import signal
+import sys
 import time
 from argparse import BooleanOptionalAction
 from typing import Any
@@ -485,8 +489,23 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
     return cmd, env
 
 
-def _exec_vllm_cmd(cmd: list[str], env: dict[str, str]) -> None:
+def _set_parent_death_signal(parent_pid: int) -> None:
+    """Terminate a managed server when its owning Ray actor process dies."""
+    if sys.platform != "linux":
+        return
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+            raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
+        if os.getppid() != parent_pid:  # Parent died before prctl was installed.
+            os.kill(os.getpid(), signal.SIGTERM)
+    except Exception:
+        logger.warning("Failed to install vLLM parent-death signal", exc_info=True)
+
+
+def _exec_vllm_cmd(cmd: list[str], env: dict[str, str], parent_pid: int) -> None:
     """Entry point for multiprocessing child process."""
+    _set_parent_death_signal(parent_pid)
     os.execvpe(cmd[0], cmd, env)
 
 
@@ -503,9 +522,15 @@ def _normalize_vllm_wake_tags(tags: list[str] | None) -> list[str] | None:
 def launch_server_process(server_args: dict) -> multiprocessing.Process:
     """Spawn ``vllm serve`` from a :func:`_compute_server_args` dict."""
     cmd, env = build_vllm_cmd_and_env(server_args)
-    p = _spawn_ctx.Process(target=_exec_vllm_cmd, args=(cmd, env))
+    p = _spawn_ctx.Process(target=_exec_vllm_cmd, args=(cmd, env, os.getpid()))
     p.start()
     return p
+
+
+def _kill_process_tree(pid: int) -> None:
+    from vllm.utils.system_utils import kill_process_tree
+
+    kill_process_tree(pid)
 
 
 def _wait_worker_process_alive(process: multiprocessing.Process, timeout_s: float = 300.0) -> None:
@@ -567,6 +592,8 @@ class VLLMEngine(RayActor):
         self.node_rank = 0
         self._topology: VllmEngineTopology | None = None
         self._server_args: dict | None = None
+        self._shutting_down = False
+        atexit.register(self._terminate_managed_process)
 
     def _http_base(self) -> str:
         return f"http://{self.server_host}:{self.server_port}"
@@ -633,7 +660,11 @@ class VLLMEngine(RayActor):
             self._init_normal()
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
-            self._register_worker_with_router()
+            try:
+                self._register_worker_with_router()
+            except BaseException:
+                self._terminate_managed_process()
+                raise
 
     def _register_worker_with_router(self) -> None:
         worker_url = self._http_base()
@@ -719,10 +750,14 @@ class VLLMEngine(RayActor):
             topology.nnodes,
         )
         self.process = launch_server_process(self._server_args)
-        if topology.node_rank == 0:
-            _wait_server_healthy(self._http_base(), process=self.process)
-        else:
-            _wait_worker_process_alive(self.process)
+        try:
+            if topology.node_rank == 0:
+                _wait_server_healthy(self._http_base(), process=self.process)
+            else:
+                _wait_worker_process_alive(self.process)
+        except BaseException:
+            self._terminate_managed_process()
+            raise
 
     def _make_request(self, endpoint: str, payload: dict | None = None) -> dict | None:
         """Control-plane POST returning parsed JSON (mirrors SGLang's ``_make_request``).
@@ -783,34 +818,46 @@ class VLLMEngine(RayActor):
             return None
         return self._http_base()
 
-    def shutdown(self):
-        logger.info("Shutdown vLLM engine %s:%s...", self.server_host, self.server_port)
-        self._deregister_worker_from_router()
-        if self.args.rollout_external:
+    def _terminate_managed_process(self) -> None:
+        if self._shutting_down:
             return
-
-        if self.process is None or not self.process.is_alive():
-            return
-        pid = self.process.pid
+        self._shutting_down = True
+        process, self.process = self.process, None
         try:
-            from vllm.utils.system_utils import kill_process_tree
-
-            kill_process_tree(pid)
-        except Exception as e:
-            logger.warning("vLLM kill_process_tree failed (%s); terminate root only.", e)
-            if self.process.is_alive():
-                self.process.terminate()
+            if process is None:
+                return
+            if process.is_alive():
                 try:
-                    self.process.join(timeout=15)
-                except Exception:
-                    pass
-                if self.process.is_alive():
-                    self.process.kill()
+                    _kill_process_tree(process.pid)
+                except Exception as e:
+                    logger.warning("vLLM kill_process_tree failed (%s); terminate root only.", e)
+                    process.terminate()
+            process.join(timeout=15)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=5)
+        except Exception:
+            logger.warning("Failed to terminate managed vLLM process", exc_info=True)
+        finally:
+            self._shutting_down = False
+
+    def shutdown(self):
+        logger.info(
+            "Shutdown vLLM engine %s:%s...",
+            getattr(self, "server_host", "unknown"),
+            getattr(self, "server_port", "unknown"),
+        )
         try:
-            self.process.join(timeout=30)
+            self._deregister_worker_from_router()
+        finally:
+            if not self.args.rollout_external:
+                self._terminate_managed_process()
+
+    def __del__(self):
+        try:
+            self._terminate_managed_process()
         except Exception:
             pass
-        self.process = None
 
     def get_weight_version(self) -> str | None:
         """Return the version recorded by the last successful weight transfer.

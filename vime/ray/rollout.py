@@ -2,6 +2,7 @@ import dataclasses
 import itertools
 import logging
 import multiprocessing
+import os
 import random
 import time
 from pathlib import Path
@@ -13,7 +14,7 @@ import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from vime.backends.vllm_utils.vllm_config import ModelConfig, ServerGroupConfig, VllmConfig
-from vime.backends.vllm_utils.vllm_engine import VLLMEngine
+from vime.backends.vllm_utils.vllm_engine import VLLMEngine, _set_parent_death_signal
 
 # Memory-type tag strings shared with the vLLM engine's sleep/wake_up API.
 GPU_MEMORY_TYPE_KV_CACHE = "kv_cache"
@@ -38,6 +39,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+def _run_managed_router(router_args, parent_pid: int) -> None:
+    _set_parent_death_signal(parent_pid)
+    from vime.utils.http_utils import run_router
+
+    run_router(router_args)
 
 
 @dataclasses.dataclass
@@ -230,6 +238,7 @@ class RolloutServer:
     router_ip: str | None = None
     router_port: int | None = None
     prometheus_port: int | None = None
+    router_process: multiprocessing.Process | None = None
     model_name: str = "default"
     update_weights: bool = True
 
@@ -356,6 +365,34 @@ class RolloutServer:
             handles.extend(g.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH]))
         return ray.get(handles) if handles else []
 
+    def shutdown(self) -> None:
+        """Gracefully stop every managed vLLM process, then remove its Ray actor."""
+        engines = [engine for group in self.server_groups for engine in group.all_engines if engine is not None]
+        try:
+            if engines:
+                ray.get([engine.shutdown.remote() for engine in engines])
+        except Exception:
+            logger.warning("Graceful vLLM shutdown failed; force-killing remaining actors", exc_info=True)
+        finally:
+            for engine in engines:
+                try:
+                    ray.kill(engine)
+                except Exception:
+                    logger.warning("Failed to kill vLLM Ray actor", exc_info=True)
+            for group in self.server_groups:
+                group.all_engines = [None] * len(group.all_engines)
+            if self.router_process is not None:
+                try:
+                    self.router_process.terminate()
+                    self.router_process.join(timeout=5)
+                    if self.router_process.is_alive():
+                        self.router_process.kill()
+                        self.router_process.join(timeout=5)
+                except Exception:
+                    logger.warning("Failed to terminate vLLM router process", exc_info=True)
+                finally:
+                    self.router_process = None
+
 
 @ray.remote
 class RolloutManager:
@@ -366,6 +403,7 @@ class RolloutManager:
 
         self.pg = pg
         self.args = args
+        self._disposed = False
 
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
@@ -444,9 +482,16 @@ class RolloutManager:
                 logger.warning(f"CI Fault Injection failed: {e}")
 
     def dispose(self):
+        if self._disposed:
+            return
+        self._disposed = True
         for monitor in self._health_monitors:
             monitor.stop()
-        logging_utils.finish_tracking(self.args)
+        try:
+            for server in self.servers.values():
+                server.shutdown()
+        finally:
+            logging_utils.finish_tracking(self.args)
 
     @property
     def server(self) -> RolloutServer | None:
@@ -959,13 +1004,13 @@ def _start_router(
     bind: tuple[str, int] | None = None,
     prefill_urls: list | None = None,
     decode_urls: list | None = None,
-) -> tuple[str, int, int]:
+) -> tuple[str, int, int | None, multiprocessing.Process | None]:
     """Start the rollout HTTP gateway (vllm-router)."""
     if bind is not None:
         router_ip, router_port = bind
     else:
         if not force_new and args.vllm_router_ip is not None:
-            return args.vllm_router_ip, args.vllm_router_port, None
+            return args.vllm_router_ip, args.vllm_router_port, None, None
         router_ip = _wrap_ipv6(get_host_info()[1])
         if force_new or args.vllm_router_port is None:
             router_port = find_available_port(random.randint(3000, 4000))
@@ -973,8 +1018,6 @@ def _start_router(
             router_port = args.vllm_router_port
 
     from vllm_router.router_args import RouterArgs
-
-    from vime.utils.http_utils import run_router
 
     router_args = RouterArgs.from_cli_args(args, use_router_prefix=True)
     router_args.host = router_ip
@@ -995,13 +1038,14 @@ def _start_router(
 
     logger.info(f"Launch router with args: {router_args}")
 
-    process = multiprocessing.Process(target=run_router, args=(router_args,))
+    parent_pid = os.getpid()
+    process = multiprocessing.Process(target=_run_managed_router, args=(router_args, parent_pid))
     process.daemon = True
     process.start()
     time.sleep(3)
     assert process.is_alive()
     logger.info(f"Router launched at {router_ip}:{router_port}, Prometheus port: {router_args.prometheus_port}")
-    return router_ip, router_port, router_args.prometheus_port
+    return router_ip, router_port, router_args.prometheus_port, process
 
 
 def _compute_rollout_offset(args) -> int:
@@ -1054,7 +1098,7 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
             prom_port = None  # assigned when the router actually launches, after URL collection
             engine_router_ip, engine_router_port = None, None
         else:
-            router_ip, router_port, prom_port = _start_router(
+            router_ip, router_port, prom_port, router_process = _start_router(
                 args, has_pd_disaggregation=has_pd, force_new=(model_idx > 0)
             )
             engine_router_ip, engine_router_port = router_ip, router_port
@@ -1155,6 +1199,7 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
                 ray.get(all_init_handles)
 
         if use_static_pd_router:
+            router_process = None
             prefill_urls: list[tuple] = []
             decode_urls: list[str] = []
             for g in server_groups:
@@ -1169,7 +1214,7 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
                         url = ray.get(e.get_url.remote())
                         if url:
                             decode_urls.append(url)
-            _, _, prom_port = _start_router(
+            _, _, prom_port, router_process = _start_router(
                 args,
                 has_pd_disaggregation=True,
                 bind=(router_ip, router_port),
@@ -1184,6 +1229,7 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
             prometheus_port=prom_port,
+            router_process=router_process,
         )
 
     # Expose per-model router info for custom rollout functions.

@@ -78,6 +78,44 @@ def test_format_v6_uri_ipv4_unchanged():
 
 
 @pytest.mark.unit
+def test_shutdown_terminates_managed_process_idempotently(vllm_engine, monkeypatch):
+    class FakeProcess:
+        pid = 123
+
+        def __init__(self):
+            self.alive = True
+            self.joins = []
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout=None):
+            self.joins.append(timeout)
+            self.alive = False
+
+        def terminate(self):
+            self.alive = False
+
+        def kill(self):
+            self.alive = False
+
+    process = FakeProcess()
+    killed = []
+    vllm_engine.args.rollout_external = False
+    vllm_engine.router_ip = None
+    vllm_engine.router_port = None
+    vllm_engine.process = process
+    monkeypatch.setattr(mod, "_kill_process_tree", killed.append)
+
+    vllm_engine.shutdown()
+    vllm_engine.shutdown()
+
+    assert killed == [process.pid]
+    assert process.joins == [15]
+    assert vllm_engine.process is None
+
+
+@pytest.mark.unit
 def test_compute_vllm_engine_topology_single_node(vllm_args):
     vllm_args.num_gpus_per_node = 8
     vllm_args.rollout_num_gpus_per_engine = 4

@@ -1,3 +1,4 @@
+import atexit
 import copy
 import logging
 import socket
@@ -215,6 +216,15 @@ def create_rollout_manager(args, pg):
         # num_gpus=0,
         resources={device_name: 0},
     ).remote(args, pg)
+
+    def _dispose_on_driver_exit():
+        try:
+            if ray.is_initialized():
+                ray.get(rollout_manager.dispose.remote(), timeout=60)
+        except Exception:
+            logger.warning("Failed to dispose rollout manager during driver exit", exc_info=True)
+
+    atexit.register(_dispose_on_driver_exit)
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None
