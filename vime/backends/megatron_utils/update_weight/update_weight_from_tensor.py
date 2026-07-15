@@ -4,7 +4,10 @@ Colocated vLLM weight sync using native IPC transfer engines.
 
 from __future__ import annotations
 
+import logging
 import os
+import threading
+import time
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
@@ -25,6 +28,58 @@ from .update_weight_from_distributed import (
     post_process_weights,
     update_weights_from_distributed,
 )
+
+logger = logging.getLogger(__name__)
+
+
+class _NPUWeightUpdateMemoryMonitor:
+    """Continuously sample device memory during one vLLM weight update."""
+
+    def __init__(self, worker, interval: float = 0.1) -> None:
+        self.worker = worker
+        self.interval = interval
+        self.device = torch.npu.current_device()
+        self.stop_event = threading.Event()
+        self.peak = [0, 0, 0]
+        self.samples = 0
+        self.update_started = False
+        self.started_at = time.monotonic()
+        torch.npu.reset_peak_memory_stats(self.device)
+        self.thread = threading.Thread(target=self._run, name="vllm-update-memory", daemon=True)
+
+    def _sample(self) -> None:
+        free, total = torch.npu.mem_get_info(self.device)
+        values = (total - free, torch.npu.memory_allocated(self.device), torch.npu.memory_reserved(self.device))
+        self.peak = [max(old, new) for old, new in zip(self.peak, values, strict=True)]
+        self.samples += 1
+        logger.info(
+            "vLLM update-weight memory: device=%s elapsed=%.2fs used=%.2fGiB allocated=%.2fGiB reserved=%.2fGiB",
+            self.device,
+            time.monotonic() - self.started_at,
+            *(value / 1024**3 for value in values),
+        )
+
+    def _run(self) -> None:
+        try:
+            self._sample()
+            while not self.stop_event.wait(self.interval):
+                if self.update_started and not getattr(self.worker, "_weight_update_active", False):
+                    break
+                self._sample()
+        finally:
+            self.peak[1] = max(self.peak[1], torch.npu.max_memory_allocated(self.device))
+            logger.info(
+                "vLLM update-weight memory peak: device=%s duration=%.2fs samples=%s "
+                "used=%.2fGiB allocated=%.2fGiB reserved=%.2fGiB",
+                self.device,
+                time.monotonic() - self.started_at,
+                self.samples,
+                *(value / 1024**3 for value in self.peak),
+            )
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.thread.join()
 
 
 class UpdateWeightFromTensor:
@@ -307,8 +362,20 @@ class _VLLMHijack:
         def _patched_start_weight_update(
             self, is_checkpoint_format: bool = True, _orig=_orig_start_weight_update
         ) -> None:
-            _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
-            _orig(self, is_checkpoint_format=is_checkpoint_format)
+            previous_monitor = getattr(self, "_vime_weight_update_memory_monitor", None)
+            if previous_monitor is not None:
+                previous_monitor.stop()
+            monitor = _NPUWeightUpdateMemoryMonitor(self)
+            self._vime_weight_update_memory_monitor = monitor
+            monitor.thread.start()
+            try:
+                _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
+                _orig(self, is_checkpoint_format=is_checkpoint_format)
+            except BaseException:
+                monitor.stop()
+                self._vime_weight_update_memory_monitor = None
+                raise
+            monitor.update_started = True
 
         def _patched_wake_up(self, tags=None, _orig=_orig_wake_up) -> None:
             quant_config = self.vllm_config.quant_config
