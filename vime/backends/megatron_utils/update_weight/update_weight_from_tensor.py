@@ -12,7 +12,10 @@ https://docs.vllm.ai/en/stable/examples/rl/rlhf_ipc/
 
 from __future__ import annotations
 
+import logging
 import os
+import threading
+import time
 from argparse import Namespace
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
@@ -35,6 +38,65 @@ from .update_weight_from_distributed import (
     update_weights_from_distributed,
 )
 
+logger = logging.getLogger(__name__)
+
+
+class _NPUWeightUpdateMemoryMonitor:
+    def __init__(self, interval: float = 0.1) -> None:
+        self.interval = interval
+        self.device = torch.npu.current_device()
+        self.stop_event = threading.Event()
+        self.peak = [0, 0, 0]
+        self.samples = 0
+        self.started_at = time.monotonic()
+        self.thread = threading.Thread(target=self._run, name="vllm-update-memory", daemon=True)
+
+    def _sample(self) -> None:
+        free, total = torch.npu.mem_get_info(self.device)
+        values = (total - free, torch.npu.memory_allocated(self.device), torch.npu.memory_reserved(self.device))
+        self.peak = [max(old, new) for old, new in zip(self.peak, values, strict=True)]
+        self.samples += 1
+        logger.info(
+            "vLLM update-weight memory: device=%s elapsed=%.2fs used=%.2fGiB allocated=%.2fGiB reserved=%.2fGiB",
+            self.device,
+            time.monotonic() - self.started_at,
+            *(value / 1024**3 for value in values),
+        )
+
+    def start(self) -> None:
+        try:
+            torch.npu.reset_peak_memory_stats(self.device)
+            self._sample()
+            self.thread.start()
+        except Exception:
+            logger.warning("Failed to start vLLM update-weight memory monitor", exc_info=True)
+
+    def _run(self) -> None:
+        try:
+            torch.npu.set_device(self.device)
+            while not self.stop_event.wait(self.interval):
+                self._sample()
+        except Exception:
+            logger.warning("vLLM update-weight memory sampling stopped", exc_info=True)
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.thread.is_alive():
+            self.thread.join()
+        try:
+            self._sample()
+            self.peak[1] = max(self.peak[1], torch.npu.max_memory_allocated(self.device))
+            logger.info(
+                "vLLM update-weight memory peak: device=%s duration=%.2fs samples=%s "
+                "used=%.2fGiB allocated=%.2fGiB reserved=%.2fGiB",
+                self.device,
+                time.monotonic() - self.started_at,
+                self.samples,
+                *(value / 1024**3 for value in self.peak),
+            )
+        except Exception:
+            logger.warning("Failed to finish vLLM update-weight memory monitor", exc_info=True)
+
 
 def _patch_npu_colocate_worker() -> None:
     """Skip layerwise_reload in NPUWorker weight-update hooks (colocate OOM fix)."""
@@ -47,11 +109,21 @@ def _patch_npu_colocate_worker() -> None:
         return
 
     def _patched_start_weight_update(self, is_checkpoint_format: bool = True) -> None:
+        previous = getattr(self, "_vime_weight_update_memory_monitor", None)
+        if previous is not None:
+            previous.stop()
+        monitor = _NPUWeightUpdateMemoryMonitor()
+        self._vime_weight_update_memory_monitor = monitor
+        monitor.start()
         self._weight_update_active = True
         self._is_checkpoint_format = is_checkpoint_format
 
     def _patched_finish_weight_update(self) -> None:
         self._weight_update_active = False
+        monitor = getattr(self, "_vime_weight_update_memory_monitor", None)
+        if monitor is not None:
+            monitor.stop()
+            self._vime_weight_update_memory_monitor = None
 
     NPUWorker.start_weight_update = _patched_start_weight_update  # type: ignore[method-assign]
     NPUWorker.finish_weight_update = _patched_finish_weight_update  # type: ignore[method-assign]
