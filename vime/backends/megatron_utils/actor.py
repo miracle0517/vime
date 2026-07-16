@@ -76,10 +76,18 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
         super().init(args, role, with_ref, with_opd_teacher)
 
+        if is_npu():
+            from .npu_checkpoint_patch import configure_npu_checkpoint
+
+            configure_npu_checkpoint(args)
+
         init(args)
 
         if is_npu():
             repatch(args)
+            from .npu_checkpoint_patch import patch_mindspeed_moe_checkpoint
+
+            patch_mindspeed_moe_checkpoint()
         if is_megatron_main_rank():
             init_tracking(args, primary=False, role=role)
 
