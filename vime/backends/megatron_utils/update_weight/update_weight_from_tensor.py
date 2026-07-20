@@ -4,9 +4,10 @@ Colocated vLLM weight sync using native IPC transfer engines.
 
 from __future__ import annotations
 
+import logging
 import os
 from argparse import Namespace
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict
 
 import ray
@@ -25,6 +26,27 @@ from .update_weight_from_distributed import (
     post_process_weights,
     update_weights_from_distributed,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _log_moe_weight_shapes(
+    stage: str,
+    named_tensors: Iterable[tuple[str, torch.Tensor]],
+    seen: set[str] | None = None,
+) -> None:
+    """Log one representative tensor for each MoE weight kind."""
+    seen = seen if seen is not None else set()
+    for name, tensor in named_tensors:
+        kind = next(
+            (key for key in ("w13_weight", "w2_weight", "gate_proj", "up_proj", "down_proj") if key in name), None
+        )
+        if kind is None or kind in seen or ("_proj" in kind and ".experts." not in name):
+            continue
+        logger.warning("[MOE_SHAPE] %s %s %s", stage, name, tuple(tensor.shape))
+        seen.add(kind)
+        if {"w13_weight", "w2_weight"} <= seen or {"gate_proj", "up_proj", "down_proj"} <= seen:
+            break
 
 
 class UpdateWeightFromTensor:
@@ -168,7 +190,14 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
+        logged_moe_kinds: set[str] = set()
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
+            if rank == 0:
+                _log_moe_weight_shapes(
+                    f"trainer-send-v{self.weight_version}",
+                    hf_named_tensors,
+                    logged_moe_kinds,
+                )
             refs = self._send_hf_params(hf_named_tensors)
             ray.get(refs)
             # Free chunk tensors so the caching allocator can reuse the blocks.
@@ -289,6 +318,8 @@ class _VLLMHijack:
 
         _orig_load_model = worker_cls.load_model
         _orig_start_weight_update = worker_cls.start_weight_update
+        _orig_finish_weight_update = worker_cls.finish_weight_update
+        _orig_wake_up = worker_cls.wake_up
         has_dummy_kw = "load_dummy_weights" in inspect.signature(_orig_load_model).parameters
 
         if has_dummy_kw:
@@ -306,11 +337,26 @@ class _VLLMHijack:
         def _patched_start_weight_update(
             self, is_checkpoint_format: bool = True, _orig=_orig_start_weight_update
         ) -> None:
-            _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
+            model = self.model_runner.model
+            _log_moe_weight_shapes("vllm-before-start", model.named_parameters())
+            _VLLMHijack.patch_moe_weight_loader(model)
             _orig(self, is_checkpoint_format=is_checkpoint_format)
+            _log_moe_weight_shapes("vllm-after-start", model.named_parameters())
+
+        def _patched_finish_weight_update(self, _orig=_orig_finish_weight_update) -> None:
+            _orig(self)
+            _log_moe_weight_shapes("vllm-after-finish", self.model_runner.model.named_parameters())
+
+        def _patched_wake_up(self, tags=None, _orig=_orig_wake_up) -> None:
+            model = self.model_runner.model
+            _log_moe_weight_shapes("vllm-before-wake", model.named_parameters())
+            _orig(self, tags=tags)
+            _log_moe_weight_shapes("vllm-after-wake", model.named_parameters())
 
         worker_cls.load_model = _patched_load_model  # type: ignore[attr-defined]
         worker_cls.start_weight_update = _patched_start_weight_update  # type: ignore[attr-defined]
+        worker_cls.finish_weight_update = _patched_finish_weight_update  # type: ignore[attr-defined]
+        worker_cls.wake_up = _patched_wake_up  # type: ignore[attr-defined]
 
     @staticmethod
     def patch_moe_weight_loader(model: torch.nn.Module) -> None:
