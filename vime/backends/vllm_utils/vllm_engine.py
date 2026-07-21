@@ -25,7 +25,7 @@ import requests
 from vime.backends.vllm_utils.arguments import SKIPPED_DESTS, get_vllm_cli_action_table
 from vime.ray.ray_actor import RayActor
 from vime.utils.common import get_cann_python_site_packages, is_npu, prepend_pythonpath
-from vime.utils.http_utils import get_host_info
+
 
 logger = logging.getLogger(__name__)
 
@@ -585,7 +585,20 @@ class VLLMEngine(RayActor):
         del nccl_port
 
         gpus_per_engine = self.num_gpus_per_engine or self.args.rollout_num_gpus_per_engine
-        host = host or get_host_info()[1]
+
+        actual_host, _ = self._get_current_node_ip_and_free_port()
+        if host and host.strip("[]") != actual_host:
+            logger.warning(
+                "Correct rollout bind host for rank %s: allocated=%s actual=%s",
+                self.rank,
+                host,
+                actual_host,
+            )
+        host = actual_host
+
+        if dist_init_addr and gpus_per_engine <= self.args.num_gpus_per_node:
+            _, dist_port = dist_init_addr.rsplit(":", 1)
+            dist_init_addr = f"{actual_host}:{dist_port}"
 
         self._server_args = _compute_server_args(
             self.args,
