@@ -311,6 +311,8 @@ class MegatronTrainRayActor(TrainRayActor):
         if target_tag not in self.weights_backuper.backup_tags:
             raise ValueError(f"Cannot switch to unknown model tag: {target_tag}")
         self.weights_backuper.restore(target_tag)
+        if self.args.check_weight_update_equal:
+            self.weights_backuper.verify(target_tag)
         self._active_model_tag = target_tag
 
     def fill_routing_replay(self, data_iterator, num_microbatches, rollout_data):

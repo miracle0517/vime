@@ -277,11 +277,47 @@ class _VLLMHijack:
     def _patch_npu_worker() -> None:
         from vllm_ascend.worker.worker import NPUWorker
 
+        _VLLMHijack._patch_npu_ipc_receiver()
+
         if getattr(NPUWorker, "_npu_worker_patched", False):
             return
 
         _VLLMHijack._patch_one_worker(NPUWorker)
         NPUWorker._npu_worker_patched = True
+
+    @staticmethod
+    def _patch_npu_ipc_receiver() -> None:
+        """Give deferred layerwise loaders ownership of received IPC weights.
+
+        ``initialize_layerwise_reload`` replaces parameter loaders with wrappers
+        that may retain a loaded tensor until a later weight chunk completes the
+        layer.  The native NPU IPC sender, however, is allowed to release and
+        reuse its source storage as soon as the current ``/update_weights`` RPC
+        returns.  Retaining the rebuilt IPC view across that boundary therefore
+        leaves the layerwise loader pointing at storage owned by the trainer.
+
+        Clone on the receiving NPU before invoking the loader callback.  The
+        clone is referenced by layerwise reload for as long as it is deferred,
+        while weights consumed synchronously are released with the callback.
+        HCCL/disaggregated updates are unaffected because they use a different
+        transfer engine.
+        """
+        from vllm_ascend.distributed.weight_transfer.npu_ipc_engine import NPUIPCWeightTransferEngine
+
+        if getattr(NPUIPCWeightTransferEngine, "_vime_owned_weights_patched", False):
+            return
+
+        original_receive_weights = NPUIPCWeightTransferEngine.receive_weights
+
+        def _receive_weights_with_owned_storage(self, update_info, load_weights, _orig=original_receive_weights):
+            def _load_owned_weights(weights: list[tuple[str, torch.Tensor]]) -> None:
+                owned_weights = [(name, weight.detach().clone()) for name, weight in weights]
+                load_weights(owned_weights)
+
+            _orig(self, update_info, _load_owned_weights)
+
+        NPUIPCWeightTransferEngine.receive_weights = _receive_weights_with_owned_storage
+        NPUIPCWeightTransferEngine._vime_owned_weights_patched = True
 
     @staticmethod
     def _patch_one_worker(worker_cls: type) -> None:
@@ -352,6 +388,97 @@ class _VLLMHijack:
                         param.weight_loader = experts.weight_loader  # type: ignore[attr-defined]
 
     @staticmethod
+    def _tensor_fingerprint(tensor: torch.Tensor) -> dict[str, object]:
+        """Return a compact, layout-independent fingerprint for one parameter."""
+        raw = tensor.detach().contiguous().view(torch.uint8).reshape(-1)
+        num_bytes = raw.numel()
+        byte_sum = int(raw.sum(dtype=torch.int64).item())
+
+        # A second position-sensitive checksum prevents simple permutations
+        # from being hidden by the byte sum without materializing a full int64
+        # copy of a large parameter.
+        step = max(1, num_bytes // 4096)
+        sample = raw[::step][:4096].to(torch.int64)
+        positions = torch.arange(1, sample.numel() + 1, dtype=torch.int64, device=sample.device)
+        sample_hash = int((sample * positions).sum().item())
+        return {
+            "shape": list(tensor.shape),
+            "dtype": str(tensor.dtype),
+            "num_bytes": num_bytes,
+            "byte_sum": byte_sum,
+            "sample_hash": sample_hash,
+        }
+
+    @staticmethod
+    def _weight_category(name: str) -> str:
+        if "mlp.experts." in name or "block_sparse_moe.experts." in name:
+            return "moe_expert"
+        if "mlp.gate." in name or "block_sparse_moe.gate." in name:
+            return "moe_router"
+        if "self_attn." in name or ".attention." in name:
+            return "attention"
+        if "norm." in name or "layernorm." in name:
+            return "norm"
+        if name in {"lm_head.weight", "model.embed_tokens.weight"}:
+            return "embedding_or_lm_head"
+        return "other"
+
+    @staticmethod
+    def check_worker_weights(worker, action: str, stage: str | None = None) -> dict[str, object]:
+        """Snapshot or compare vLLM parameters for ``--check-weight-update-equal``."""
+        if action == "reset_tensors":
+            # Kept for compatibility with the existing driver sequence.
+            return {"action": action, "stage": stage, "ok": True}
+        if action not in {"snapshot", "compare"}:
+            raise ValueError(f"Unsupported weight check action: {action}")
+
+        synchronize = torch.npu.synchronize if is_npu() else torch.cuda.synchronize
+        synchronize()
+        current = {
+            name: _VLLMHijack._tensor_fingerprint(param)
+            for name, param in worker.model_runner.model.named_parameters()
+        }
+        synchronize()
+
+        if action == "snapshot":
+            worker._vime_weight_fingerprint_snapshot = current
+            worker._vime_weight_fingerprint_stage = stage
+            return {"action": action, "stage": stage, "ok": True, "num_parameters": len(current)}
+
+        expected = getattr(worker, "_vime_weight_fingerprint_snapshot", None)
+        if expected is None:
+            raise RuntimeError("Weight fingerprint snapshot is missing; call action='snapshot' first.")
+        baseline_stage = getattr(worker, "_vime_weight_fingerprint_stage", None)
+
+        missing = sorted(set(expected) - set(current))
+        unexpected = sorted(set(current) - set(expected))
+        changed = sorted(name for name in set(expected) & set(current) if expected[name] != current[name])
+        if missing or unexpected or changed:
+            details = {name: {"expected": expected[name], "actual": current[name]} for name in changed[:8]}
+            changed_by_category: dict[str, int] = {}
+            for name in changed:
+                category = _VLLMHijack._weight_category(name)
+                changed_by_category[category] = changed_by_category.get(category, 0) + 1
+            zero_actual_count = sum(
+                current[name]["byte_sum"] == 0 and current[name]["sample_hash"] == 0 for name in changed
+            )
+            raise AssertionError(
+                "vLLM weight fingerprint mismatch: "
+                f"baseline_stage={baseline_stage!r}, current_stage={stage!r}, "
+                f"missing={missing[:8]}, unexpected={unexpected[:8]}, "
+                f"changed={changed[:8]}, changed_count={len(changed)}, "
+                f"zero_actual_count={zero_actual_count}, "
+                f"changed_by_category={changed_by_category}, details={details}"
+            )
+        return {
+            "action": action,
+            "baseline_stage": baseline_stage,
+            "stage": stage,
+            "ok": True,
+            "num_parameters": len(current),
+        }
+
+    @staticmethod
     def _patch_npu_rotary_emb() -> None:
         from vllm.model_executor.layers.rotary_embedding.common import ApplyRotaryEmb
 
@@ -382,6 +509,9 @@ class vLLMColocateWorkerExtension:
             _VLLMHijack._patch_npu_rotary_emb()
         return super().__new__(cls)
 
+    def check_weights(self, action: str, stage: str | None = None):
+        return _VLLMHijack.check_worker_weights(self, action, stage)
+
 
 class vLLMWorkerExtension:
     """vLLM ``--worker-extension-cls`` entry for general bugfix."""
@@ -391,3 +521,6 @@ class vLLMWorkerExtension:
             _VLLMHijack._patch_npu_worker()
             _VLLMHijack._patch_npu_rotary_emb()
         return super().__new__(cls)
+
+    def check_weights(self, action: str, stage: str | None = None):
+        return _VLLMHijack.check_worker_weights(self, action, stage)

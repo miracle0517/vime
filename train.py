@@ -1,3 +1,5 @@
+import logging
+
 import ray
 
 from vime.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
@@ -8,6 +10,9 @@ from vime.utils.misc import should_run_periodic_action
 
 if is_npu():
     import mindspeed.megatron_adaptor  # noqa: F401
+
+
+logger = logging.getLogger(__name__)
 
 
 def train(args):
@@ -33,11 +38,21 @@ def train(args):
     # Always push actor weights to rollout once weights are loaded.
     actor_model.update_weights()
 
+    def check_rollout_weights(stage):
+        try:
+            result = ray.get(rollout_manager.check_weights.remote(action="compare", stage=stage))
+        except Exception as exc:
+            raise RuntimeError(f"vLLM weight fingerprint mismatch at stage={stage}") from exc
+        logger.info("vLLM weight fingerprint passed at stage=%s: %s", stage, result)
+
     if args.check_weight_update_equal:
-        ray.get(rollout_manager.check_weights.remote(action="compare"))
+        check_rollout_weights("after_initial_actor_ipc_update")
 
     if args.offload_rollout:
         ray.get(rollout_manager.onload_kv.remote())
+
+    if args.check_weight_update_equal:
+        check_rollout_weights("after_initial_kv_onload")
 
     # special case for eval-only
     if args.num_rollout == 0 and args.eval_interval is not None:
@@ -73,6 +88,12 @@ def train(args):
             ray.get(rollout_manager.eval.remote(rollout_id))
 
         rollout_data_ref = ray.get(rollout_manager.generate.remote(rollout_id))
+
+        # The reported precision issue appears on the first rollout. Checking
+        # once after generate tells us whether inference mutated model storage,
+        # without scanning all 30B parameters on every rollout.
+        if args.check_weight_update_equal and rollout_id == args.start_rollout_id:
+            check_rollout_weights("after_first_generate")
 
         if args.offload_rollout:
             ray.get(rollout_manager.offload.remote())

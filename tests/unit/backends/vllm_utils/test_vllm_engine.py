@@ -500,6 +500,45 @@ def test_resume_memory_occupation_posts_wake_even_when_sleep_disabled(vllm_engin
 
 
 @pytest.mark.unit
+def test_check_weights_uses_collective_rpc(vllm_engine, monkeypatch):
+    seen = {}
+
+    def fake_post(url, *, json, timeout):
+        seen.update(url=url, json=json, timeout=timeout)
+        return _MockResponse(json_data={"results": [{"ok": True}]})
+
+    monkeypatch.setattr(mod.requests, "post", fake_post)
+
+    assert vllm_engine.check_weights("compare") == {"results": [{"ok": True}]}
+    assert seen == {
+        "url": "http://127.0.0.1:8765/collective_rpc",
+        "json": {
+            "method": "check_weights",
+            "kwargs": {"action": "compare"},
+        },
+        "timeout": 600,
+    }
+
+
+@pytest.mark.unit
+def test_check_weights_forwards_diagnostic_stage(vllm_engine, monkeypatch):
+    seen = {}
+
+    def fake_post(url, *, json, timeout):
+        seen.update(url=url, json=json, timeout=timeout)
+        return _MockResponse(json_data={"results": [{"ok": True}]})
+
+    monkeypatch.setattr(mod.requests, "post", fake_post)
+
+    vllm_engine.check_weights("compare", stage="after_initial_actor_ipc_update")
+
+    assert seen["json"]["kwargs"] == {
+        "action": "compare",
+        "stage": "after_initial_actor_ipc_update",
+    }
+
+
+@pytest.mark.unit
 def test_init_weights_update_group_retries_then_succeeds(vllm_engine, monkeypatch):
     attempts = {"n": 0}
 

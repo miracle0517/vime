@@ -887,10 +887,22 @@ class VLLMEngine(RayActor):
         """
         return self._make_request("finish_weight_update", {})
 
-    def check_weights(self, action: str):
-        """No vLLM ``weights_checker`` route; return a placeholder dict."""
-        del action
-        return {"ok": True, "supported": False, "note": "vLLM has no weights_checker endpoint."}
+    def check_weights(self, action: str, stage: str | None = None):
+        """Run the worker-extension weight fingerprint check on every rank."""
+        if self.node_rank != 0:
+            return None
+        kwargs = {"action": action}
+        if stage is not None:
+            kwargs["stage"] = stage
+        response = requests.post(
+            f"{self._http_base()}/collective_rpc",
+            json={
+                "method": "check_weights",
+                "kwargs": kwargs,
+            },
+            timeout=600,
+        )
+        return _response_json(response)
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
         """Call ``POST /init_weight_transfer_engine`` with an ``init_info`` block.

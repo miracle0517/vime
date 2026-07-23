@@ -306,6 +306,34 @@ def test_send_to_colocated_engine_uses_native_npu_ipc_engine(upw_vllm, monkeypat
 
 
 @pytest.mark.unit
+def test_npu_ipc_receiver_owns_weights_retained_by_layerwise_loader(upw_vllm, monkeypatch):
+    """Deferred loaders must not retain trainer-owned IPC storage after an RPC."""
+
+    class FakeNPUIPCWeightTransferEngine:
+        def receive_weights(self, update_info, load_weights):
+            load_weights(update_info)
+
+    ipc_mod = types.ModuleType("vllm_ascend.distributed.weight_transfer.npu_ipc_engine")
+    ipc_mod.NPUIPCWeightTransferEngine = FakeNPUIPCWeightTransferEngine
+    monkeypatch.setitem(sys.modules, "vllm_ascend.distributed.weight_transfer.npu_ipc_engine", ipc_mod)
+
+    upw_vllm._VLLMHijack._patch_npu_ipc_receiver()
+    patched_receive = FakeNPUIPCWeightTransferEngine.receive_weights
+    # Reapplying the worker-extension patch must not wrap/clone repeatedly.
+    upw_vllm._VLLMHijack._patch_npu_ipc_receiver()
+    assert FakeNPUIPCWeightTransferEngine.receive_weights is patched_receive
+
+    ipc_source = torch.arange(4, dtype=torch.float32)
+    deferred_weights = []
+    engine = FakeNPUIPCWeightTransferEngine()
+    engine.receive_weights([("experts.w13_weight", ipc_source)], deferred_weights.extend)
+
+    assert deferred_weights[0][1].data_ptr() != ipc_source.data_ptr()
+    ipc_source.fill_(-1)
+    torch.testing.assert_close(deferred_weights[0][1], torch.arange(4, dtype=torch.float32))
+
+
+@pytest.mark.unit
 def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm):
     wake_quant_configs = []
 
@@ -346,6 +374,50 @@ def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm):
     assert wake_quant_configs[0] is not None
     assert not worker.moe_transposed
     assert worker.vllm_config.quant_config is None
+
+
+@pytest.mark.unit
+def test_worker_weight_fingerprint_detects_value_and_position_changes(upw_vllm):
+    original = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    same = original.clone()
+    permuted = torch.tensor([4.0, 3.0, 2.0, 1.0])
+
+    original_fp = upw_vllm._VLLMHijack._tensor_fingerprint(original)
+
+    assert upw_vllm._VLLMHijack._tensor_fingerprint(same) == original_fp
+    assert upw_vllm._VLLMHijack._tensor_fingerprint(permuted) != original_fp
+
+
+@pytest.mark.unit
+def test_worker_weight_check_reports_stage_zero_count_and_categories(upw_vllm, monkeypatch):
+    worker = types.SimpleNamespace(
+        model_runner=types.SimpleNamespace(
+            model=torch.nn.ModuleDict(
+                {
+                    "self_attn": torch.nn.Linear(2, 2, bias=False),
+                    "mlp": torch.nn.ModuleDict({"experts": torch.nn.Linear(2, 2, bias=False)}),
+                }
+            )
+        )
+    )
+    monkeypatch.setattr(upw_vllm, "is_npu", lambda: False)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+
+    result = upw_vllm._VLLMHijack.check_worker_weights(worker, "snapshot", stage="rollout_startup")
+    assert result["stage"] == "rollout_startup"
+
+    for param in worker.model_runner.model.parameters():
+        param.data.zero_()
+
+    with pytest.raises(AssertionError) as exc_info:
+        upw_vllm._VLLMHijack.check_worker_weights(worker, "compare", stage="after_initial_actor_ipc_update")
+
+    message = str(exc_info.value)
+    assert "baseline_stage='rollout_startup'" in message
+    assert "current_stage='after_initial_actor_ipc_update'" in message
+    assert "zero_actual_count=2" in message
+    assert "'attention': 1" in message
+    assert "'moe_expert': 1" in message
 
 
 @pytest.mark.unit

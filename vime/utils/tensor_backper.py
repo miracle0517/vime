@@ -38,6 +38,10 @@ class TensorBackuper(ABC):
     def restore(self, tag: str):
         raise NotImplementedError
 
+    @abstractmethod
+    def verify(self, tag: str):
+        raise NotImplementedError
+
 
 class _TensorBackuperNormal(TensorBackuper):
     def __init__(self, source_getter):
@@ -73,6 +77,20 @@ class _TensorBackuperNormal(TensorBackuper):
             param.copy_(backup_dict[name], non_blocking=True)
         torch.cuda.synchronize()
 
+    @torch.no_grad()
+    def verify(self, tag: str) -> None:
+        expected = _compute_hash_dict(self._backups[tag])
+        actual = _compute_hash_dict(dict(self._source_getter()))
+        changed = sorted(name for name in set(expected) & set(actual) if expected[name] != actual[name])
+        missing = sorted(set(expected) - set(actual))
+        unexpected = sorted(set(actual) - set(expected))
+        if changed or missing or unexpected:
+            raise AssertionError(
+                "Tensor backup restore mismatch: "
+                f"tag={tag}, changed={changed[:8]}, changed_count={len(changed)}, "
+                f"missing={missing[:8]}, unexpected={unexpected[:8]}"
+            )
+
 
 class _TensorBackuperNoop(TensorBackuper):
     def __init__(self, source_getter, single_tag):
@@ -101,15 +119,22 @@ class _TensorBackuperNoop(TensorBackuper):
         assert _compute_hash_dict(dict(self._source_getter())) == self._backup_hash_dict
         torch.cuda.synchronize()
 
+    def verify(self, tag: str) -> None:
+        assert tag == self._single_tag
+        assert _compute_hash_dict(dict(self._source_getter())) == self._backup_hash_dict
+
 
 def _compute_hash_dict(tensors: dict[str, torch.Tensor]):
     return {k: _compute_hash_tensor(v) for k, v in tensors.items()}
 
 
 def _compute_hash_tensor(x: torch.Tensor):
-    # Not a real/good hash, but pretty fast
-    x = x.contiguous()
-    x = x.view(-1)
-    x = x.view(torch.uint32)
-    x = x.sum()
-    return x.item()
+    # Compact diagnostic fingerprint: an order-independent byte sum plus a
+    # position-sensitive sample. Avoids copying a full large parameter to CPU.
+    raw = x.detach().contiguous().view(torch.uint8).reshape(-1)
+    byte_sum = int(raw.sum(dtype=torch.int64).item())
+    step = max(1, raw.numel() // 4096)
+    sample = raw[::step][:4096].to(torch.int64)
+    positions = torch.arange(1, sample.numel() + 1, dtype=torch.int64, device=sample.device)
+    sample_hash = int((sample * positions).sum().item())
+    return (tuple(x.shape), str(x.dtype), raw.numel(), byte_sum, sample_hash)
