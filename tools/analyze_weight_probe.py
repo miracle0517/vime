@@ -40,8 +40,8 @@ LOGICAL_KEYS = (
 LAYOUT_KEYS = ("shape", "stride", "storage_offset", "dtype", "npu_format")
 IPC_STAGE = "ipc_receive_before_load"
 WAKE_STAGE = "after_weight_wake_up"
-LOADER_INPUT_STAGE = "expert_loader_input"
-LOADER_OUTPUT_STAGE = "expert_loader_output"
+BEFORE_PROCESS_STAGE = "before_moe_process"
+AFTER_PROCESS_STAGE = "after_moe_process"
 FINISH_STAGE = "after_finish_weight_update"
 
 
@@ -121,6 +121,12 @@ def normalize_weight_name(name: str) -> str:
         while normalized.startswith(prefix):
             normalized = normalized[len(prefix) :]
     return normalized
+
+
+def _is_fused_moe_runtime_weight(record: ProbeRecord) -> bool:
+    """Return whether a probe is a physical fused MoE tensor, not an HF view."""
+    name = normalize_weight_name(record.name)
+    return name.endswith((".mlp.experts.w13_weight", ".mlp.experts.w2_weight"))
 
 
 def _literal_dict(text: str, *, location: str, field_name: str) -> dict[str, Any]:
@@ -254,7 +260,10 @@ def _value_difference_summary(
     actual_samples = actual.probe.get("value_samples")
     changed_samples = []
     if isinstance(expected_samples, list) and isinstance(actual_samples, list):
-        for index, (expected_value, actual_value) in enumerate(zip(expected_samples, actual_samples, strict=False)):
+        # Compare the common prefix only. Avoid zip(strict=...), which is not
+        # available on the older Python used by some training containers.
+        sample_pairs = zip(expected_samples, actual_samples)  # noqa: B905
+        for index, (expected_value, actual_value) in enumerate(sample_pairs):
             if expected_value != actual_value:
                 changed_samples.append(
                     {
@@ -405,8 +414,8 @@ def _build_value_chains(records: list[ProbeRecord]) -> list[dict[str, Any]]:
     stage_order = {
         "actor_export": 0,
         IPC_STAGE: 1,
-        LOADER_INPUT_STAGE: 2,
-        LOADER_OUTPUT_STAGE: 3,
+        BEFORE_PROCESS_STAGE: 2,
+        AFTER_PROCESS_STAGE: 3,
         FINISH_STAGE: 4,
     }
     grouped: dict[tuple[str, str], list[ProbeRecord]] = defaultdict(list)
@@ -444,9 +453,9 @@ def analyze(paths: list[Path]) -> AnalysisReport:
     checks = {
         "actor_cross_rank": CheckStats(),
         "actor_to_ipc": CheckStats(),
-        "ipc_to_loader_input": CheckStats(),
-        "loader_input_to_output": CheckStats(),
-        "loader_output_to_finish": CheckStats(),
+        "ipc_to_before_process": CheckStats(),
+        "before_to_after_process": CheckStats(),
+        "after_process_to_finish": CheckStats(),
         "ipc_to_finish": CheckStats(),
         "wake_to_finish_layout": CheckStats(),
     }
@@ -455,8 +464,8 @@ def analyze(paths: list[Path]) -> AnalysisReport:
 
     actor_records = [record for record in records if record.stage == "actor_export"]
     ipc_records = [record for record in records if record.stage == IPC_STAGE]
-    loader_input_records = [record for record in records if record.stage == LOADER_INPUT_STAGE]
-    loader_output_records = [record for record in records if record.stage == LOADER_OUTPUT_STAGE]
+    before_process_records = [record for record in records if record.stage == BEFORE_PROCESS_STAGE]
+    after_process_records = [record for record in records if record.stage == AFTER_PROCESS_STAGE]
     finish_records = [record for record in records if record.stage == FINISH_STAGE]
     wake_records = [record for record in records if record.stage == WAKE_STAGE]
 
@@ -472,31 +481,35 @@ def analyze(paths: list[Path]) -> AnalysisReport:
     )
     _compare_paired_stages(
         expected_records=ipc_records,
-        actual_records=loader_input_records,
+        actual_records=before_process_records,
         issues=issues,
-        stats=checks["ipc_to_loader_input"],
-        category="LOADER_INPUT",
-        label="IPC receive -> expert weight_loader input",
+        stats=checks["ipc_to_before_process"],
+        category="EXPERT_WEIGHT_LOADER",
+        label="IPC receive -> loaded temporary MoE parameter",
         keys=LOGICAL_KEYS,
         require_all_expected=False,
     )
     _compare_paired_stages(
-        expected_records=loader_input_records,
-        actual_records=loader_output_records,
+        # process_weights_after_loading legitimately transposes the physical
+        # fused w13/w2 tensors. Compare their reconstructed HF views instead:
+        # these have the same logical shape/order on both sides and still
+        # detect a wrong transpose, misplaced shard, or changed value.
+        expected_records=[record for record in before_process_records if not _is_fused_moe_runtime_weight(record)],
+        actual_records=[record for record in after_process_records if not _is_fused_moe_runtime_weight(record)],
         issues=issues,
-        stats=checks["loader_input_to_output"],
-        category="EXPERT_WEIGHT_LOADER",
-        label="Expert weight_loader input -> temporary fused parameter",
+        stats=checks["before_to_after_process"],
+        category="MOE_PROCESS",
+        label="MoE parameter before -> after process_weights_after_loading",
         keys=LOGICAL_KEYS,
         require_all_expected=True,
     )
     _compare_paired_stages(
-        expected_records=loader_output_records,
+        expected_records=after_process_records,
         actual_records=finish_records,
         issues=issues,
-        stats=checks["loader_output_to_finish"],
+        stats=checks["after_process_to_finish"],
         category="LAYERWISE_FINALIZE",
-        label="Expert loader output -> finalized runtime HF view",
+        label="Processed MoE parameter -> finalized runtime HF view",
         keys=LOGICAL_KEYS,
         require_all_expected=True,
     )
@@ -521,7 +534,7 @@ def analyze(paths: list[Path]) -> AnalysisReport:
         require_all_expected=False,
     )
 
-    for stage in ("actor_export", IPC_STAGE, LOADER_INPUT_STAGE, LOADER_OUTPUT_STAGE, FINISH_STAGE):
+    for stage in ("actor_export", IPC_STAGE, BEFORE_PROCESS_STAGE, AFTER_PROCESS_STAGE, FINISH_STAGE):
         if not any(record.stage == stage for record in records):
             issues.append(
                 Issue(
@@ -566,9 +579,9 @@ def _print_report(
     check_labels = {
         "actor_cross_rank": "Actor 跨 rank 一致性",
         "actor_to_ipc": "Actor -> IPC",
-        "ipc_to_loader_input": "IPC -> expert loader 输入",
-        "loader_input_to_output": "expert loader 输入 -> 临时参数",
-        "loader_output_to_finish": "临时参数 -> layerwise finalize",
+        "ipc_to_before_process": "IPC -> loader 后临时参数",
+        "before_to_after_process": "MoE process 前 -> 后",
+        "after_process_to_finish": "MoE process 后 -> finalize",
         "ipc_to_finish": "IPC -> 最终 MoE 权重",
         "wake_to_finish_layout": "wake -> finish 布局",
     }
@@ -602,9 +615,9 @@ def _print_report(
     boundary_order = (
         ("ACTOR_VALUE", "Actor 导出阶段"),
         ("IPC_TRANSFER", "Actor → IPC"),
-        ("LOADER_INPUT", "IPC → expert loader 输入"),
-        ("EXPERT_WEIGHT_LOADER", "expert loader 输入 → 临时 fused 参数"),
-        ("LAYERWISE_FINALIZE", "临时 fused 参数 → finalize 后运行权重"),
+        ("EXPERT_WEIGHT_LOADER", "IPC → loader 后临时 fused 参数"),
+        ("MOE_PROCESS", "process_weights_after_loading 前 → 后"),
+        ("LAYERWISE_FINALIZE", "MoE process 后 → finalize 运行权重"),
         ("MOE_FINALIZE", "IPC → 最终运行权重"),
         ("MOE_LAYOUT", "wake → finish 物理布局"),
     )
@@ -654,24 +667,26 @@ def _print_report(
         diagnoses.append("Actor 各 rank 的 HF 导出不一致。")
     if categories & {"IPC_TRANSFER", "IPC_TRANSFER_MISSING"}:
         diagnoses.append("Actor 导出与 vLLM IPC 接收不一致。")
-    if categories & {"LOADER_INPUT", "LOADER_INPUT_MISSING"}:
-        diagnoses.append("IPC 正确，但 expert loader 的输入异常或 loader 未被调用。")
     if categories & {"EXPERT_WEIGHT_LOADER", "EXPERT_WEIGHT_LOADER_MISSING"}:
+        diagnoses.append("IPC 正确，但 loader 后临时 fused 参数异常；重点检查 EP expert 映射和 w1/w2/w3 shard。")
+    if categories & {"MOE_PROCESS", "MOE_PROCESS_MISSING"}:
         diagnoses.append(
-            "expert loader 输入正确，但写入临时 fused 参数后异常；重点检查 EP expert 映射和 w1/w2/w3 shard。"
+            "loader 后临时参数正确，但 process_weights_after_loading 后异常；"
+            "重点检查 w13/w2 transpose、contiguous 和 ND/NZ format cast。"
         )
     if categories & {"LAYERWISE_FINALIZE", "LAYERWISE_FINALIZE_MISSING"}:
         diagnoses.append(
-            "expert loader 临时参数正确，但 finalize 后运行权重异常；重点检查 "
-            "process_weights_after_loading、transpose/contiguous 和 ND/NZ format cast。"
+            "MoE process 后参数正确，但 finalize 运行权重异常；重点检查 kernel tensor copy 和 storage/layout。"
         )
     if categories & {"MOE_FINALIZE", "MOE_FINALIZE_MISSING"} and not categories & {
         "EXPERT_WEIGHT_LOADER",
         "EXPERT_WEIGHT_LOADER_MISSING",
+        "MOE_PROCESS",
+        "MOE_PROCESS_MISSING",
         "LAYERWISE_FINALIZE",
         "LAYERWISE_FINALIZE_MISSING",
     }:
-        diagnoses.append("IPC 与最终运行时权重不一致，需结合 loader 输入/输出 stage 判断。")
+        diagnoses.append("IPC 与最终运行时权重不一致，需结合 MoE process 前后 stage 判断。")
     if categories & {"MOE_LAYOUT", "MOE_LAYOUT_MISSING"}:
         diagnoses.append("wake/finalize 物理布局不一致，检查 w13/w2 transpose 和 ND/NZ format。")
     if categories & {"MISSING_STAGE", "PROBE_RUNTIME"} or report.parse_errors:

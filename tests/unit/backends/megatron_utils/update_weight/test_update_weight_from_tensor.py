@@ -435,29 +435,29 @@ def test_tensor_layout_probe_handles_meta_tensor(upw_vllm):
 
 
 @pytest.mark.unit
-def test_moe_weight_loader_probe_captures_input_and_temporary_output(upw_vllm, monkeypatch):
+def test_moe_process_probe_captures_before_and_after_processing(upw_vllm, monkeypatch):
     monkeypatch.setenv("VIME_DEBUG_WEIGHT_UPDATE", "1")
     captured = []
 
-    def capture(stage, named_tensors, *, context=None):
-        captured.append(
-            (
-                stage,
-                [(name, tensor.detach().clone()) for name, tensor in named_tensors],
-                context,
-            )
-        )
+    def capture(experts, stage, **kwargs):
+        captured.append((experts, stage, kwargs))
 
-    monkeypatch.setattr(upw_vllm, "_log_named_weight_probes", capture)
+    monkeypatch.setattr(upw_vllm, "_log_moe_expert_probes", capture)
+
+    class QuantMethod:
+        def __init__(self):
+            self.calls = 0
+
+        def process_weights_after_loading(self, layer):
+            self.calls += 1
+            layer.processed = True
 
     class Experts(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.w13_weight = torch.nn.Parameter(torch.zeros(1, 4, 2))
-
-        @staticmethod
-        def _map_global_expert_id_to_local_expert_id(expert_id):
-            return expert_id
+            self.hidden_size = 2
+            self.quant_method = QuantMethod()
 
         @staticmethod
         def weight_loader(param, loaded_weight, weight_name, shard_id, expert_id):
@@ -487,26 +487,17 @@ def test_moe_weight_loader_probe_captures_input_and_temporary_output(upw_vllm, m
 
     model = Model()
     upw_vllm._VLLMHijack.patch_moe_weight_loader(model)
-    param = model.model.layers[0].mlp.experts.w13_weight
-    wrapped_loader = param.weight_loader
-    loaded = torch.arange(4, dtype=torch.float32).reshape(2, 2)
-
-    wrapped_loader(
-        param,
-        loaded,
-        "model.layers.0.mlp.experts.w13_weight",
-        "w1",
-        0,
-    )
+    experts = model.model.layers[0].mlp.experts
+    wrapped_process = experts.quant_method.process_weights_after_loading
+    upw_vllm._VLLMHijack._set_moe_probe_active(model, True)
+    wrapped_process(experts)
     upw_vllm._VLLMHijack.patch_moe_weight_loader(model)
 
-    assert [entry[0] for entry in captured] == ["expert_loader_input", "expert_loader_output"]
-    assert captured[0][1][0][0] == "model.layers.0.mlp.experts.0.gate_proj.weight"
-    assert captured[1][1][0][0] == "model.layers.0.mlp.experts.0.gate_proj.weight"
-    torch.testing.assert_close(captured[0][1][0][1], loaded)
-    torch.testing.assert_close(captured[1][1][0][1], loaded)
-    assert captured[1][2]["local_expert_id"] == 0
-    assert param.weight_loader is wrapped_loader
+    assert [entry[1] for entry in captured] == ["before_moe_process", "after_moe_process"]
+    assert all(entry[0] is experts for entry in captured)
+    assert experts.quant_method.calls == 1
+    assert experts.processed
+    assert experts.quant_method.process_weights_after_loading is wrapped_process
 
 
 @pytest.mark.unit

@@ -13,10 +13,10 @@ sys.modules[SPEC.name] = probe
 SPEC.loader.exec_module(probe)
 
 
-def _probe(*, sample_hash=123, npu_format=29):
+def _probe(*, sample_hash=123, npu_format=29, shape=None):
     value = float(sample_hash)
     return {
-        "shape": [2, 2],
+        "shape": shape or [2, 2],
         "stride": [2, 1],
         "storage_offset": 0,
         "dtype": "torch.bfloat16",
@@ -61,12 +61,13 @@ def _stage_line(
     sample_hash=123,
     npu_format=29,
     name="layers.0.mlp.experts.0.gate_proj.weight",
+    shape=None,
 ):
     context = {"pid": 200, "dist_rank": 0, "npu_uuid": uuid}
     return (
         f"[VIME_WEIGHT_PROBE] stage={stage} context={context!r} "
         f"name={name} "
-        f"probe={_probe(sample_hash=sample_hash, npu_format=npu_format)!r}"
+        f"probe={_probe(sample_hash=sample_hash, npu_format=npu_format, shape=shape)!r}"
     )
 
 
@@ -83,8 +84,8 @@ def test_analyze_matches_actor_ipc_finalize_and_layout(tmp_path):
         lines.append(_stage_line(probe.WAKE_STAGE, uuid))
         lines.append(_actor_line(rank, uuid))
         lines.append(_stage_line(probe.IPC_STAGE, uuid))
-        lines.append(_stage_line(probe.LOADER_INPUT_STAGE, uuid))
-        lines.append(_stage_line(probe.LOADER_OUTPUT_STAGE, uuid))
+        lines.append(_stage_line(probe.BEFORE_PROCESS_STAGE, uuid))
+        lines.append(_stage_line(probe.AFTER_PROCESS_STAGE, uuid))
         lines.append(_stage_line(probe.FINISH_STAGE, uuid))
         lines.append(
             _stage_line(
@@ -100,9 +101,9 @@ def test_analyze_matches_actor_ipc_finalize_and_layout(tmp_path):
     assert report.warning_count == 0
     assert report.checks["actor_cross_rank"].passed == 1
     assert report.checks["actor_to_ipc"].passed == 2
-    assert report.checks["ipc_to_loader_input"].passed == 2
-    assert report.checks["loader_input_to_output"].passed == 2
-    assert report.checks["loader_output_to_finish"].passed == 2
+    assert report.checks["ipc_to_before_process"].passed == 2
+    assert report.checks["before_to_after_process"].passed == 2
+    assert report.checks["after_process_to_finish"].passed == 2
     assert report.checks["ipc_to_finish"].passed == 2
     assert report.checks["wake_to_finish_layout"].passed == 2
 
@@ -113,8 +114,8 @@ def test_analyze_reports_ipc_value_mismatch(tmp_path):
         _stage_line(probe.WAKE_STAGE, "node-0"),
         _actor_line(0, "node-0"),
         _stage_line(probe.IPC_STAGE, "node-0", sample_hash=999),
-        _stage_line(probe.LOADER_INPUT_STAGE, "node-0", sample_hash=999),
-        _stage_line(probe.LOADER_OUTPUT_STAGE, "node-0", sample_hash=999),
+        _stage_line(probe.BEFORE_PROCESS_STAGE, "node-0", sample_hash=999),
+        _stage_line(probe.AFTER_PROCESS_STAGE, "node-0", sample_hash=999),
         _stage_line(probe.FINISH_STAGE, "node-0", sample_hash=999),
     ]
 
@@ -131,18 +132,50 @@ def test_analyze_reports_expert_weight_loader_mismatch(tmp_path):
         _stage_line(probe.WAKE_STAGE, "node-0"),
         _actor_line(0, "node-0"),
         _stage_line(probe.IPC_STAGE, "node-0"),
-        _stage_line(probe.LOADER_INPUT_STAGE, "node-0"),
-        _stage_line(probe.LOADER_OUTPUT_STAGE, "node-0", sample_hash=999),
+        _stage_line(probe.BEFORE_PROCESS_STAGE, "node-0", sample_hash=999),
+        _stage_line(probe.AFTER_PROCESS_STAGE, "node-0", sample_hash=999),
         _stage_line(probe.FINISH_STAGE, "node-0", sample_hash=999),
     ]
 
     report = probe.analyze([_write_log(tmp_path, lines)])
 
-    assert report.checks["ipc_to_loader_input"].passed == 1
-    assert report.checks["loader_input_to_output"].failed == 1
-    assert report.checks["loader_output_to_finish"].passed == 1
+    assert report.checks["ipc_to_before_process"].failed == 1
+    assert report.checks["before_to_after_process"].passed == 1
+    assert report.checks["after_process_to_finish"].passed == 1
     loader_issue = next(issue for issue in report.issues if issue.category == "EXPERT_WEIGHT_LOADER")
     assert "'mean': {'expected': 123.0, 'actual': 999.0}" in loader_issue.message
+
+
+@pytest.mark.unit
+def test_analyze_accepts_physical_moe_transpose_and_compares_hf_views(tmp_path):
+    lines = [
+        _stage_line(probe.WAKE_STAGE, "node-0"),
+        _actor_line(0, "node-0"),
+        _stage_line(probe.IPC_STAGE, "node-0"),
+        _stage_line(probe.BEFORE_PROCESS_STAGE, "node-0"),
+        _stage_line(
+            probe.BEFORE_PROCESS_STAGE,
+            "node-0",
+            name="layers.0.mlp.experts.w13_weight",
+            shape=[32, 1536, 2048],
+            sample_hash=111,
+        ),
+        _stage_line(probe.AFTER_PROCESS_STAGE, "node-0"),
+        _stage_line(
+            probe.AFTER_PROCESS_STAGE,
+            "node-0",
+            name="layers.0.mlp.experts.w13_weight",
+            shape=[32, 2048, 1536],
+            sample_hash=222,
+        ),
+        _stage_line(probe.FINISH_STAGE, "node-0"),
+    ]
+
+    report = probe.analyze([_write_log(tmp_path, lines)])
+
+    assert not any(issue.category == "MOE_PROCESS" for issue in report.issues)
+    assert report.checks["before_to_after_process"].compared == 1
+    assert report.checks["before_to_after_process"].passed == 1
 
 
 @pytest.mark.unit
@@ -151,16 +184,16 @@ def test_analyze_reports_finalize_and_layout_mismatch(tmp_path):
         _stage_line(probe.WAKE_STAGE, "node-0", npu_format=29),
         _actor_line(0, "node-0"),
         _stage_line(probe.IPC_STAGE, "node-0"),
-        _stage_line(probe.LOADER_INPUT_STAGE, "node-0"),
-        _stage_line(probe.LOADER_OUTPUT_STAGE, "node-0"),
+        _stage_line(probe.BEFORE_PROCESS_STAGE, "node-0"),
+        _stage_line(probe.AFTER_PROCESS_STAGE, "node-0"),
         _stage_line(probe.FINISH_STAGE, "node-0", sample_hash=456, npu_format=0),
     ]
 
     report = probe.analyze([_write_log(tmp_path, lines)])
 
-    assert report.checks["ipc_to_loader_input"].passed == 1
-    assert report.checks["loader_input_to_output"].passed == 1
-    assert report.checks["loader_output_to_finish"].failed == 1
+    assert report.checks["ipc_to_before_process"].passed == 1
+    assert report.checks["before_to_after_process"].passed == 1
+    assert report.checks["after_process_to_finish"].failed == 1
     assert report.checks["ipc_to_finish"].failed == 1
     assert report.checks["wake_to_finish_layout"].failed == 1
     assert {issue.category for issue in report.issues} >= {

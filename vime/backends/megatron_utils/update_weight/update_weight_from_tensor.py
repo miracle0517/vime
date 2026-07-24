@@ -333,6 +333,67 @@ def _find_first_decoder_layer(model: torch.nn.Module):
     return inner_model.layers[0]
 
 
+def _log_moe_expert_probes(
+    experts,
+    stage: str,
+    *,
+    hidden_size: int,
+    physical_expert_start: int,
+    context: Mapping[str, object] | None = None,
+) -> None:
+    """Log fused physical tensors and their HF-shaped logical expert views."""
+    merged_context = dict(_weight_probe_context())
+    if context:
+        merged_context.update(context)
+
+    for runtime_name in ("w13_weight", "w2_weight"):
+        tensor = getattr(experts, runtime_name, None)
+        if tensor is None:
+            continue
+        logger.warning(
+            "[VIME_WEIGHT_PROBE] stage=%s context=%s name=layers.0.mlp.experts.%s probe=%s",
+            stage,
+            merged_context,
+            runtime_name,
+            _tensor_layout_probe(tensor, include_value_stats=False),
+        )
+        if tensor.ndim != 3:
+            continue
+        for local_expert in range(tensor.shape[0]):
+            global_expert = physical_expert_start + local_expert
+            if global_expert not in _WEIGHT_PROBE_EXPERT_IDS:
+                continue
+            expert_tensor = tensor[local_expert]
+            hf_views: list[tuple[str, torch.Tensor]] = []
+            if runtime_name == "w13_weight":
+                if expert_tensor.shape[0] == hidden_size:
+                    intermediate_size = expert_tensor.shape[1] // 2
+                    hf_views = [
+                        ("gate_proj", expert_tensor[:, :intermediate_size].transpose(0, 1)),
+                        ("up_proj", expert_tensor[:, intermediate_size:].transpose(0, 1)),
+                    ]
+                elif expert_tensor.shape[1] == hidden_size:
+                    intermediate_size = expert_tensor.shape[0] // 2
+                    hf_views = [
+                        ("gate_proj", expert_tensor[:intermediate_size]),
+                        ("up_proj", expert_tensor[intermediate_size:]),
+                    ]
+            elif expert_tensor.shape[1] == hidden_size:
+                hf_views = [("down_proj", expert_tensor.transpose(0, 1))]
+            elif expert_tensor.shape[0] == hidden_size:
+                hf_views = [("down_proj", expert_tensor)]
+
+            for projection, hf_view in hf_views:
+                logger.warning(
+                    "[VIME_WEIGHT_PROBE] stage=%s context=%s " "name=layers.0.mlp.experts.%d.%s.weight probe=%s",
+                    stage,
+                    merged_context,
+                    global_expert,
+                    projection,
+                    _tensor_layout_probe(hf_view),
+                )
+
+
 def _log_runtime_moe_probes(worker, stage: str) -> None:
     """Expose the logical HF views and physical layout consumed by fused MoE."""
     model = worker.model_runner.model
@@ -362,84 +423,14 @@ def _log_runtime_moe_probes(worker, stage: str) -> None:
             _tensor_layout_probe(gate),
         )
 
-    start = getattr(mlp, "physical_expert_start", 0)
     hidden_size = worker.vllm_config.model_config.hf_text_config.hidden_size
-    for runtime_name in ("w13_weight", "w2_weight"):
-        tensor = getattr(experts, runtime_name, None)
-        if tensor is None:
-            continue
-        logger.warning(
-            "[VIME_WEIGHT_PROBE] stage=%s context=%s name=layers.0.mlp.experts.%s probe=%s",
-            stage,
-            context,
-            runtime_name,
-            _tensor_layout_probe(tensor, include_value_stats=False),
-        )
-        if tensor.ndim != 3:
-            continue
-        for local_expert in range(tensor.shape[0]):
-            global_expert = start + local_expert
-            if global_expert not in _WEIGHT_PROBE_EXPERT_IDS:
-                continue
-            expert_tensor = tensor[local_expert]
-            hf_views: list[tuple[str, torch.Tensor]] = []
-            if runtime_name == "w13_weight":
-                if expert_tensor.shape[0] == hidden_size:
-                    intermediate_size = expert_tensor.shape[1] // 2
-                    hf_views = [
-                        ("gate_proj", expert_tensor[:, :intermediate_size].transpose(0, 1)),
-                        ("up_proj", expert_tensor[:, intermediate_size:].transpose(0, 1)),
-                    ]
-                elif expert_tensor.shape[1] == hidden_size:
-                    intermediate_size = expert_tensor.shape[0] // 2
-                    hf_views = [
-                        ("gate_proj", expert_tensor[:intermediate_size]),
-                        ("up_proj", expert_tensor[intermediate_size:]),
-                    ]
-            elif expert_tensor.shape[1] == hidden_size:
-                hf_views = [("down_proj", expert_tensor.transpose(0, 1))]
-            elif expert_tensor.shape[0] == hidden_size:
-                hf_views = [("down_proj", expert_tensor)]
-
-            for projection, hf_view in hf_views:
-                logger.warning(
-                    "[VIME_WEIGHT_PROBE] stage=%s context=%s " "name=layers.0.mlp.experts.%d.%s.weight probe=%s",
-                    stage,
-                    context,
-                    global_expert,
-                    projection,
-                    _tensor_layout_probe(hf_view),
-                )
-
-
-def _moe_loader_output_view(
-    param: torch.Tensor,
-    *,
-    local_expert_id: int,
-    shard_id: str,
-    loaded_weight: torch.Tensor,
-) -> torch.Tensor | None:
-    """Return the HF-shaped portion written by one fused-MoE loader call."""
-    if param.ndim == 3:
-        if local_expert_id < 0 or local_expert_id >= param.shape[0]:
-            return None
-        expert_tensor = param[local_expert_id]
-    elif param.ndim == 2:
-        expert_tensor = param
-    else:
-        return None
-
-    if shard_id == "w2":
-        return expert_tensor
-    if shard_id not in {"w1", "w3"}:
-        return None
-    if list(expert_tensor.shape) == list(loaded_weight.shape):
-        return expert_tensor
-
-    shard_dim = 1 if getattr(param, "is_transposed", False) else 0
-    shard_size = expert_tensor.shape[shard_dim] // 2
-    shard_offset = 0 if shard_id == "w1" else shard_size
-    return expert_tensor.narrow(shard_dim, shard_offset, shard_size)
+    _log_moe_expert_probes(
+        experts,
+        stage,
+        hidden_size=hidden_size,
+        physical_expert_start=getattr(mlp, "physical_expert_start", 0),
+        context=context,
+    )
 
 
 class UpdateWeightFromTensor:
@@ -775,11 +766,17 @@ class _VLLMHijack:
         ) -> None:
             _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
             _orig(self, is_checkpoint_format=is_checkpoint_format)
+            _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
+            _VLLMHijack._set_moe_probe_active(self.model_runner.model, True)
 
         def _patched_finish_weight_update(self, _orig=_orig_finish_weight_update) -> None:
-            _orig(self)
-            if _weight_probe_enabled():
-                _log_runtime_moe_probes(self, "after_finish_weight_update")
+            try:
+                _orig(self)
+                if _weight_probe_enabled():
+                    _log_runtime_moe_probes(self, "after_finish_weight_update")
+            finally:
+                if _weight_probe_enabled():
+                    _VLLMHijack._set_moe_probe_active(self.model_runner.model, False)
 
         def _patched_wake_up(self, tags=None, _orig=_orig_wake_up) -> None:
             quant_config = self.vllm_config.quant_config
@@ -826,103 +823,75 @@ class _VLLMHijack:
                 if "w13_weight" in name or "w2_weight" in name:
                     if not hasattr(param, "weight_loader"):
                         param.weight_loader = experts.weight_loader  # type: ignore[attr-defined]
-                    if not _weight_probe_enabled():
-                        continue
-                    loader = param.weight_loader
-                    if getattr(loader, "_vime_weight_probe_wrapper", False):
-                        continue
+            _VLLMHijack._patch_moe_process_probe(
+                experts,
+                mlp=mlp,
+                layer_index=layer_index,
+            )
 
-                    def _loader_with_probe(
-                        loader_param,
-                        loaded_weight,
-                        weight_name,
-                        shard_id,
-                        expert_id,
-                        *args,
-                        _loader=loader,
-                        _layer_index=layer_index,
-                        _runtime_param_name=name,
-                        _experts=experts,
-                        **kwargs,
-                    ):
-                        local_expert_id = expert_id
-                        map_expert = getattr(_experts, "_map_global_expert_id_to_local_expert_id", None)
-                        if map_expert is None:
-                            loader_owner = getattr(_loader, "__self__", None)
-                            map_expert = getattr(
-                                loader_owner,
-                                "_map_global_expert_id_to_local_expert_id",
-                                None,
-                            )
-                        if map_expert is not None:
-                            local_expert_id = map_expert(expert_id)
+    @staticmethod
+    def _patch_moe_process_probe(experts, *, mlp, layer_index: int) -> None:
+        if not _weight_probe_enabled() or layer_index != 0:
+            return
+        quant_method = getattr(experts, "quant_method", None)
+        process_weights = getattr(quant_method, "process_weights_after_loading", None)
+        if process_weights is None or getattr(process_weights, "_vime_weight_probe_wrapper", False):
+            return
 
-                        projection = {
-                            "w1": "gate_proj",
-                            "w2": "down_proj",
-                            "w3": "up_proj",
-                        }.get(shard_id)
-                        probe_weight_name = (
-                            f"model.layers.{_layer_index}.mlp.experts." f"{expert_id}.{projection}.weight"
-                            if projection is not None
-                            else weight_name
-                        )
-                        should_probe = (
-                            _weight_probe_enabled()
-                            and _layer_index == 0
-                            and expert_id in _WEIGHT_PROBE_EXPERT_IDS
-                            and local_expert_id >= 0
-                        )
-                        context = {
-                            "expert_id": expert_id,
-                            "local_expert_id": local_expert_id,
-                            "shard_id": shard_id,
-                            "runtime_param": _runtime_param_name,
-                            "loader_weight_name": weight_name,
-                        }
-                        if should_probe:
-                            _log_named_weight_probes(
-                                "expert_loader_input",
-                                [(probe_weight_name, loaded_weight)],
-                                context=context,
-                            )
+        hidden_size = getattr(experts, "hidden_size", None) or getattr(mlp, "hidden_size", None)
+        if hidden_size is None:
+            logger.error(
+                "[VIME_WEIGHT_PROBE] stage=moe_process_probe_setup " "hidden_size not found experts=%s mlp=%s",
+                type(experts).__name__,
+                type(mlp).__name__,
+            )
+            return
 
-                        result = _loader(
-                            loader_param,
-                            loaded_weight,
-                            weight_name,
-                            shard_id,
-                            expert_id,
-                            *args,
-                            **kwargs,
-                        )
+        def _process_weights_with_probe(*args, _orig=process_weights, **kwargs):
+            process_layer = args[0] if args else kwargs.get("layer", experts)
+            is_active = getattr(experts, "_vime_weight_probe_active", False)
+            context = {
+                "process_method": type(quant_method).__name__,
+                "layer_index": layer_index,
+            }
+            if is_active:
+                _log_moe_expert_probes(
+                    process_layer,
+                    "before_moe_process",
+                    hidden_size=hidden_size,
+                    physical_expert_start=getattr(mlp, "physical_expert_start", 0),
+                    context=context,
+                )
+            result = _orig(*args, **kwargs)
+            if is_active:
+                _log_moe_expert_probes(
+                    process_layer,
+                    "after_moe_process",
+                    hidden_size=hidden_size,
+                    physical_expert_start=getattr(mlp, "physical_expert_start", 0),
+                    context=context,
+                )
+            return result
 
-                        if should_probe:
-                            output_view = _moe_loader_output_view(
-                                loader_param,
-                                local_expert_id=local_expert_id,
-                                shard_id=shard_id,
-                                loaded_weight=loaded_weight,
-                            )
-                            if output_view is None:
-                                logger.error(
-                                    "[VIME_WEIGHT_PROBE] stage=expert_loader_output "
-                                    "unable to reconstruct output context=%s name=%s "
-                                    "param_shape=%s",
-                                    {**_weight_probe_context(), **context},
-                                    probe_weight_name,
-                                    list(loader_param.shape),
-                                )
-                            else:
-                                _log_named_weight_probes(
-                                    "expert_loader_output",
-                                    [(probe_weight_name, output_view)],
-                                    context=context,
-                                )
-                        return result
+        _process_weights_with_probe._vime_weight_probe_wrapper = True
+        quant_method.process_weights_after_loading = _process_weights_with_probe
 
-                    _loader_with_probe._vime_weight_probe_wrapper = True
-                    param.weight_loader = _loader_with_probe  # type: ignore[attr-defined]
+    @staticmethod
+    def _set_moe_probe_active(model: torch.nn.Module, active: bool) -> None:
+        if not _weight_probe_enabled():
+            return
+        inner_model = getattr(model, "model", None) or getattr(model, "language_model", None)
+        if inner_model is None:
+            return
+        if not hasattr(inner_model, "layers"):
+            inner_model = getattr(inner_model, "model", None)
+        if inner_model is None or not hasattr(inner_model, "layers"):
+            return
+        for layer in inner_model.layers:
+            mlp = getattr(layer, "mlp", None) or getattr(layer, "block_sparse_moe", None)
+            experts = getattr(mlp, "experts", None) if mlp is not None else None
+            if experts is not None:
+                experts._vime_weight_probe_active = active
 
     @staticmethod
     def _tensor_fingerprint(tensor: torch.Tensor) -> dict[str, object]:
