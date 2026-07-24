@@ -412,6 +412,92 @@ def test_tensor_layout_probe_reports_values_and_layout(upw_vllm):
 
 
 @pytest.mark.unit
+def test_tensor_layout_probe_handles_meta_tensor(upw_vllm):
+    tensor = torch.empty((3, 4), dtype=torch.bfloat16, device="meta")
+    probe = upw_vllm._tensor_layout_probe(tensor)
+
+    assert probe["shape"] == [3, 4]
+    assert probe["device"] == "meta"
+    assert probe["num_bytes"] == tensor.numel() * tensor.element_size()
+    assert probe["sample_hash"] is None
+    assert probe["head"] == []
+    assert probe["tail"] == []
+
+
+@pytest.mark.unit
+def test_moe_weight_loader_probe_captures_input_and_temporary_output(upw_vllm, monkeypatch):
+    monkeypatch.setenv("VIME_DEBUG_WEIGHT_UPDATE", "1")
+    captured = []
+
+    def capture(stage, named_tensors, *, context=None):
+        captured.append(
+            (
+                stage,
+                [(name, tensor.detach().clone()) for name, tensor in named_tensors],
+                context,
+            )
+        )
+
+    monkeypatch.setattr(upw_vllm, "_log_named_weight_probes", capture)
+
+    class Experts(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w13_weight = torch.nn.Parameter(torch.zeros(1, 4, 2))
+
+        @staticmethod
+        def _map_global_expert_id_to_local_expert_id(expert_id):
+            return expert_id
+
+        @staticmethod
+        def weight_loader(param, loaded_weight, weight_name, shard_id, expert_id):
+            del weight_name
+            offset = 0 if shard_id == "w1" else 2
+            param.data[expert_id, offset : offset + 2].copy_(loaded_weight)
+
+    class Mlp(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = Experts()
+
+    class Layer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.mlp = Mlp()
+
+    class InnerModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList([Layer()])
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = InnerModel()
+
+    model = Model()
+    upw_vllm._VLLMHijack.patch_moe_weight_loader(model)
+    param = model.model.layers[0].mlp.experts.w13_weight
+    wrapped_loader = param.weight_loader
+    loaded = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+
+    wrapped_loader(
+        param,
+        loaded,
+        "model.layers.0.mlp.experts.0.gate_proj.weight",
+        "w1",
+        0,
+    )
+    upw_vllm._VLLMHijack.patch_moe_weight_loader(model)
+
+    assert [entry[0] for entry in captured] == ["expert_loader_input", "expert_loader_output"]
+    torch.testing.assert_close(captured[0][1][0][1], loaded)
+    torch.testing.assert_close(captured[1][1][0][1], loaded)
+    assert captured[1][2]["local_expert_id"] == 0
+    assert param.weight_loader is wrapped_loader
+
+
+@pytest.mark.unit
 def test_worker_weight_fingerprint_detects_value_and_position_changes(upw_vllm):
     original = torch.tensor([1.0, 2.0, 3.0, 4.0])
     same = original.clone()

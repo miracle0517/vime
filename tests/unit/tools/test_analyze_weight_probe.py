@@ -38,11 +38,18 @@ def _actor_line(rank, uuid, *, sample_hash=123):
     )
 
 
-def _stage_line(stage, uuid, *, sample_hash=123, npu_format=29):
+def _stage_line(
+    stage,
+    uuid,
+    *,
+    sample_hash=123,
+    npu_format=29,
+    name="layers.0.mlp.experts.0.gate_proj.weight",
+):
     context = {"pid": 200, "dist_rank": 0, "npu_uuid": uuid}
     return (
         f"[VIME_WEIGHT_PROBE] stage={stage} context={context!r} "
-        "name=layers.0.mlp.experts.0.gate_proj.weight "
+        f"name={name} "
         f"probe={_probe(sample_hash=sample_hash, npu_format=npu_format)!r}"
     )
 
@@ -60,7 +67,16 @@ def test_analyze_matches_actor_ipc_finalize_and_layout(tmp_path):
         lines.append(_stage_line(probe.WAKE_STAGE, uuid))
         lines.append(_actor_line(rank, uuid))
         lines.append(_stage_line(probe.IPC_STAGE, uuid))
+        lines.append(_stage_line(probe.LOADER_INPUT_STAGE, uuid))
+        lines.append(_stage_line(probe.LOADER_OUTPUT_STAGE, uuid))
         lines.append(_stage_line(probe.FINISH_STAGE, uuid))
+        lines.append(
+            _stage_line(
+                probe.FINISH_STAGE,
+                uuid,
+                name="layers.0.mlp.experts.w13_weight",
+            )
+        )
 
     report = probe.analyze([_write_log(tmp_path, lines)])
 
@@ -68,6 +84,9 @@ def test_analyze_matches_actor_ipc_finalize_and_layout(tmp_path):
     assert report.warning_count == 0
     assert report.checks["actor_cross_rank"].passed == 1
     assert report.checks["actor_to_ipc"].passed == 2
+    assert report.checks["ipc_to_loader_input"].passed == 2
+    assert report.checks["loader_input_to_output"].passed == 2
+    assert report.checks["loader_output_to_finish"].passed == 2
     assert report.checks["ipc_to_finish"].passed == 2
     assert report.checks["wake_to_finish_layout"].passed == 2
 
@@ -78,6 +97,8 @@ def test_analyze_reports_ipc_value_mismatch(tmp_path):
         _stage_line(probe.WAKE_STAGE, "node-0"),
         _actor_line(0, "node-0"),
         _stage_line(probe.IPC_STAGE, "node-0", sample_hash=999),
+        _stage_line(probe.LOADER_INPUT_STAGE, "node-0", sample_hash=999),
+        _stage_line(probe.LOADER_OUTPUT_STAGE, "node-0", sample_hash=999),
         _stage_line(probe.FINISH_STAGE, "node-0", sample_hash=999),
     ]
 
@@ -89,19 +110,47 @@ def test_analyze_reports_ipc_value_mismatch(tmp_path):
 
 
 @pytest.mark.unit
+def test_analyze_reports_expert_weight_loader_mismatch(tmp_path):
+    lines = [
+        _stage_line(probe.WAKE_STAGE, "node-0"),
+        _actor_line(0, "node-0"),
+        _stage_line(probe.IPC_STAGE, "node-0"),
+        _stage_line(probe.LOADER_INPUT_STAGE, "node-0"),
+        _stage_line(probe.LOADER_OUTPUT_STAGE, "node-0", sample_hash=999),
+        _stage_line(probe.FINISH_STAGE, "node-0", sample_hash=999),
+    ]
+
+    report = probe.analyze([_write_log(tmp_path, lines)])
+
+    assert report.checks["ipc_to_loader_input"].passed == 1
+    assert report.checks["loader_input_to_output"].failed == 1
+    assert report.checks["loader_output_to_finish"].passed == 1
+    assert any(issue.category == "EXPERT_WEIGHT_LOADER" for issue in report.issues)
+
+
+@pytest.mark.unit
 def test_analyze_reports_finalize_and_layout_mismatch(tmp_path):
     lines = [
         _stage_line(probe.WAKE_STAGE, "node-0", npu_format=29),
         _actor_line(0, "node-0"),
         _stage_line(probe.IPC_STAGE, "node-0"),
+        _stage_line(probe.LOADER_INPUT_STAGE, "node-0"),
+        _stage_line(probe.LOADER_OUTPUT_STAGE, "node-0"),
         _stage_line(probe.FINISH_STAGE, "node-0", sample_hash=456, npu_format=0),
     ]
 
     report = probe.analyze([_write_log(tmp_path, lines)])
 
+    assert report.checks["ipc_to_loader_input"].passed == 1
+    assert report.checks["loader_input_to_output"].passed == 1
+    assert report.checks["loader_output_to_finish"].failed == 1
     assert report.checks["ipc_to_finish"].failed == 1
     assert report.checks["wake_to_finish_layout"].failed == 1
-    assert {issue.category for issue in report.issues} >= {"MOE_FINALIZE", "MOE_LAYOUT"}
+    assert {issue.category for issue in report.issues} >= {
+        "LAYERWISE_FINALIZE",
+        "MOE_FINALIZE",
+        "MOE_LAYOUT",
+    }
 
 
 @pytest.mark.unit

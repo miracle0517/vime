@@ -61,6 +61,19 @@ def _npu_format(tensor: torch.Tensor) -> int | None:
 def _tensor_layout_probe(tensor: torch.Tensor) -> dict[str, object]:
     """Fingerprint logical values while retaining runtime layout metadata."""
     detached = tensor.detach()
+    if detached.device.type == "meta":
+        return {
+            "shape": list(detached.shape),
+            "stride": list(detached.stride()),
+            "storage_offset": detached.storage_offset(),
+            "dtype": str(detached.dtype),
+            "device": str(detached.device),
+            "npu_format": None,
+            "num_bytes": detached.numel() * detached.element_size(),
+            "sample_hash": None,
+            "head": [],
+            "tail": [],
+        }
     raw = detached.contiguous().view(torch.uint8).reshape(-1)
     num_bytes = raw.numel()
     step = max(1, num_bytes // 4096)
@@ -283,6 +296,27 @@ def _log_runtime_moe_probes(worker, stage: str) -> None:
                     projection,
                     _tensor_layout_probe(hf_view),
                 )
+
+
+def _moe_loader_output_view(
+    param: torch.Tensor,
+    *,
+    local_expert_id: int,
+    shard_id: str,
+) -> torch.Tensor | None:
+    """Return the HF-shaped portion written by one fused-MoE loader call."""
+    if param.ndim != 3 or local_expert_id < 0 or local_expert_id >= param.shape[0]:
+        return None
+    expert_tensor = param[local_expert_id]
+    if shard_id == "w2":
+        return expert_tensor
+    if shard_id not in {"w1", "w3"}:
+        return None
+
+    shard_dim = 1 if getattr(param, "is_transposed", False) else 0
+    shard_size = expert_tensor.shape[shard_dim] // 2
+    shard_offset = 0 if shard_id == "w1" else shard_size
+    return expert_tensor.narrow(shard_dim, shard_offset, shard_size)
 
 
 class UpdateWeightFromTensor:
@@ -658,7 +692,7 @@ class _VLLMHijack:
             if inner_model is None or not hasattr(inner_model, "layers"):
                 return
 
-        for layer in inner_model.layers:
+        for layer_index, layer in enumerate(inner_model.layers):
             mlp = getattr(layer, "mlp", None) or getattr(layer, "block_sparse_moe", None)
             if mlp is None:
                 continue
@@ -669,6 +703,84 @@ class _VLLMHijack:
                 if "w13_weight" in name or "w2_weight" in name:
                     if not hasattr(param, "weight_loader"):
                         param.weight_loader = experts.weight_loader  # type: ignore[attr-defined]
+                    if not _weight_probe_enabled():
+                        continue
+                    loader = param.weight_loader
+                    if getattr(loader, "_vime_weight_probe_wrapper", False):
+                        continue
+
+                    def _loader_with_probe(
+                        loader_param,
+                        loaded_weight,
+                        weight_name,
+                        shard_id,
+                        expert_id,
+                        *args,
+                        _loader=loader,
+                        _layer_index=layer_index,
+                        _runtime_param_name=name,
+                        **kwargs,
+                    ):
+                        local_expert_id = expert_id
+                        loader_owner = getattr(_loader, "__self__", None)
+                        map_expert = getattr(loader_owner, "_map_global_expert_id_to_local_expert_id", None)
+                        if map_expert is not None:
+                            local_expert_id = map_expert(expert_id)
+
+                        should_probe = (
+                            _weight_probe_enabled()
+                            and _layer_index == 0
+                            and expert_id in _WEIGHT_PROBE_EXPERT_IDS
+                            and local_expert_id >= 0
+                        )
+                        context = {
+                            "expert_id": expert_id,
+                            "local_expert_id": local_expert_id,
+                            "shard_id": shard_id,
+                            "runtime_param": _runtime_param_name,
+                        }
+                        if should_probe:
+                            _log_named_weight_probes(
+                                "expert_loader_input",
+                                [(weight_name, loaded_weight)],
+                                context=context,
+                            )
+
+                        result = _loader(
+                            loader_param,
+                            loaded_weight,
+                            weight_name,
+                            shard_id,
+                            expert_id,
+                            *args,
+                            **kwargs,
+                        )
+
+                        if should_probe:
+                            output_view = _moe_loader_output_view(
+                                loader_param,
+                                local_expert_id=local_expert_id,
+                                shard_id=shard_id,
+                            )
+                            if output_view is None:
+                                logger.error(
+                                    "[VIME_WEIGHT_PROBE] stage=expert_loader_output "
+                                    "unable to reconstruct output context=%s name=%s "
+                                    "param_shape=%s",
+                                    {**_weight_probe_context(), **context},
+                                    weight_name,
+                                    list(loader_param.shape),
+                                )
+                            else:
+                                _log_named_weight_probes(
+                                    "expert_loader_output",
+                                    [(weight_name, output_view)],
+                                    context=context,
+                                )
+                        return result
+
+                    _loader_with_probe._vime_weight_probe_wrapper = True
+                    param.weight_loader = _loader_with_probe  # type: ignore[attr-defined]
 
     @staticmethod
     def _tensor_fingerprint(tensor: torch.Tensor) -> dict[str, object]:

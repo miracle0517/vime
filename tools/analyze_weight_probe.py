@@ -31,6 +31,8 @@ LOGICAL_KEYS = ("shape", "dtype", "num_bytes", "sample_hash", "head", "tail")
 LAYOUT_KEYS = ("shape", "stride", "storage_offset", "dtype", "npu_format")
 IPC_STAGE = "ipc_receive_before_load"
 WAKE_STAGE = "after_weight_wake_up"
+LOADER_INPUT_STAGE = "expert_loader_input"
+LOADER_OUTPUT_STAGE = "expert_loader_output"
 FINISH_STAGE = "after_finish_weight_update"
 
 
@@ -296,9 +298,13 @@ def _compare_paired_stages(
 ) -> None:
     expected_groups = _group_by_uuid_and_name(expected_records)
     actual_groups = _group_by_uuid_and_name(actual_records)
-    keys_to_compare = set(actual_groups)
     if require_all_expected:
-        keys_to_compare |= set(expected_groups)
+        keys_to_compare = set(expected_groups)
+    else:
+        # Runtime stages also contain fused w13_weight/w2_weight probes. They
+        # deliberately have no matching HF checkpoint name and must not be
+        # reported as missing.
+        keys_to_compare = set(expected_groups) & set(actual_groups)
 
     for key in sorted(keys_to_compare):
         expected = expected_groups.get(key, [])
@@ -333,6 +339,9 @@ def analyze(paths: list[Path]) -> AnalysisReport:
     checks = {
         "actor_cross_rank": CheckStats(),
         "actor_to_ipc": CheckStats(),
+        "ipc_to_loader_input": CheckStats(),
+        "loader_input_to_output": CheckStats(),
+        "loader_output_to_finish": CheckStats(),
         "ipc_to_finish": CheckStats(),
         "wake_to_finish_layout": CheckStats(),
     }
@@ -341,6 +350,8 @@ def analyze(paths: list[Path]) -> AnalysisReport:
 
     actor_records = [record for record in records if record.stage == "actor_export"]
     ipc_records = [record for record in records if record.stage == IPC_STAGE]
+    loader_input_records = [record for record in records if record.stage == LOADER_INPUT_STAGE]
+    loader_output_records = [record for record in records if record.stage == LOADER_OUTPUT_STAGE]
     finish_records = [record for record in records if record.stage == FINISH_STAGE]
     wake_records = [record for record in records if record.stage == WAKE_STAGE]
 
@@ -351,6 +362,36 @@ def analyze(paths: list[Path]) -> AnalysisReport:
         stats=checks["actor_to_ipc"],
         category="IPC_TRANSFER",
         label="Actor export -> IPC receive",
+        keys=LOGICAL_KEYS,
+        require_all_expected=True,
+    )
+    _compare_paired_stages(
+        expected_records=ipc_records,
+        actual_records=loader_input_records,
+        issues=issues,
+        stats=checks["ipc_to_loader_input"],
+        category="LOADER_INPUT",
+        label="IPC receive -> expert weight_loader input",
+        keys=LOGICAL_KEYS,
+        require_all_expected=False,
+    )
+    _compare_paired_stages(
+        expected_records=loader_input_records,
+        actual_records=loader_output_records,
+        issues=issues,
+        stats=checks["loader_input_to_output"],
+        category="EXPERT_WEIGHT_LOADER",
+        label="Expert weight_loader input -> temporary fused parameter",
+        keys=LOGICAL_KEYS,
+        require_all_expected=True,
+    )
+    _compare_paired_stages(
+        expected_records=loader_output_records,
+        actual_records=finish_records,
+        issues=issues,
+        stats=checks["loader_output_to_finish"],
+        category="LAYERWISE_FINALIZE",
+        label="Expert loader output -> finalized runtime HF view",
         keys=LOGICAL_KEYS,
         require_all_expected=True,
     )
@@ -375,7 +416,7 @@ def analyze(paths: list[Path]) -> AnalysisReport:
         require_all_expected=False,
     )
 
-    for stage in ("actor_export", IPC_STAGE, FINISH_STAGE):
+    for stage in ("actor_export", IPC_STAGE, LOADER_INPUT_STAGE, LOADER_OUTPUT_STAGE, FINISH_STAGE):
         if not any(record.stage == stage for record in records):
             issues.append(
                 Issue(
@@ -413,7 +454,10 @@ def _print_report(report: AnalysisReport, *, max_details: int) -> None:
     check_labels = {
         "actor_cross_rank": "Actor 跨 rank 一致性",
         "actor_to_ipc": "Actor -> IPC",
-        "ipc_to_finish": "IPC -> MoE finalize",
+        "ipc_to_loader_input": "IPC -> expert loader 输入",
+        "loader_input_to_output": "expert loader 输入 -> 临时参数",
+        "loader_output_to_finish": "临时参数 -> layerwise finalize",
+        "ipc_to_finish": "IPC -> 最终 MoE 权重",
         "wake_to_finish_layout": "wake -> finish 布局",
     }
     for name, stats in report.checks.items():
@@ -440,20 +484,36 @@ def _print_report(report: AnalysisReport, *, max_details: int) -> None:
         if hidden > 0:
             print(f"... 另有 {hidden} 条，使用 --max-details 增大显示数量或 --json 查看全部")
     elif not report.parse_errors:
-        print("未发现权重传输、MoE finalize 或布局不一致。")
+        print("未发现权重传输、expert loader、layerwise finalize 或布局不一致。")
 
     categories = {issue.category for issue in report.issues if issue.severity == "ERROR"}
     diagnoses = []
     if categories & {"ACTOR_METADATA", "ACTOR_VALUE"}:
-        diagnoses.append("Actor 各 rank 的 HF 导出不一致，优先检查 Bridge chunk 顺序和 native IPC 按位置合并")
+        diagnoses.append("Actor 各 rank 的 HF 导出不一致。")
     if categories & {"IPC_TRANSFER", "IPC_TRANSFER_MISSING"}:
-        diagnoses.append("Actor 导出与 vLLM 接收不一致，优先检查 NPU IPC handle、UUID 路由和 rebuild")
-    if categories & {"MOE_FINALIZE", "MOE_FINALIZE_MISSING"}:
-        diagnoses.append("IPC 接收正确但运行时权重异常，优先检查 expert weight_loader 和 layerwise finalize")
+        diagnoses.append("Actor 导出与 vLLM IPC 接收不一致。")
+    if categories & {"LOADER_INPUT", "LOADER_INPUT_MISSING"}:
+        diagnoses.append("IPC 正确，但 expert loader 的输入异常或 loader 未被调用。")
+    if categories & {"EXPERT_WEIGHT_LOADER", "EXPERT_WEIGHT_LOADER_MISSING"}:
+        diagnoses.append(
+            "expert loader 输入正确，但写入临时 fused 参数后异常；重点检查 EP expert 映射和 w1/w2/w3 shard。"
+        )
+    if categories & {"LAYERWISE_FINALIZE", "LAYERWISE_FINALIZE_MISSING"}:
+        diagnoses.append(
+            "expert loader 临时参数正确，但 finalize 后运行权重异常；重点检查 "
+            "process_weights_after_loading、transpose/contiguous 和 ND/NZ format cast。"
+        )
+    if categories & {"MOE_FINALIZE", "MOE_FINALIZE_MISSING"} and not categories & {
+        "EXPERT_WEIGHT_LOADER",
+        "EXPERT_WEIGHT_LOADER_MISSING",
+        "LAYERWISE_FINALIZE",
+        "LAYERWISE_FINALIZE_MISSING",
+    }:
+        diagnoses.append("IPC 与最终运行时权重不一致，需结合 loader 输入/输出 stage 判断。")
     if categories & {"MOE_LAYOUT", "MOE_LAYOUT_MISSING"}:
-        diagnoses.append("wake/finalize 物理布局不一致，优先检查 w13/w2 transpose 和 ND/NZ format 恢复")
+        diagnoses.append("wake/finalize 物理布局不一致，检查 w13/w2 transpose 和 ND/NZ format。")
     if categories & {"MISSING_STAGE", "PROBE_RUNTIME"} or report.parse_errors:
-        diagnoses.append("探针日志不完整或无法解析，需要先补齐同一次运行的四个 stage")
+        diagnoses.append("探针日志不完整或无法解析，需要使用修改后的代码重新运行一次。")
     if diagnoses:
         print()
         print("自动定位结论:")
