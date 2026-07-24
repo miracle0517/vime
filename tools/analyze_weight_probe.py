@@ -27,7 +27,16 @@ ACTOR_RE = re.compile(
 GENERIC_RE = re.compile(r"stage=(\S+) context=(\{.*\}) name=(\S+) probe=(\{.*\})$")
 METADATA_MISMATCH_RE = re.compile(r"stage=actor_export_metadata_mismatch version=(\d+) chunk=(\d+) rank=(\S+)")
 
-LOGICAL_KEYS = ("shape", "dtype", "num_bytes", "sample_hash", "head", "tail")
+LOGICAL_KEYS = (
+    "shape",
+    "dtype",
+    "num_bytes",
+    "sample_hash",
+    "head",
+    "tail",
+    "value_stats",
+    "value_samples",
+)
 LAYOUT_KEYS = ("shape", "stride", "storage_offset", "dtype", "npu_format")
 IPC_STAGE = "ipc_receive_before_load"
 WAKE_STAGE = "after_weight_wake_up"
@@ -81,6 +90,7 @@ class AnalysisReport:
     checks: dict[str, CheckStats]
     issues: list[Issue]
     parse_errors: list[str]
+    value_chains: list[dict[str, Any]]
 
     @property
     def error_count(self) -> int:
@@ -98,6 +108,7 @@ class AnalysisReport:
             "checks": {name: asdict(stats) for name, stats in self.checks.items()},
             "issues": [asdict(issue) for issue in self.issues],
             "parse_errors": self.parse_errors,
+            "value_chains": self.value_chains,
             "error_count": self.error_count,
             "warning_count": self.warning_count,
         }
@@ -207,6 +218,60 @@ def _probe_difference(
     }
 
 
+def _value_difference_summary(
+    expected: ProbeRecord,
+    actual: ProbeRecord,
+) -> dict[str, Any]:
+    display_keys = (
+        "numel",
+        "finite_count",
+        "nan_count",
+        "posinf_count",
+        "neginf_count",
+        "zero_count",
+        "min",
+        "max",
+        "sum",
+        "mean",
+        "abs_mean",
+        "l2_norm",
+    )
+    expected_stats = expected.probe.get("value_stats")
+    actual_stats = actual.probe.get("value_stats")
+
+    changed_stats = {}
+    if isinstance(expected_stats, dict) and isinstance(actual_stats, dict):
+        changed_stats = {
+            key: {
+                "expected": expected_stats.get(key),
+                "actual": actual_stats.get(key),
+            }
+            for key in display_keys
+            if expected_stats.get(key) != actual_stats.get(key)
+        }
+
+    expected_samples = expected.probe.get("value_samples")
+    actual_samples = actual.probe.get("value_samples")
+    changed_samples = []
+    if isinstance(expected_samples, list) and isinstance(actual_samples, list):
+        for index, (expected_value, actual_value) in enumerate(zip(expected_samples, actual_samples, strict=False)):
+            if expected_value != actual_value:
+                changed_samples.append(
+                    {
+                        "index": index,
+                        "expected": expected_value,
+                        "actual": actual_value,
+                    }
+                )
+            if len(changed_samples) == 8:
+                break
+
+    return {
+        "changed_stats": changed_stats,
+        "changed_samples": changed_samples,
+    }
+
+
 def _append_comparison(
     *,
     report_issues: list[Issue],
@@ -223,13 +288,15 @@ def _append_comparison(
         stats.passed += 1
         return
     stats.failed += 1
+    value_summary = _value_difference_summary(expected, actual)
     report_issues.append(
         Issue(
             severity="ERROR",
             category=category,
             message=(
                 f"{label}: uuid={actual.npu_uuid!r} "
-                f"name={normalize_weight_name(actual.name)!r} differences={differences}"
+                f"name={normalize_weight_name(actual.name)!r} "
+                f"value_summary={value_summary} differences={differences}"
             ),
             locations=[expected.location, actual.location],
         )
@@ -332,6 +399,44 @@ def _compare_paired_stages(
                     locations=[record.location for record in (expected + actual)[:8]],
                 )
             )
+
+
+def _build_value_chains(records: list[ProbeRecord]) -> list[dict[str, Any]]:
+    stage_order = {
+        "actor_export": 0,
+        IPC_STAGE: 1,
+        LOADER_INPUT_STAGE: 2,
+        LOADER_OUTPUT_STAGE: 3,
+        FINISH_STAGE: 4,
+    }
+    grouped: dict[tuple[str, str], list[ProbeRecord]] = defaultdict(list)
+    for record in records:
+        if record.stage not in stage_order or record.npu_uuid is None:
+            continue
+        if not isinstance(record.probe.get("value_stats"), dict):
+            continue
+        grouped[(record.npu_uuid, normalize_weight_name(record.name))].append(record)
+
+    chains = []
+    for (npu_uuid, name), group in sorted(grouped.items()):
+        ordered = sorted(group, key=lambda record: (stage_order[record.stage], record.line_number))
+        chains.append(
+            {
+                "npu_uuid": npu_uuid,
+                "name": name,
+                "stages": [
+                    {
+                        "stage": record.stage,
+                        "location": record.location,
+                        "value_stats": record.probe.get("value_stats"),
+                        "value_samples": record.probe.get("value_samples"),
+                        "sample_hash": record.probe.get("sample_hash"),
+                    }
+                    for record in ordered
+                ],
+            }
+        )
+    return chains
 
 
 def analyze(paths: list[Path]) -> AnalysisReport:
@@ -441,14 +546,21 @@ def analyze(paths: list[Path]) -> AnalysisReport:
         checks=checks,
         issues=issues,
         parse_errors=parse_errors,
+        value_chains=_build_value_chains(records),
     )
 
 
-def _print_report(report: AnalysisReport, *, max_details: int) -> None:
+def _print_report(
+    report: AnalysisReport,
+    *,
+    max_details: int,
+    show_value_chains: int,
+) -> None:
     print("VIME 共卡权重更新探针报告")
     print(f"日志文件: {len(report.files)}")
     print(f"有效探针: {report.records}")
     print(f"stage 统计: {report.stage_counts}")
+    print(f"可比较的真实值链路: {len(report.value_chains)}")
     print()
 
     check_labels = {
@@ -487,6 +599,56 @@ def _print_report(report: AnalysisReport, *, max_details: int) -> None:
         print("未发现权重传输、expert loader、layerwise finalize 或布局不一致。")
 
     categories = {issue.category for issue in report.issues if issue.severity == "ERROR"}
+    boundary_order = (
+        ("ACTOR_VALUE", "Actor 导出阶段"),
+        ("IPC_TRANSFER", "Actor → IPC"),
+        ("LOADER_INPUT", "IPC → expert loader 输入"),
+        ("EXPERT_WEIGHT_LOADER", "expert loader 输入 → 临时 fused 参数"),
+        ("LAYERWISE_FINALIZE", "临时 fused 参数 → finalize 后运行权重"),
+        ("MOE_FINALIZE", "IPC → 最终运行权重"),
+        ("MOE_LAYOUT", "wake → finish 物理布局"),
+    )
+    first_abnormal_boundary = next(
+        (
+            (category, label)
+            for category, label in boundary_order
+            if category in categories or f"{category}_MISSING" in categories
+        ),
+        None,
+    )
+    if first_abnormal_boundary is not None:
+        category, label = first_abnormal_boundary
+        first_issue = next(issue for issue in report.issues if issue.category in {category, f"{category}_MISSING"})
+        print()
+        print(f"首个异常边界: {label}")
+        print(f"首个异常详情: {first_issue.message}")
+
+    if show_value_chains > 0 and report.value_chains:
+        print()
+        print(f"真实权重统计链路（前 {min(show_value_chains, len(report.value_chains))} 条）:")
+        for chain in report.value_chains[:show_value_chains]:
+            print(f"  uuid={chain['npu_uuid']!r} name={chain['name']!r}")
+            for stage in chain["stages"]:
+                value_stats = stage["value_stats"]
+                compact_stats = {
+                    key: value_stats.get(key)
+                    for key in (
+                        "min",
+                        "max",
+                        "mean",
+                        "abs_mean",
+                        "l2_norm",
+                        "zero_count",
+                        "nan_count",
+                        "posinf_count",
+                        "neginf_count",
+                    )
+                }
+                print(
+                    f"    {stage['stage']}: hash={stage['sample_hash']} "
+                    f"stats={compact_stats} samples={stage['value_samples']}"
+                )
+
     diagnoses = []
     if categories & {"ACTOR_METADATA", "ACTOR_VALUE"}:
         diagnoses.append("Actor 各 rank 的 HF 导出不一致。")
@@ -527,6 +689,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", type=Path, dest="json_path", help="Write the complete report as JSON")
     parser.add_argument("--max-details", type=int, default=30, help="Maximum issues printed to stdout")
     parser.add_argument(
+        "--show-value-chains",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Print compact real-value statistics for the first N weight chains",
+    )
+    parser.add_argument(
         "--fail-on-warning",
         action="store_true",
         help="Return exit code 1 when the report only contains warnings",
@@ -542,7 +711,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     report = analyze(args.logs)
-    _print_report(report, max_details=max(1, args.max_details))
+    _print_report(
+        report,
+        max_details=max(1, args.max_details),
+        show_value_chains=max(0, args.show_value_chains),
+    )
     if args.json_path is not None:
         args.json_path.write_text(
             json.dumps(report.to_json(), ensure_ascii=False, indent=2),

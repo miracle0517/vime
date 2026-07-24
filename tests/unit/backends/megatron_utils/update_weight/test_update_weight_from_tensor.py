@@ -409,6 +409,14 @@ def test_tensor_layout_probe_reports_values_and_layout(upw_vllm):
     assert probe["npu_format"] is None
     assert probe["num_bytes"] == tensor.numel() * tensor.element_size()
     assert probe["sample_hash"] != 0
+    assert probe["value_stats"]["numel"] == 12
+    assert probe["value_stats"]["finite_count"] == 12
+    assert probe["value_stats"]["zero_count"] == 1
+    assert probe["value_stats"]["min"] == 0.0
+    assert probe["value_stats"]["max"] == 11.0
+    assert probe["value_stats"]["sum"] == 66.0
+    assert probe["value_stats"]["mean"] == 5.5
+    assert len(probe["value_samples"]) == 12
 
 
 @pytest.mark.unit
@@ -422,6 +430,8 @@ def test_tensor_layout_probe_handles_meta_tensor(upw_vllm):
     assert probe["sample_hash"] is None
     assert probe["head"] == []
     assert probe["tail"] == []
+    assert probe["value_stats"] is None
+    assert probe["value_samples"] == []
 
 
 @pytest.mark.unit
@@ -484,13 +494,15 @@ def test_moe_weight_loader_probe_captures_input_and_temporary_output(upw_vllm, m
     wrapped_loader(
         param,
         loaded,
-        "model.layers.0.mlp.experts.0.gate_proj.weight",
+        "model.layers.0.mlp.experts.w13_weight",
         "w1",
         0,
     )
     upw_vllm._VLLMHijack.patch_moe_weight_loader(model)
 
     assert [entry[0] for entry in captured] == ["expert_loader_input", "expert_loader_output"]
+    assert captured[0][1][0][0] == "model.layers.0.mlp.experts.0.gate_proj.weight"
+    assert captured[1][1][0][0] == "model.layers.0.mlp.experts.0.gate_proj.weight"
     torch.testing.assert_close(captured[0][1][0][1], loaded)
     torch.testing.assert_close(captured[1][1][0][1], loaded)
     assert captured[1][2]["local_expert_id"] == 0

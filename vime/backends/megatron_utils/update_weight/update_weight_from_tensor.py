@@ -5,6 +5,7 @@ Colocated vLLM weight sync using native IPC transfer engines.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from argparse import Namespace
@@ -58,7 +59,107 @@ def _npu_format(tensor: torch.Tensor) -> int | None:
         return None
 
 
-def _tensor_layout_probe(tensor: torch.Tensor) -> dict[str, object]:
+def _tensor_value_probe(
+    tensor: torch.Tensor,
+) -> tuple[dict[str, int | float | None], list[float | str]]:
+    """Compute interpretable statistics and deterministic real-value samples."""
+    values = tensor.reshape(-1).to(torch.float32)
+    numel = values.numel()
+    if numel == 0:
+        return (
+            {
+                "numel": 0,
+                "finite_count": 0,
+                "nan_count": 0,
+                "posinf_count": 0,
+                "neginf_count": 0,
+                "zero_count": 0,
+                "min": None,
+                "max": None,
+                "sum": 0.0,
+                "mean": None,
+                "abs_mean": None,
+                "l2_norm": 0.0,
+            },
+            [],
+        )
+
+    finite = torch.isfinite(values)
+    nan_count = int(torch.isnan(values).sum(dtype=torch.int64).item())
+    infinite = torch.isinf(values)
+    posinf_count = int((infinite & (values > 0)).sum(dtype=torch.int64).item())
+    neginf_count = int((infinite & (values < 0)).sum(dtype=torch.int64).item())
+    finite_count = numel - nan_count - posinf_count - neginf_count
+    zero_count = int((values == 0).sum(dtype=torch.int64).item())
+    safe_values = torch.where(finite, values, torch.zeros((), dtype=values.dtype, device=values.device))
+    value_sum = float(safe_values.sum(dtype=torch.float32).item())
+    abs_sum = float(safe_values.abs().sum(dtype=torch.float32).item())
+    squared_sum = float((safe_values * safe_values).sum(dtype=torch.float32).item())
+
+    if finite_count:
+        finite_min_source = torch.where(
+            finite,
+            values,
+            torch.full((), torch.inf, dtype=values.dtype, device=values.device),
+        )
+        finite_max_source = torch.where(
+            finite,
+            values,
+            torch.full((), -torch.inf, dtype=values.dtype, device=values.device),
+        )
+        value_min = float(finite_min_source.min().item())
+        value_max = float(finite_max_source.max().item())
+        value_mean = value_sum / finite_count
+        abs_mean = abs_sum / finite_count
+    else:
+        value_min = None
+        value_max = None
+        value_mean = None
+        abs_mean = None
+
+    sample_count = min(16, numel)
+    if sample_count == 1:
+        sample_indices = torch.zeros(1, dtype=torch.int64, device=values.device)
+    else:
+        sample_indices = (
+            torch.linspace(
+                0,
+                numel - 1,
+                steps=sample_count,
+                dtype=torch.float32,
+            )
+            .round()
+            .to(dtype=torch.int64, device=values.device)
+        )
+    raw_samples = values.index_select(0, sample_indices).cpu().tolist()
+    value_samples = [
+        value if math.isfinite(value) else ("nan" if math.isnan(value) else ("+inf" if value > 0 else "-inf"))
+        for value in raw_samples
+    ]
+    return (
+        {
+            "numel": numel,
+            "finite_count": finite_count,
+            "nan_count": nan_count,
+            "posinf_count": posinf_count,
+            "neginf_count": neginf_count,
+            "zero_count": zero_count,
+            "min": value_min,
+            "max": value_max,
+            "sum": value_sum,
+            "mean": value_mean,
+            "abs_mean": abs_mean,
+            "l2_norm": squared_sum**0.5,
+        },
+        value_samples,
+    )
+
+
+def _tensor_layout_probe(
+    tensor: torch.Tensor,
+    *,
+    include_value_stats: bool = True,
+) -> dict[str, object]:
     """Fingerprint logical values while retaining runtime layout metadata."""
     detached = tensor.detach()
     if detached.device.type == "meta":
@@ -73,8 +174,11 @@ def _tensor_layout_probe(tensor: torch.Tensor) -> dict[str, object]:
             "sample_hash": None,
             "head": [],
             "tail": [],
+            "value_stats": None,
+            "value_samples": [],
         }
-    raw = detached.contiguous().view(torch.uint8).reshape(-1)
+    logical = detached.contiguous()
+    raw = logical.view(torch.uint8).reshape(-1)
     num_bytes = raw.numel()
     step = max(1, num_bytes // 4096)
     sample = raw[::step][:4096].to(torch.int64)
@@ -83,6 +187,14 @@ def _tensor_layout_probe(tensor: torch.Tensor) -> dict[str, object]:
     edge_size = min(16, num_bytes)
     head = raw[:edge_size].cpu().tolist()
     tail = raw[-edge_size:].cpu().tolist()
+    if include_value_stats:
+        try:
+            value_stats, value_samples = _tensor_value_probe(logical)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            value_stats = {"error": f"{type(exc).__name__}: {exc}"}
+            value_samples = []
+    else:
+        value_stats, value_samples = None, []
     return {
         "shape": list(detached.shape),
         "stride": list(detached.stride()),
@@ -94,6 +206,8 @@ def _tensor_layout_probe(tensor: torch.Tensor) -> dict[str, object]:
         "sample_hash": sample_hash,
         "head": head,
         "tail": tail,
+        "value_stats": value_stats,
+        "value_samples": value_samples,
     }
 
 
@@ -259,7 +373,7 @@ def _log_runtime_moe_probes(worker, stage: str) -> None:
             stage,
             context,
             runtime_name,
-            _tensor_layout_probe(tensor),
+            _tensor_layout_probe(tensor, include_value_stats=False),
         )
         if tensor.ndim != 3:
             continue
@@ -303,15 +417,24 @@ def _moe_loader_output_view(
     *,
     local_expert_id: int,
     shard_id: str,
+    loaded_weight: torch.Tensor,
 ) -> torch.Tensor | None:
     """Return the HF-shaped portion written by one fused-MoE loader call."""
-    if param.ndim != 3 or local_expert_id < 0 or local_expert_id >= param.shape[0]:
+    if param.ndim == 3:
+        if local_expert_id < 0 or local_expert_id >= param.shape[0]:
+            return None
+        expert_tensor = param[local_expert_id]
+    elif param.ndim == 2:
+        expert_tensor = param
+    else:
         return None
-    expert_tensor = param[local_expert_id]
+
     if shard_id == "w2":
         return expert_tensor
     if shard_id not in {"w1", "w3"}:
         return None
+    if list(expert_tensor.shape) == list(loaded_weight.shape):
+        return expert_tensor
 
     shard_dim = 1 if getattr(param, "is_transposed", False) else 0
     shard_size = expert_tensor.shape[shard_dim] // 2
@@ -719,14 +842,31 @@ class _VLLMHijack:
                         _loader=loader,
                         _layer_index=layer_index,
                         _runtime_param_name=name,
+                        _experts=experts,
                         **kwargs,
                     ):
                         local_expert_id = expert_id
-                        loader_owner = getattr(_loader, "__self__", None)
-                        map_expert = getattr(loader_owner, "_map_global_expert_id_to_local_expert_id", None)
+                        map_expert = getattr(_experts, "_map_global_expert_id_to_local_expert_id", None)
+                        if map_expert is None:
+                            loader_owner = getattr(_loader, "__self__", None)
+                            map_expert = getattr(
+                                loader_owner,
+                                "_map_global_expert_id_to_local_expert_id",
+                                None,
+                            )
                         if map_expert is not None:
                             local_expert_id = map_expert(expert_id)
 
+                        projection = {
+                            "w1": "gate_proj",
+                            "w2": "down_proj",
+                            "w3": "up_proj",
+                        }.get(shard_id)
+                        probe_weight_name = (
+                            f"model.layers.{_layer_index}.mlp.experts." f"{expert_id}.{projection}.weight"
+                            if projection is not None
+                            else weight_name
+                        )
                         should_probe = (
                             _weight_probe_enabled()
                             and _layer_index == 0
@@ -738,11 +878,12 @@ class _VLLMHijack:
                             "local_expert_id": local_expert_id,
                             "shard_id": shard_id,
                             "runtime_param": _runtime_param_name,
+                            "loader_weight_name": weight_name,
                         }
                         if should_probe:
                             _log_named_weight_probes(
                                 "expert_loader_input",
-                                [(weight_name, loaded_weight)],
+                                [(probe_weight_name, loaded_weight)],
                                 context=context,
                             )
 
@@ -761,6 +902,7 @@ class _VLLMHijack:
                                 loader_param,
                                 local_expert_id=local_expert_id,
                                 shard_id=shard_id,
+                                loaded_weight=loaded_weight,
                             )
                             if output_view is None:
                                 logger.error(
@@ -768,13 +910,13 @@ class _VLLMHijack:
                                     "unable to reconstruct output context=%s name=%s "
                                     "param_shape=%s",
                                     {**_weight_probe_context(), **context},
-                                    weight_name,
+                                    probe_weight_name,
                                     list(loader_param.shape),
                                 )
                             else:
                                 _log_named_weight_probes(
                                     "expert_loader_output",
-                                    [(weight_name, output_view)],
+                                    [(probe_weight_name, output_view)],
                                     context=context,
                                 )
                         return result

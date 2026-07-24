@@ -14,6 +14,7 @@ SPEC.loader.exec_module(probe)
 
 
 def _probe(*, sample_hash=123, npu_format=29):
+    value = float(sample_hash)
     return {
         "shape": [2, 2],
         "stride": [2, 1],
@@ -25,6 +26,21 @@ def _probe(*, sample_hash=123, npu_format=29):
         "sample_hash": sample_hash,
         "head": [1, 2],
         "tail": [3, 4],
+        "value_stats": {
+            "numel": 4,
+            "finite_count": 4,
+            "nan_count": 0,
+            "posinf_count": 0,
+            "neginf_count": 0,
+            "zero_count": 0,
+            "min": value,
+            "max": value,
+            "sum": value * 4,
+            "mean": value,
+            "abs_mean": abs(value),
+            "l2_norm": abs(value) * 2,
+        },
+        "value_samples": [value, value],
     }
 
 
@@ -125,7 +141,8 @@ def test_analyze_reports_expert_weight_loader_mismatch(tmp_path):
     assert report.checks["ipc_to_loader_input"].passed == 1
     assert report.checks["loader_input_to_output"].failed == 1
     assert report.checks["loader_output_to_finish"].passed == 1
-    assert any(issue.category == "EXPERT_WEIGHT_LOADER" for issue in report.issues)
+    loader_issue = next(issue for issue in report.issues if issue.category == "EXPERT_WEIGHT_LOADER")
+    assert "'mean': {'expected': 123.0, 'actual': 999.0}" in loader_issue.message
 
 
 @pytest.mark.unit
