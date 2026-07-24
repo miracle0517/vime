@@ -178,6 +178,14 @@ def test_build_vllm_subprocess_env_no_batch_invariant_by_default(vllm_args, monk
 
 
 @pytest.mark.unit
+def test_build_vllm_subprocess_env_enables_weight_probe(vllm_args, monkeypatch):
+    monkeypatch.delenv("VIME_DEBUG_WEIGHT_UPDATE", raising=False)
+    vllm_args.check_weight_update_equal = True
+    env = mod.build_vllm_subprocess_env({"args": vllm_args, "visible_devices": "0"})
+    assert env["VIME_DEBUG_WEIGHT_UPDATE"] == "1"
+
+
+@pytest.mark.unit
 def test_build_vllm_cmd_adds_sleep_mode_only_for_offload_rollout(vllm_args):
     vllm_args.offload_rollout = True
     server_args = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)

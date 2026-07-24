@@ -4,7 +4,9 @@ Colocated vLLM weight sync using native IPC transfer engines.
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
@@ -25,6 +27,262 @@ from .update_weight_from_distributed import (
     post_process_weights,
     update_weights_from_distributed,
 )
+
+logger = logging.getLogger(__name__)
+
+_WEIGHT_PROBE_ENV = "VIME_DEBUG_WEIGHT_UPDATE"
+_WEIGHT_PROBE_EXPERT_IDS = frozenset({0, 31, 32, 63, 64, 95, 96, 127})
+_HF_EXPERT_WEIGHT_RE = re.compile(r"(?:^|\.)layers\.0\.mlp\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight$")
+
+
+def _weight_probe_enabled() -> bool:
+    return os.environ.get(_WEIGHT_PROBE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_hf_weight_probe_name(name: str) -> bool:
+    """Select a small set of weights that exposes TP/EP mapping mistakes."""
+    if re.search(r"(?:^|\.)layers\.0\.(?:self_attn\.q_proj|mlp\.gate)\.weight$", name):
+        return True
+    match = _HF_EXPERT_WEIGHT_RE.search(name)
+    return match is not None and int(match.group(1)) in _WEIGHT_PROBE_EXPERT_IDS
+
+
+def _npu_format(tensor: torch.Tensor) -> int | None:
+    if tensor.device.type != "npu":
+        return None
+    try:
+        import torch_npu
+
+        return int(torch_npu.get_npu_format(tensor))
+    except (AttributeError, RuntimeError, TypeError):
+        return None
+
+
+def _tensor_layout_probe(tensor: torch.Tensor) -> dict[str, object]:
+    """Fingerprint logical values while retaining runtime layout metadata."""
+    detached = tensor.detach()
+    raw = detached.contiguous().view(torch.uint8).reshape(-1)
+    num_bytes = raw.numel()
+    step = max(1, num_bytes // 4096)
+    sample = raw[::step][:4096].to(torch.int64)
+    positions = torch.arange(1, sample.numel() + 1, dtype=torch.int64, device=sample.device)
+    sample_hash = int((sample * positions).sum().item())
+    edge_size = min(16, num_bytes)
+    head = raw[:edge_size].cpu().tolist()
+    tail = raw[-edge_size:].cpu().tolist()
+    return {
+        "shape": list(detached.shape),
+        "stride": list(detached.stride()),
+        "storage_offset": detached.storage_offset(),
+        "dtype": str(detached.dtype),
+        "device": str(detached.device),
+        "npu_format": _npu_format(detached),
+        "num_bytes": num_bytes,
+        "sample_hash": sample_hash,
+        "head": head,
+        "tail": tail,
+    }
+
+
+def _weight_probe_context() -> dict[str, object]:
+    context: dict[str, object] = {
+        "pid": os.getpid(),
+        "visible_devices": os.environ.get("ASCEND_RT_VISIBLE_DEVICES"),
+    }
+    if dist.is_initialized():
+        context["dist_rank"] = dist.get_rank()
+        context["dist_world_size"] = dist.get_world_size()
+    if is_npu():
+        context["device"] = torch.npu.current_device()
+        try:
+            from vllm_ascend.distributed.weight_transfer.npu_ipc_engine import npu_generate_uuid
+
+            context["npu_uuid"] = npu_generate_uuid()
+        except (ImportError, RuntimeError, ValueError):
+            context["npu_uuid"] = None
+    return context
+
+
+def _log_named_weight_probes(
+    stage: str,
+    named_tensors: Sequence[tuple[str, torch.Tensor]],
+    *,
+    context: Mapping[str, object] | None = None,
+) -> dict[str, dict[str, object]]:
+    """Log selected HF weights and return their probes for cross-rank comparison."""
+    probes: dict[str, dict[str, object]] = {}
+    merged_context = dict(_weight_probe_context())
+    if context:
+        merged_context.update(context)
+    for name, tensor in named_tensors:
+        if not _is_hf_weight_probe_name(name):
+            continue
+        probe = _tensor_layout_probe(tensor)
+        probes[name] = probe
+        logger.warning(
+            "[VIME_WEIGHT_PROBE] stage=%s context=%s name=%s probe=%s",
+            stage,
+            merged_context,
+            name,
+            probe,
+        )
+    return probes
+
+
+def _probe_sender_chunk_across_ranks(
+    named_tensors: Sequence[tuple[str, torch.Tensor]],
+    *,
+    weight_version: int,
+    chunk_index: int,
+) -> None:
+    """Verify the positional merge assumptions made by native NPU IPC."""
+    rank = dist.get_rank()
+    metadata = [(name, list(tensor.shape), str(tensor.dtype)) for name, tensor in named_tensors]
+    local = {
+        "rank": rank,
+        "context": _weight_probe_context(),
+        "metadata": metadata,
+        "probes": {
+            name: _tensor_layout_probe(tensor) for name, tensor in named_tensors if _is_hf_weight_probe_name(name)
+        },
+    }
+    gathered: list[dict[str, object] | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(gathered, local)
+
+    if rank != 0:
+        return
+
+    entries = [entry for entry in gathered if entry is not None]
+    if not entries:
+        logger.error(
+            "[VIME_WEIGHT_PROBE] stage=actor_export_gather_empty version=%d chunk=%d",
+            weight_version,
+            chunk_index,
+        )
+        return
+
+    baseline_metadata = entries[0]["metadata"]
+    for entry in entries:
+        entry_rank = entry["rank"]
+        entry_metadata = entry["metadata"]
+        if entry_metadata != baseline_metadata:
+            first_differences = []
+            for index, (expected, actual) in enumerate(zip(baseline_metadata, entry_metadata, strict=False)):
+                if expected != actual:
+                    first_differences.append({"index": index, "rank0": expected, "actual": actual})
+                if len(first_differences) == 8:
+                    break
+            logger.error(
+                "[VIME_WEIGHT_PROBE] stage=actor_export_metadata_mismatch "
+                "version=%d chunk=%d rank=%s rank0_count=%d actual_count=%d differences=%s",
+                weight_version,
+                chunk_index,
+                entry_rank,
+                len(baseline_metadata),
+                len(entry_metadata),
+                first_differences,
+            )
+
+        for name, probe in entry["probes"].items():
+            logger.warning(
+                "[VIME_WEIGHT_PROBE] stage=actor_export version=%d chunk=%d " "rank=%s context=%s name=%s probe=%s",
+                weight_version,
+                chunk_index,
+                entry_rank,
+                entry["context"],
+                name,
+                probe,
+            )
+
+
+def _find_first_decoder_layer(model: torch.nn.Module):
+    inner_model = getattr(model, "model", None) or getattr(model, "language_model", None)
+    if inner_model is None:
+        return None
+    if not hasattr(inner_model, "layers"):
+        inner_model = getattr(inner_model, "model", None)
+    if inner_model is None or not hasattr(inner_model, "layers") or not inner_model.layers:
+        return None
+    return inner_model.layers[0]
+
+
+def _log_runtime_moe_probes(worker, stage: str) -> None:
+    """Expose the logical HF views and physical layout consumed by fused MoE."""
+    model = worker.model_runner.model
+    layer = _find_first_decoder_layer(model)
+    if layer is None:
+        logger.error("[VIME_WEIGHT_PROBE] stage=%s first decoder layer not found", stage)
+        return
+    mlp = getattr(layer, "mlp", None) or getattr(layer, "block_sparse_moe", None)
+    experts = getattr(mlp, "experts", None) if mlp is not None else None
+    if mlp is None or experts is None:
+        logger.error("[VIME_WEIGHT_PROBE] stage=%s first MoE layer not found", stage)
+        return
+
+    context = _weight_probe_context()
+    context.update(
+        {
+            "physical_expert_start": getattr(mlp, "physical_expert_start", None),
+            "physical_expert_end": getattr(mlp, "physical_expert_end", None),
+        }
+    )
+    gate = getattr(getattr(mlp, "gate", None), "weight", None)
+    if gate is not None:
+        logger.warning(
+            "[VIME_WEIGHT_PROBE] stage=%s context=%s name=layers.0.mlp.gate.weight probe=%s",
+            stage,
+            context,
+            _tensor_layout_probe(gate),
+        )
+
+    start = getattr(mlp, "physical_expert_start", 0)
+    hidden_size = worker.vllm_config.model_config.hf_text_config.hidden_size
+    for runtime_name in ("w13_weight", "w2_weight"):
+        tensor = getattr(experts, runtime_name, None)
+        if tensor is None:
+            continue
+        logger.warning(
+            "[VIME_WEIGHT_PROBE] stage=%s context=%s name=layers.0.mlp.experts.%s probe=%s",
+            stage,
+            context,
+            runtime_name,
+            _tensor_layout_probe(tensor),
+        )
+        if tensor.ndim != 3:
+            continue
+        for local_expert in range(tensor.shape[0]):
+            global_expert = start + local_expert
+            if global_expert not in _WEIGHT_PROBE_EXPERT_IDS:
+                continue
+            expert_tensor = tensor[local_expert]
+            hf_views: list[tuple[str, torch.Tensor]] = []
+            if runtime_name == "w13_weight":
+                if expert_tensor.shape[0] == hidden_size:
+                    intermediate_size = expert_tensor.shape[1] // 2
+                    hf_views = [
+                        ("gate_proj", expert_tensor[:, :intermediate_size].transpose(0, 1)),
+                        ("up_proj", expert_tensor[:, intermediate_size:].transpose(0, 1)),
+                    ]
+                elif expert_tensor.shape[1] == hidden_size:
+                    intermediate_size = expert_tensor.shape[0] // 2
+                    hf_views = [
+                        ("gate_proj", expert_tensor[:intermediate_size]),
+                        ("up_proj", expert_tensor[intermediate_size:]),
+                    ]
+            elif expert_tensor.shape[1] == hidden_size:
+                hf_views = [("down_proj", expert_tensor.transpose(0, 1))]
+            elif expert_tensor.shape[0] == hidden_size:
+                hf_views = [("down_proj", expert_tensor)]
+
+            for projection, hf_view in hf_views:
+                logger.warning(
+                    "[VIME_WEIGHT_PROBE] stage=%s context=%s " "name=layers.0.mlp.experts.%d.%s.weight probe=%s",
+                    stage,
+                    context,
+                    global_expert,
+                    projection,
+                    _tensor_layout_probe(hf_view),
+                )
 
 
 class UpdateWeightFromTensor:
@@ -168,7 +426,15 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
-        for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
+        for chunk_index, hf_named_tensors in enumerate(
+            self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights)
+        ):
+            if getattr(self.args, "check_weight_update_equal", False) and is_npu():
+                _probe_sender_chunk_across_ranks(
+                    hf_named_tensors,
+                    weight_version=self.weight_version,
+                    chunk_index=chunk_index,
+                )
             refs = self._send_hf_params(hf_named_tensors)
             ray.get(refs)
             # Free chunk tensors so the caching allocator can reuse the blocks.
@@ -312,6 +578,12 @@ class _VLLMHijack:
         def _receive_weights_with_owned_storage(self, update_info, load_weights, _orig=original_receive_weights):
             def _load_owned_weights(weights: list[tuple[str, torch.Tensor]]) -> None:
                 owned_weights = [(name, weight.detach().clone()) for name, weight in weights]
+                if _weight_probe_enabled():
+                    _log_named_weight_probes(
+                        "ipc_receive_before_load",
+                        owned_weights,
+                        context={"update_names_count": len(owned_weights)},
+                    )
                 load_weights(owned_weights)
 
             _orig(self, update_info, _load_owned_weights)
@@ -325,6 +597,7 @@ class _VLLMHijack:
 
         _orig_load_model = worker_cls.load_model
         _orig_start_weight_update = worker_cls.start_weight_update
+        _orig_finish_weight_update = worker_cls.finish_weight_update
         _orig_wake_up = worker_cls.wake_up
         has_dummy_kw = "load_dummy_weights" in inspect.signature(_orig_load_model).parameters
 
@@ -346,10 +619,17 @@ class _VLLMHijack:
             _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
             _orig(self, is_checkpoint_format=is_checkpoint_format)
 
+        def _patched_finish_weight_update(self, _orig=_orig_finish_weight_update) -> None:
+            _orig(self)
+            if _weight_probe_enabled():
+                _log_runtime_moe_probes(self, "after_finish_weight_update")
+
         def _patched_wake_up(self, tags=None, _orig=_orig_wake_up) -> None:
             quant_config = self.vllm_config.quant_config
             if quant_config is not None:
                 _orig(self, tags=tags)
+                if _weight_probe_enabled() and (tags is None or "weights" in tags):
+                    _log_runtime_moe_probes(self, "after_weight_wake_up")
                 return
 
             # vllm-ascend transposes unquantized w13_weight/w2_weight in
@@ -360,9 +640,12 @@ class _VLLMHijack:
                 _orig(self, tags=tags)
             finally:
                 self.vllm_config.quant_config = quant_config
+            if _weight_probe_enabled() and (tags is None or "weights" in tags):
+                _log_runtime_moe_probes(self, "after_weight_wake_up")
 
         worker_cls.load_model = _patched_load_model  # type: ignore[attr-defined]
         worker_cls.start_weight_update = _patched_start_weight_update  # type: ignore[attr-defined]
+        worker_cls.finish_weight_update = _patched_finish_weight_update  # type: ignore[attr-defined]
         worker_cls.wake_up = _patched_wake_up  # type: ignore[attr-defined]
 
     @staticmethod

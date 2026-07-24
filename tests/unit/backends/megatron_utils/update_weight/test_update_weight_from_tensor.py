@@ -170,6 +170,7 @@ def _default_args(**kwargs) -> Namespace:
         rollout_num_gpus_per_engine=2,
         megatron_to_hf_mode="raw",
         update_weight_buffer_size=1 << 30,
+        check_weight_update_equal=False,
     )
     base.update(kwargs)
     return Namespace(**base)
@@ -334,7 +335,8 @@ def test_npu_ipc_receiver_owns_weights_retained_by_layerwise_loader(upw_vllm, mo
 
 
 @pytest.mark.unit
-def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm):
+def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm, monkeypatch):
+    monkeypatch.delenv("VIME_DEBUG_WEIGHT_UPDATE", raising=False)
     wake_quant_configs = []
 
     class FakeWorker:
@@ -365,15 +367,48 @@ def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm):
     upw_vllm._VLLMHijack._patch_one_worker(FakeWorker)
 
     assert FakeWorker.update_weights is native_update_weights
-    assert FakeWorker.finish_weight_update is native_finish_weight_update
+    assert FakeWorker.finish_weight_update is not native_finish_weight_update
     assert FakeWorker.wake_up is not native_wake_up
 
     worker = FakeWorker()
     worker.wake_up(tags=["weights"])
+    worker.finish_weight_update()
 
     assert wake_quant_configs[0] is not None
     assert not worker.moe_transposed
     assert worker.vllm_config.quant_config is None
+
+
+@pytest.mark.unit
+def test_weight_probe_selects_layer_zero_and_expert_boundaries(upw_vllm):
+    selected = [
+        "model.layers.0.self_attn.q_proj.weight",
+        "model.layers.0.mlp.gate.weight",
+        "model.layers.0.mlp.experts.0.gate_proj.weight",
+        "model.layers.0.mlp.experts.31.up_proj.weight",
+        "model.layers.0.mlp.experts.127.down_proj.weight",
+    ]
+    skipped = [
+        "model.layers.1.self_attn.q_proj.weight",
+        "model.layers.0.mlp.experts.1.gate_proj.weight",
+        "model.layers.0.mlp.experts.126.down_proj.weight",
+    ]
+
+    assert all(upw_vllm._is_hf_weight_probe_name(name) for name in selected)
+    assert not any(upw_vllm._is_hf_weight_probe_name(name) for name in skipped)
+
+
+@pytest.mark.unit
+def test_tensor_layout_probe_reports_values_and_layout(upw_vllm):
+    tensor = torch.arange(12, dtype=torch.float32).reshape(3, 4).transpose(0, 1)
+    probe = upw_vllm._tensor_layout_probe(tensor)
+
+    assert probe["shape"] == [4, 3]
+    assert probe["stride"] == [1, 4]
+    assert probe["storage_offset"] == 0
+    assert probe["npu_format"] is None
+    assert probe["num_bytes"] == tensor.numel() * tensor.element_size()
+    assert probe["sample_hash"] != 0
 
 
 @pytest.mark.unit
