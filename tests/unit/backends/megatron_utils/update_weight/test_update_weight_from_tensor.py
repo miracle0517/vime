@@ -335,6 +335,33 @@ def test_npu_ipc_receiver_owns_weights_retained_by_layerwise_loader(upw_vllm, mo
 
 
 @pytest.mark.unit
+def test_moe_comm_selector_can_force_allgather(upw_vllm, monkeypatch):
+    root_mod = types.ModuleType("vllm_ascend")
+    root_mod.__path__ = []
+    ascend_context = types.ModuleType("vllm_ascend.ascend_forward_context")
+    ascend_context.MoECommType = types.SimpleNamespace(ALLGATHER="allgather")
+    ascend_context.select_moe_comm_method = (
+        lambda num_tokens, vllm_config, is_draft_model=False: None if vllm_config is None else "mc2"
+    )
+    model_runner = types.ModuleType("vllm_ascend.worker.model_runner_v1")
+    model_runner.select_moe_comm_method = ascend_context.select_moe_comm_method
+    root_mod.ascend_forward_context = ascend_context
+    monkeypatch.setitem(sys.modules, "vllm_ascend", root_mod)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.ascend_forward_context", ascend_context)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.worker.model_runner_v1", model_runner)
+    monkeypatch.setenv("VIME_FORCE_VLLM_MOE_ALLGATHER", "1")
+
+    upw_vllm._VLLMHijack._patch_moe_comm_selector()
+    patched_selector = ascend_context.select_moe_comm_method
+    assert patched_selector(1, object()) == "allgather"
+    assert patched_selector(1, None) is None
+    assert model_runner.select_moe_comm_method is patched_selector
+
+    upw_vllm._VLLMHijack._patch_moe_comm_selector()
+    assert ascend_context.select_moe_comm_method is patched_selector
+
+
+@pytest.mark.unit
 def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm, monkeypatch):
     monkeypatch.delenv("VIME_DEBUG_WEIGHT_UPDATE", raising=False)
     wake_quant_configs = []

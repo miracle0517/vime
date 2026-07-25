@@ -372,6 +372,8 @@ def build_vllm_subprocess_env(server_args: dict[str, Any]) -> dict[str, str]:
     env.setdefault("VLLM_SERVER_DEV_MODE", "1")
     if getattr(args, "vllm_enable_deterministic_inference", False):
         env["VLLM_BATCH_INVARIANT"] = "1"
+    if getattr(args, "force_vllm_moe_allgather", False):
+        env["VIME_FORCE_VLLM_MOE_ALLGATHER"] = "1"
     if getattr(args, "check_weight_update_equal", False):
         env["VIME_DEBUG_WEIGHT_UPDATE"] = "1"
     if getattr(args, "colocate", False):

@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import sys
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
@@ -32,6 +33,7 @@ from .update_weight_from_distributed import (
 logger = logging.getLogger(__name__)
 
 _WEIGHT_PROBE_ENV = "VIME_DEBUG_WEIGHT_UPDATE"
+_FORCE_MOE_ALLGATHER_ENV = "VIME_FORCE_VLLM_MOE_ALLGATHER"
 _WEIGHT_PROBE_EXPERT_IDS = frozenset({0, 31, 32, 63, 64, 95, 96, 127})
 _HF_EXPERT_WEIGHT_RE = re.compile(r"(?:^|\.)layers\.0\.mlp\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight$")
 
@@ -691,6 +693,7 @@ class _VLLMHijack:
     def _patch_npu_worker() -> None:
         from vllm_ascend.worker.worker import NPUWorker
 
+        _VLLMHijack._patch_moe_comm_selector()
         _VLLMHijack._patch_npu_ipc_receiver()
 
         if getattr(NPUWorker, "_npu_worker_patched", False):
@@ -698,6 +701,53 @@ class _VLLMHijack:
 
         _VLLMHijack._patch_one_worker(NPUWorker)
         NPUWorker._npu_worker_patched = True
+
+    @staticmethod
+    def _patch_moe_comm_selector() -> None:
+        """Force the vLLM-Ascend MoE dispatcher onto its ALLGATHER path."""
+        enabled = os.environ.get(_FORCE_MOE_ALLGATHER_ENV, "").strip().lower()
+        if enabled not in {"1", "true", "yes", "on"}:
+            return
+
+        import vllm_ascend.ascend_forward_context as ascend_forward_context
+
+        original_selector = ascend_forward_context.select_moe_comm_method
+        if getattr(original_selector, "_vime_force_allgather_patched", False):
+            return
+
+        selection_logged = False
+
+        def _select_allgather(num_tokens, vllm_config, is_draft_model=False):
+            nonlocal selection_logged
+            selected = original_selector(num_tokens, vllm_config, is_draft_model)
+            if selected is None:
+                return None
+            forced = ascend_forward_context.MoECommType.ALLGATHER
+            if not selection_logged:
+                logger.warning(
+                    "VIME forced a vLLM-Ascend MoE forward from %s to %s "
+                    "(num_tokens=%s, is_draft_model=%s)",
+                    selected,
+                    forced,
+                    num_tokens,
+                    is_draft_model,
+                )
+                selection_logged = True
+            return forced
+
+        _select_allgather._vime_force_allgather_patched = True
+        patched_aliases = []
+        for module_name, module in tuple(sys.modules.items()):
+            if not module_name.startswith("vllm_ascend."):
+                continue
+            if getattr(module, "select_moe_comm_method", None) is original_selector:
+                module.select_moe_comm_method = _select_allgather
+                patched_aliases.append(module_name)
+        logger.warning(
+            "VIME diagnostic override enabled: forcing vLLM-Ascend MoE communication "
+            "method to MoECommType.ALLGATHER; patched selector aliases in %s",
+            patched_aliases,
+        )
 
     @staticmethod
     def _patch_npu_ipc_receiver() -> None:

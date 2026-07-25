@@ -178,6 +178,14 @@ def test_build_vllm_subprocess_env_no_batch_invariant_by_default(vllm_args, monk
 
 
 @pytest.mark.unit
+def test_build_vllm_subprocess_env_forces_moe_allgather(vllm_args, monkeypatch):
+    monkeypatch.delenv("VIME_FORCE_VLLM_MOE_ALLGATHER", raising=False)
+    vllm_args.force_vllm_moe_allgather = True
+    env = mod.build_vllm_subprocess_env({"args": vllm_args, "visible_devices": "0"})
+    assert env["VIME_FORCE_VLLM_MOE_ALLGATHER"] == "1"
+
+
+@pytest.mark.unit
 def test_build_vllm_subprocess_env_enables_weight_probe(vllm_args, monkeypatch):
     monkeypatch.delenv("VIME_DEBUG_WEIGHT_UPDATE", raising=False)
     vllm_args.check_weight_update_equal = True

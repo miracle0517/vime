@@ -178,6 +178,16 @@ def add_vllm_arguments(parser):
         ),
     )
     parser.add_argument(
+        "--force-vllm-moe-allgather",
+        action="store_true",
+        default=False,
+        help=(
+            "Diagnostic NPU-only override: force every vLLM-Ascend MoE forward "
+            "that selected a communication method to use ALLGATHER. The rollout "
+            "engine must be restarted for this option to take effect."
+        ),
+    )
+    parser.add_argument(
         "--vllm-tool-call-parser",
         dest="vllm_tool_call_parser",
         type=str,
