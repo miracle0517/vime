@@ -725,8 +725,7 @@ class _VLLMHijack:
             forced = ascend_forward_context.MoECommType.ALLGATHER
             if not selection_logged:
                 logger.warning(
-                    "VIME forced a vLLM-Ascend MoE forward from %s to %s "
-                    "(num_tokens=%s, is_draft_model=%s)",
+                    "VIME forced a vLLM-Ascend MoE forward from %s to %s " "(num_tokens=%s, is_draft_model=%s)",
                     selected,
                     forced,
                     num_tokens,

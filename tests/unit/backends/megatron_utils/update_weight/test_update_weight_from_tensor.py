@@ -340,8 +340,8 @@ def test_moe_comm_selector_can_force_allgather(upw_vllm, monkeypatch):
     root_mod.__path__ = []
     ascend_context = types.ModuleType("vllm_ascend.ascend_forward_context")
     ascend_context.MoECommType = types.SimpleNamespace(ALLGATHER="allgather")
-    ascend_context.select_moe_comm_method = (
-        lambda num_tokens, vllm_config, is_draft_model=False: None if vllm_config is None else "mc2"
+    ascend_context.select_moe_comm_method = lambda num_tokens, vllm_config, is_draft_model=False: (
+        None if vllm_config is None else "mc2"
     )
     model_runner = types.ModuleType("vllm_ascend.worker.model_runner_v1")
     model_runner.select_moe_comm_method = ascend_context.select_moe_comm_method
