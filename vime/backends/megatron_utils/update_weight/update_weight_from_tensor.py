@@ -375,7 +375,7 @@ class _VLLMHijack:
                 dist.all_gather(
                     gathered_input_splits,
                     input_splits_device,
-                    group=self.ep_group.device_group,
+                    group=self.ep_group,
                 )
                 input_split_matrix = torch.stack(gathered_input_splits).to(device="cpu")
                 expected_output_splits = input_split_matrix[:, self.ep_rank]
@@ -397,6 +397,7 @@ class _VLLMHijack:
                     ),
                     "negative_split_count": int(((input_splits_cpu < 0).sum() + (output_splits_cpu < 0).sum()).item()),
                 }
+                self._vime_alltoall_split_probe = split_probe
                 logger.warning(
                     "VIME_MOE_ALLTOALL_SPLIT_PROBE ep_rank=%s split=%s input_split_matrix=%s",
                     self.ep_rank,
@@ -405,6 +406,7 @@ class _VLLMHijack:
                 )
             except Exception:
                 logger.exception("VIME_MOE_ALLTOALL_SPLIT_PROBE failed to validate split metadata")
+                self._vime_alltoall_split_probe = {"split_probe_error": True}
 
             try:
                 actual_mapping = result[1].detach().to(device="cpu", dtype=torch.int64)
@@ -486,9 +488,10 @@ class _VLLMHijack:
                     if row < actual_cpu.shape[0]
                 ]
                 mapping_probe = getattr(self, "_vime_unpermute_mapping_probe", {})
+                split_probe = getattr(self, "_vime_alltoall_split_probe", {})
                 logger.warning(
                     "VIME_MOE_UNPERMUTE_PROBE "
-                    "ep_rank=%s input_shape=%s output_shape=%s mapping=%s "
+                    "ep_rank=%s input_shape=%s output_shape=%s mapping=%s split=%s "
                     "max_abs_diff=%s mean_abs_diff=%s max_rel_diff=%s "
                     "mismatch_count=%s scatter_max_abs_diff=%s "
                     "scatter_mean_abs_diff=%s worst_row=%s row_samples=%s",
@@ -496,6 +499,7 @@ class _VLLMHijack:
                     tuple(permuted_cpu.shape),
                     tuple(actual_cpu.shape),
                     mapping_probe,
+                    split_probe,
                     float(abs_diff.max().item()) if abs_diff.numel() else 0.0,
                     float(abs_diff.mean().item()) if abs_diff.numel() else 0.0,
                     float(rel_diff.max().item()) if rel_diff.numel() else 0.0,
