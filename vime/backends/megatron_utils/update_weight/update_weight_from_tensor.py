@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
@@ -288,53 +287,64 @@ class _VLLMHijack:
         NPUWorker._npu_worker_patched = True
 
     @staticmethod
-    def _patch_a3_moe_comm_selector() -> None:
-        """Force ALLGATHER for colocated MoE forwards on Ascend A3 (910C)."""
+    def _patch_a3_moe_alltoall_padding() -> None:
+        """Fix uneven TP token splits in the Ascend A3 MoE ALLTOALL path."""
         from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type
 
         if get_ascend_device_type() != AscendDeviceType.A3:
             return
 
-        import vllm_ascend.ascend_forward_context as ascend_forward_context
+        from vllm_ascend.ops.fused_moe.prepare_finalize import MoEPrepareOutput, PrepareAndFinalizeWithAll2All
 
-        original_selector = ascend_forward_context.select_moe_comm_method
-        if getattr(original_selector, "_vime_a3_moe_allgather_patched", False):
+        if getattr(PrepareAndFinalizeWithAll2All, "_vime_alltoall_padding_patched", False):
             return
 
-        forced_moe_logged = False
+        def _patched_prepare(
+            self,
+            hidden_states,
+            router_logits,
+            enable_shared_expert_dp=False,
+            replace_allreduce=False,
+            quant_type=None,
+        ):
+            self.replace_allreduce = replace_allreduce
+            self.enable_shared_expert_dp = enable_shared_expert_dp
 
-        def _select_allgather(num_tokens, vllm_config, is_draft_model=False):
-            nonlocal forced_moe_logged
-            native_moe_comm = original_selector(num_tokens, vllm_config, is_draft_model)
-            # The native selector returns None for non-MoE models. Keep that
-            # result unchanged so A3 colocated dense models are unaffected.
-            if native_moe_comm is None:
-                return None
-            if not forced_moe_logged:
-                logger.warning(
-                    "Colocated Ascend A3 MoE detected: forcing vLLM-Ascend communication "
-                    "from %s to MoECommType.ALLGATHER",
-                    native_moe_comm,
-                )
-                forced_moe_logged = True
-            return ascend_forward_context.MoECommType.ALLGATHER
+            padded_hidden_states_shape = hidden_states.shape
+            if not (self.replace_allreduce or self.enable_shared_expert_dp):
+                self.num_tokens, _ = hidden_states.shape
+                pad_size = (-self.num_tokens) % self.tp_size
+                if pad_size > 0:
+                    hidden_states = torch.nn.functional.pad(hidden_states, (0, 0, 0, pad_size))
+                    router_logits = torch.nn.functional.pad(router_logits, (0, 0, 0, pad_size))
+                    padded_hidden_states_shape = hidden_states.shape
 
-        _select_allgather._vime_a3_moe_allgather_patched = True
+                if self.tp_size > 1:
+                    hidden_states = torch.tensor_split(hidden_states, self.tp_size, dim=0)[self.tp_rank]
+                    router_logits = torch.tensor_split(router_logits, self.tp_size, dim=0)[self.tp_rank]
 
-        # model_runner_v1 imports the selector directly, so replacing only the
-        # defining module would leave its already-bound alias unchanged.
-        patched_modules = []
-        for module_name, module in tuple(sys.modules.items()):
-            if not module_name.startswith("vllm_ascend."):
-                continue
-            if getattr(module, "select_moe_comm_method", None) is original_selector:
-                module.select_moe_comm_method = _select_allgather
-                patched_modules.append(module_name)
+            return MoEPrepareOutput(
+                hidden_states=hidden_states,
+                router_logits=router_logits,
+                mc2_mask=None,
+                padded_hidden_states_shape=padded_hidden_states_shape,
+                pertoken_scale=None,
+            )
 
-        logger.info(
-            "Colocated Ascend A3 detected: installed automatic MoE ALLGATHER selector in %s",
-            patched_modules,
-        )
+        def _patched_pad_and_split_input_ids(self, input_ids):
+            if not (self.replace_allreduce or self.enable_shared_expert_dp):
+                pad_size = (-self.num_tokens) % self.tp_size
+                if pad_size > 0:
+                    input_ids = torch.nn.functional.pad(input_ids, (0, pad_size))
+
+                if self.tp_size > 1:
+                    input_ids = torch.tensor_split(input_ids, self.tp_size, dim=0)[self.tp_rank]
+            return input_ids
+
+        PrepareAndFinalizeWithAll2All.prepare = _patched_prepare
+        PrepareAndFinalizeWithAll2All.pad_and_split_input_ids = _patched_pad_and_split_input_ids
+        PrepareAndFinalizeWithAll2All._vime_alltoall_padding_patched = True
+        logger.info("Colocated Ascend A3 detected: installed MoE ALLTOALL TP padding fix")
 
     @staticmethod
     def _patch_one_worker(worker_cls: type) -> None:
@@ -431,7 +441,7 @@ class vLLMColocateWorkerExtension:
 
     def __new__(cls, **kwargs):
         if is_npu():
-            _VLLMHijack._patch_a3_moe_comm_selector()
+            _VLLMHijack._patch_a3_moe_alltoall_padding()
             _VLLMHijack._patch_npu_worker()
             _VLLMHijack._patch_npu_rotary_emb()
         return super().__new__(cls)
