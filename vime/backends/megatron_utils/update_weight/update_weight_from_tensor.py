@@ -368,6 +368,45 @@ class _VLLMHijack:
                 return result
 
             try:
+                input_splits_cpu = torch.as_tensor(result[3], dtype=torch.int64)
+                output_splits_cpu = torch.as_tensor(result[4], dtype=torch.int64)
+                input_splits_device = input_splits_cpu.to(device=topk_ids.device)
+                gathered_input_splits = [torch.empty_like(input_splits_device) for _ in range(self.ep_size)]
+                dist.all_gather(
+                    gathered_input_splits,
+                    input_splits_device,
+                    group=self.ep_group.device_group,
+                )
+                input_split_matrix = torch.stack(gathered_input_splits).to(device="cpu")
+                expected_output_splits = input_split_matrix[:, self.ep_rank]
+                output_split_diff = output_splits_cpu != expected_output_splits
+                tokens_per_expert_sum = int(result[2].detach().to(device="cpu", dtype=torch.int64).sum().item())
+                split_probe = {
+                    "input_splits": input_splits_cpu.tolist(),
+                    "output_splits": output_splits_cpu.tolist(),
+                    "expected_output_splits": expected_output_splits.tolist(),
+                    "input_sum": int(input_splits_cpu.sum().item()),
+                    "expected_input_sum": topk_ids.numel(),
+                    "output_sum": int(output_splits_cpu.sum().item()),
+                    "tokens_per_expert_sum": tokens_per_expert_sum,
+                    "transpose_mismatch_count": int(output_split_diff.sum().item()),
+                    "transpose_first_mismatch": (
+                        int(torch.nonzero(output_split_diff, as_tuple=False)[0].item())
+                        if output_split_diff.any()
+                        else None
+                    ),
+                    "negative_split_count": int(((input_splits_cpu < 0).sum() + (output_splits_cpu < 0).sum()).item()),
+                }
+                logger.warning(
+                    "VIME_MOE_ALLTOALL_SPLIT_PROBE ep_rank=%s split=%s input_split_matrix=%s",
+                    self.ep_rank,
+                    split_probe,
+                    input_split_matrix.tolist(),
+                )
+            except Exception:
+                logger.exception("VIME_MOE_ALLTOALL_SPLIT_PROBE failed to validate split metadata")
+
+            try:
                 actual_mapping = result[1].detach().to(device="cpu", dtype=torch.int64)
                 flat_topk_ids = topk_ids.detach().to(device="cpu", dtype=torch.int64).reshape(-1)
                 sorted_indices = torch.argsort(flat_topk_ids, stable=True)
@@ -387,13 +426,19 @@ class _VLLMHijack:
             return result
 
         def _patched_combine_postprocess(self, permutated_local_input_tokens, combine_metadata):
+            probe_pending = getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False)
+            # Preserve the exact operator input before calling unpermute. This
+            # avoids a false comparison if the backend reuses or aliases the
+            # input storage while producing the output.
+            probe_input = permutated_local_input_tokens.detach().clone() if probe_pending else None
             output = original_combine_postprocess(self, permutated_local_input_tokens, combine_metadata)
-            if not getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False):
+            if not probe_pending:
                 return output
 
             TokenDispatcherWithAll2AllV._vime_unpermute_probe_pending = False
             try:
-                permuted_cpu = permutated_local_input_tokens.detach().to(device="cpu", dtype=torch.float32)
+                assert probe_input is not None
+                permuted_cpu = probe_input.to(device="cpu", dtype=torch.float32)
                 sorted_indices_cpu = (
                     combine_metadata.reversed_local_input_permutation_mapping.detach()
                     .to(device="cpu", dtype=torch.int64)
@@ -402,16 +447,29 @@ class _VLLMHijack:
                 probs_cpu = combine_metadata.topk_weights.detach().to(device="cpu", dtype=torch.float32)
                 actual_cpu = output.detach().to(device="cpu", dtype=torch.float32).reshape(-1, output.shape[-1])
 
-                expanded_reference = torch.zeros(
-                    (probs_cpu.numel(), permuted_cpu.shape[-1]),
-                    dtype=torch.float32,
-                )
-                expanded_reference.index_copy_(0, sorted_indices_cpu, permuted_cpu)
+                # npu_moe_token_permute returns the inverse permutation
+                # (argsort(argsort(flat_topk_ids))). Restore the expanded token
+                # order by gathering from the permuted tensor with that inverse.
+                expanded_reference = permuted_cpu.index_select(0, sorted_indices_cpu)
                 reference_cpu = (
                     expanded_reference.reshape(probs_cpu.shape[0], probs_cpu.shape[1], -1) * probs_cpu.unsqueeze(-1)
                 ).sum(dim=1)
 
+                # Keep the previous scatter interpretation in the log so a
+                # single run can distinguish an inverse-mapping interpretation
+                # error from an actual NPU unpermute error.
+                scatter_expanded_reference = torch.zeros(
+                    (probs_cpu.numel(), permuted_cpu.shape[-1]),
+                    dtype=torch.float32,
+                )
+                scatter_expanded_reference.index_copy_(0, sorted_indices_cpu, permuted_cpu)
+                scatter_reference_cpu = (
+                    scatter_expanded_reference.reshape(probs_cpu.shape[0], probs_cpu.shape[1], -1)
+                    * probs_cpu.unsqueeze(-1)
+                ).sum(dim=1)
+
                 abs_diff = (actual_cpu - reference_cpu).abs()
+                scatter_abs_diff = (actual_cpu - scatter_reference_cpu).abs()
                 rel_diff = abs_diff / reference_cpu.abs().clamp_min(1e-6)
                 mismatch = abs_diff > (1e-2 + 1e-2 * reference_cpu.abs())
                 row_max_abs_diff = abs_diff.amax(dim=1)
@@ -432,7 +490,8 @@ class _VLLMHijack:
                     "VIME_MOE_UNPERMUTE_PROBE "
                     "ep_rank=%s input_shape=%s output_shape=%s mapping=%s "
                     "max_abs_diff=%s mean_abs_diff=%s max_rel_diff=%s "
-                    "mismatch_count=%s worst_row=%s row_samples=%s",
+                    "mismatch_count=%s scatter_max_abs_diff=%s "
+                    "scatter_mean_abs_diff=%s worst_row=%s row_samples=%s",
                     self.ep_rank,
                     tuple(permuted_cpu.shape),
                     tuple(actual_cpu.shape),
@@ -441,6 +500,8 @@ class _VLLMHijack:
                     float(abs_diff.mean().item()) if abs_diff.numel() else 0.0,
                     float(rel_diff.max().item()) if rel_diff.numel() else 0.0,
                     int(mismatch.sum().item()),
+                    float(scatter_abs_diff.max().item()) if scatter_abs_diff.numel() else 0.0,
+                    float(scatter_abs_diff.mean().item()) if scatter_abs_diff.numel() else 0.0,
                     worst_row,
                     row_samples,
                 )
