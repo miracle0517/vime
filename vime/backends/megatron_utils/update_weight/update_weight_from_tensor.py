@@ -347,6 +347,115 @@ class _VLLMHijack:
         logger.info("Colocated Ascend A3 detected: installed MoE ALLTOALL TP padding fix")
 
     @staticmethod
+    def _patch_a3_moe_unpermute_probe() -> None:
+        """Validate the final ALLTOALL token unpermute against a CPU reference."""
+        from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type
+
+        if get_ascend_device_type() != AscendDeviceType.A3:
+            return
+
+        from vllm_ascend.ops.fused_moe.token_dispatcher import TokenDispatcherWithAll2AllV
+
+        if getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_patched", False):
+            return
+
+        original_dispatch_preprocess = TokenDispatcherWithAll2AllV._dispatch_preprocess
+        original_combine_postprocess = TokenDispatcherWithAll2AllV._combine_postprocess
+
+        def _patched_dispatch_preprocess(self, hidden_states, topk_ids):
+            result = original_dispatch_preprocess(self, hidden_states, topk_ids)
+            if not getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False):
+                return result
+
+            try:
+                actual_mapping = result[1].detach().to(device="cpu", dtype=torch.int64)
+                flat_topk_ids = topk_ids.detach().to(device="cpu", dtype=torch.int64).reshape(-1)
+                sorted_indices = torch.argsort(flat_topk_ids, stable=True)
+                expected_mapping = torch.argsort(sorted_indices, stable=True)
+                mapping_diff = actual_mapping != expected_mapping
+                self._vime_unpermute_mapping_probe = {
+                    "mapping_numel": actual_mapping.numel(),
+                    "mapping_mismatch_count": int(mapping_diff.sum().item()),
+                    "mapping_first_mismatch": (
+                        int(torch.nonzero(mapping_diff, as_tuple=False)[0].item()) if mapping_diff.any() else None
+                    ),
+                }
+            except Exception:
+                logger.exception("VIME_MOE_UNPERMUTE_PROBE failed to validate the local permutation mapping")
+                self._vime_unpermute_mapping_probe = {"mapping_probe_error": True}
+
+            return result
+
+        def _patched_combine_postprocess(self, permutated_local_input_tokens, combine_metadata):
+            output = original_combine_postprocess(self, permutated_local_input_tokens, combine_metadata)
+            if not getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False):
+                return output
+
+            TokenDispatcherWithAll2AllV._vime_unpermute_probe_pending = False
+            try:
+                permuted_cpu = permutated_local_input_tokens.detach().to(device="cpu", dtype=torch.float32)
+                sorted_indices_cpu = (
+                    combine_metadata.reversed_local_input_permutation_mapping.detach()
+                    .to(device="cpu", dtype=torch.int64)
+                    .reshape(-1)
+                )
+                probs_cpu = combine_metadata.topk_weights.detach().to(device="cpu", dtype=torch.float32)
+                actual_cpu = output.detach().to(device="cpu", dtype=torch.float32).reshape(-1, output.shape[-1])
+
+                expanded_reference = torch.zeros(
+                    (probs_cpu.numel(), permuted_cpu.shape[-1]),
+                    dtype=torch.float32,
+                )
+                expanded_reference.index_copy_(0, sorted_indices_cpu, permuted_cpu)
+                reference_cpu = (
+                    expanded_reference.reshape(probs_cpu.shape[0], probs_cpu.shape[1], -1) * probs_cpu.unsqueeze(-1)
+                ).sum(dim=1)
+
+                abs_diff = (actual_cpu - reference_cpu).abs()
+                rel_diff = abs_diff / reference_cpu.abs().clamp_min(1e-6)
+                mismatch = abs_diff > (1e-2 + 1e-2 * reference_cpu.abs())
+                row_max_abs_diff = abs_diff.amax(dim=1)
+                worst_row = int(row_max_abs_diff.argmax().item()) if row_max_abs_diff.numel() else None
+                sample_rows = sorted({0, max(actual_cpu.shape[0] // 2, 0), max(actual_cpu.shape[0] - 1, 0)})
+                row_samples = [
+                    {
+                        "row": row,
+                        "max_abs_diff": float(row_max_abs_diff[row].item()),
+                        "actual": actual_cpu[row, :4].tolist(),
+                        "reference": reference_cpu[row, :4].tolist(),
+                    }
+                    for row in sample_rows
+                    if row < actual_cpu.shape[0]
+                ]
+                mapping_probe = getattr(self, "_vime_unpermute_mapping_probe", {})
+                logger.warning(
+                    "VIME_MOE_UNPERMUTE_PROBE "
+                    "ep_rank=%s input_shape=%s output_shape=%s mapping=%s "
+                    "max_abs_diff=%s mean_abs_diff=%s max_rel_diff=%s "
+                    "mismatch_count=%s worst_row=%s row_samples=%s",
+                    self.ep_rank,
+                    tuple(permuted_cpu.shape),
+                    tuple(actual_cpu.shape),
+                    mapping_probe,
+                    float(abs_diff.max().item()) if abs_diff.numel() else 0.0,
+                    float(abs_diff.mean().item()) if abs_diff.numel() else 0.0,
+                    float(rel_diff.max().item()) if rel_diff.numel() else 0.0,
+                    int(mismatch.sum().item()),
+                    worst_row,
+                    row_samples,
+                )
+            except Exception:
+                logger.exception("VIME_MOE_UNPERMUTE_PROBE failed to compare the final unpermute output")
+
+            return output
+
+        TokenDispatcherWithAll2AllV._dispatch_preprocess = _patched_dispatch_preprocess
+        TokenDispatcherWithAll2AllV._combine_postprocess = _patched_combine_postprocess
+        TokenDispatcherWithAll2AllV._vime_unpermute_probe_pending = False
+        TokenDispatcherWithAll2AllV._vime_unpermute_probe_patched = True
+        logger.info("Colocated Ascend A3 detected: installed MoE ALLTOALL unpermute probe")
+
+    @staticmethod
     def _patch_one_worker(worker_cls: type) -> None:
         import inspect
 
@@ -371,6 +480,13 @@ class _VLLMHijack:
             self, is_checkpoint_format: bool = True, _orig=_orig_start_weight_update
         ) -> None:
             _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
+            try:
+                from vllm_ascend.ops.fused_moe.token_dispatcher import TokenDispatcherWithAll2AllV
+
+                if getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_patched", False):
+                    TokenDispatcherWithAll2AllV._vime_unpermute_probe_pending = True
+            except ImportError:
+                pass
             _orig(self, is_checkpoint_format=is_checkpoint_format)
 
         def _patched_wake_up(self, tags=None, _orig=_orig_wake_up) -> None:
@@ -442,6 +558,7 @@ class vLLMColocateWorkerExtension:
     def __new__(cls, **kwargs):
         if is_npu():
             _VLLMHijack._patch_a3_moe_alltoall_padding()
+            _VLLMHijack._patch_a3_moe_unpermute_probe()
             _VLLMHijack._patch_npu_worker()
             _VLLMHijack._patch_npu_rotary_emb()
         return super().__new__(cls)
