@@ -113,7 +113,7 @@ def _analyze_report(report: dict) -> tuple[list[str], list[str]]:
     elif expert_assignment.get("invalid_expert_id_count") != 0:
         errors.append(f"{prefix}: ALLTOALL returned invalid local expert IDs")
     if expert_assignment.get("expert_count_mismatch_count", 0) not in (None, 0):
-        errors.append(
+        warnings.append(
             f"{prefix}: ALLTOALL local expert IDs disagree with grouped matmul expert counts; "
             f"{_count_mismatch_summary(expert_assignment)}"
         )
@@ -122,6 +122,18 @@ def _analyze_report(report: dict) -> tuple[list[str], list[str]]:
     roundtrip = stages.get("second_permute_roundtrip", {})
     if roundtrip.get("mismatch_count", 0) != 0:
         errors.append(f"{prefix}: second expert-local permutation roundtrip mismatch")
+
+    expert_order = stages.get("second_permute_expert_order", {})
+    if expert_order.get("probe_error"):
+        errors.append(f"{prefix}: second expert-local permutation order probe failed")
+    elif expert_order.get("mismatch_count", 0) != 0:
+        errors.append(
+            f"{prefix}: second permutation did not group rows in local expert order; "
+            f"mismatches={expert_order.get('mismatch_count')} "
+            f"first={expert_order.get('first_mismatch')} "
+            f"run_count={expert_order.get('run_count')} "
+            f"expert_runs_head={expert_order.get('expert_runs_head')}"
+        )
 
     alltoall1_output = stages.get("alltoall1_output")
     gmm_input = stages.get("gmm_input")

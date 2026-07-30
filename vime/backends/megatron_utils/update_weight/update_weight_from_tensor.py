@@ -478,16 +478,6 @@ class _VLLMHijack:
 
         def _patched_dispatch_preprocess(self, hidden_states, topk_ids):
             result = original_dispatch_preprocess(self, hidden_states, topk_ids)
-            local_expert_ids = result[5]
-            if local_expert_ids is not None:
-                tokens_per_expert = torch.histc(
-                    local_expert_ids,
-                    bins=self.num_local_experts,
-                    min=0,
-                    max=self.num_local_experts,
-                ).to(device=result[2].device, dtype=result[2].dtype)
-                result = (*result[:2], tokens_per_expert, *result[3:])
-
             if not getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False):
                 return result
 
@@ -620,6 +610,7 @@ class _VLLMHijack:
                         "actual_counts": actual_counts.tolist(),
                         "expected_counts": expected_counts.tolist(),
                     }
+                    self._vime_local_expert_ids = local_expert_ids
                 except Exception:
                     logger.exception("VIME_MOE_EXPERT_ASSIGNMENT_PROBE failed")
                     self._vime_expert_assignment_probe = {"probe_error": True}
@@ -657,6 +648,7 @@ class _VLLMHijack:
             self._vime_moe_stage_probe["gmm_input"] = _row_stats(result[0])
             if result[2] is None:
                 self._vime_moe_stage_probe["second_permute_roundtrip"] = {"skipped": True}
+                self._vime_moe_stage_probe["second_permute_expert_order"] = {"skipped": True}
             else:
                 assert original_tokens is not None
                 restored_tokens = torch_npu.npu_moe_token_unpermute(result[0], result[2])
@@ -665,6 +657,31 @@ class _VLLMHijack:
                     "max_abs_diff": float(roundtrip_diff.max().item()),
                     "mismatch_count": int(torch.count_nonzero(restored_tokens != original_tokens).item()),
                 }
+                try:
+                    local_expert_ids = self._vime_local_expert_ids
+                    reverse_mapping = result[2].detach().to(device="cpu", dtype=torch.int64).reshape(-1)
+                    permuted_expert_ids = torch.empty_like(local_expert_ids)
+                    permuted_expert_ids.scatter_(0, reverse_mapping, local_expert_ids)
+                    counts = torch.bincount(local_expert_ids, minlength=self.num_local_experts)
+                    expected_expert_ids = torch.repeat_interleave(
+                        torch.arange(self.num_local_experts, dtype=torch.int64),
+                        counts,
+                    )
+                    expert_order_diff = permuted_expert_ids != expected_expert_ids
+                    expert_runs = torch.unique_consecutive(permuted_expert_ids)
+                    self._vime_moe_stage_probe["second_permute_expert_order"] = {
+                        "mismatch_count": int(expert_order_diff.sum().item()),
+                        "first_mismatch": (
+                            int(torch.nonzero(expert_order_diff, as_tuple=False)[0].item())
+                            if expert_order_diff.any()
+                            else None
+                        ),
+                        "run_count": expert_runs.numel(),
+                        "expert_runs_head": expert_runs[:64].tolist(),
+                    }
+                except Exception:
+                    logger.exception("VIME_MOE_SECOND_PERMUTE_ORDER_PROBE failed")
+                    self._vime_moe_stage_probe["second_permute_expert_order"] = {"probe_error": True}
             return result
 
         def _patched_combine_preprocess(self, hidden_states, combine_metadata):
