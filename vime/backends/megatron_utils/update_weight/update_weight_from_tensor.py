@@ -478,6 +478,7 @@ class _VLLMHijack:
 
         def _patched_dispatch_preprocess(self, hidden_states, topk_ids):
             result = original_dispatch_preprocess(self, hidden_states, topk_ids)
+            self._vime_tokens_per_expert_tensor = result[2]
             if not getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False):
                 return result
 
@@ -583,6 +584,16 @@ class _VLLMHijack:
             with_quant,
         ):
             probe_pending = getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False)
+            if global_input_tokens_local_experts_indices is not None:
+                tokens_per_expert = self._vime_tokens_per_expert_tensor
+                corrected_counts = torch.histc(
+                    global_input_tokens_local_experts_indices,
+                    bins=self.num_local_experts,
+                    min=0,
+                    max=self.num_local_experts,
+                ).to(device=tokens_per_expert.device, dtype=tokens_per_expert.dtype)
+                tokens_per_expert.copy_(corrected_counts)
+
             original_tokens = global_input_tokens.detach().clone() if probe_pending else None
             if probe_pending:
                 self._vime_moe_stage_probe["alltoall1_output"] = _row_stats(global_input_tokens)
@@ -600,7 +611,7 @@ class _VLLMHijack:
                         if invalid_count == 0
                         else torch.empty(0, dtype=torch.int64)
                     )
-                    expected_counts = self._vime_tokens_per_expert
+                    expected_counts = tokens_per_expert.detach().to(device="cpu", dtype=torch.int64)
                     self._vime_expert_assignment_probe = {
                         "rows": local_expert_ids.numel(),
                         "invalid_expert_id_count": invalid_count,
@@ -793,7 +804,7 @@ class _VLLMHijack:
         TokenDispatcherWithAll2AllV._combine_postprocess = _patched_combine_postprocess
         TokenDispatcherWithAll2AllV._vime_unpermute_probe_pending = False
         TokenDispatcherWithAll2AllV._vime_unpermute_probe_patched = True
-        logger.info("Colocated Ascend A3 detected: installed MoE ALLTOALL unpermute probe")
+        logger.info("Colocated Ascend A3 detected: installed MoE ALLTOALL expert-count storage fix and probes")
 
     @staticmethod
     def _patch_one_worker(worker_cls: type) -> None:
