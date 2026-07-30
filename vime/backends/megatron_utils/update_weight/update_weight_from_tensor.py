@@ -587,9 +587,11 @@ class _VLLMHijack:
             if probe_pending:
                 self._vime_moe_stage_probe["alltoall1_output"] = _row_stats(global_input_tokens)
                 try:
-                    local_expert_ids = global_input_tokens_local_experts_indices.detach().to(
-                        device="cpu", dtype=torch.int64
-                    ).reshape(-1)
+                    local_expert_ids = (
+                        global_input_tokens_local_experts_indices.detach()
+                        .to(device="cpu", dtype=torch.int64)
+                        .reshape(-1)
+                    )
                     invalid_count = int(
                         ((local_expert_ids < 0) | (local_expert_ids >= self.num_local_experts)).sum().item()
                     )

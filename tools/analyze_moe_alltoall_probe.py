@@ -21,6 +21,30 @@ def _same_reordering_stats(left: dict, right: dict) -> bool:
     )
 
 
+def _count_mismatch_summary(expert_assignment: dict) -> str:
+    actual = expert_assignment.get("actual_counts", [])
+    expected = expert_assignment.get("expected_counts", [])
+    mismatch_indices = [
+        index
+        for index, (actual_count, expected_count) in enumerate(zip(actual, expected))
+        if actual_count != expected_count
+    ]
+    cumulative_as_counts = [
+        expected[index] - (expected[index - 1] if index else 0) for index in range(len(expected))
+    ]
+    relation = "different_values"
+    if len(actual) != len(expected):
+        relation = "different_lengths"
+    elif actual == cumulative_as_counts:
+        relation = "expected_is_cumulative"
+    elif sorted(actual) == sorted(expected):
+        relation = "expert_order_permutation"
+    return (
+        f"relation={relation} actual_sum={sum(actual)} expected_sum={sum(expected)} "
+        f"mismatch_indices={mismatch_indices} actual_counts={actual} expected_counts={expected}"
+    )
+
+
 def _load_reports(paths: list[Path]) -> tuple[list[dict], list[str]]:
     reports = []
     parse_errors = []
@@ -89,7 +113,10 @@ def _analyze_report(report: dict) -> tuple[list[str], list[str]]:
     elif expert_assignment.get("invalid_expert_id_count") != 0:
         errors.append(f"{prefix}: ALLTOALL returned invalid local expert IDs")
     if expert_assignment.get("expert_count_mismatch_count", 0) not in (None, 0):
-        errors.append(f"{prefix}: ALLTOALL local expert IDs disagree with grouped matmul expert counts")
+        errors.append(
+            f"{prefix}: ALLTOALL local expert IDs disagree with grouped matmul expert counts; "
+            f"{_count_mismatch_summary(expert_assignment)}"
+        )
 
     stages = report.get("stages", {})
     roundtrip = stages.get("second_permute_roundtrip", {})
