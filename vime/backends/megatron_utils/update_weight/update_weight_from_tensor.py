@@ -4,6 +4,8 @@ Colocated vLLM weight sync using native IPC transfer engines.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 from argparse import Namespace
@@ -359,13 +361,66 @@ class _VLLMHijack:
         if getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_patched", False):
             return
 
+        import torch_npu
+
         original_dispatch_preprocess = TokenDispatcherWithAll2AllV._dispatch_preprocess
+        original_dispatch_postprocess = TokenDispatcherWithAll2AllV._dispatch_postprocess
+        original_combine_preprocess = TokenDispatcherWithAll2AllV._combine_preprocess
         original_combine_postprocess = TokenDispatcherWithAll2AllV._combine_postprocess
+
+        def _row_stats(tensor):
+            rows = tensor.detach().reshape(-1, tensor.shape[-1])
+            sampled = torch.round(rows[:, :64].float() * 4096).to(torch.int32).cpu()
+            _, counts = torch.unique(sampled, dim=0, return_counts=True)
+            norms = torch.linalg.vector_norm(rows.float(), dim=1).cpu()
+            return {
+                "rows": rows.shape[0],
+                "unique": counts.numel(),
+                "duplicate_rows": rows.shape[0] - counts.numel(),
+                "max_duplicate_group": int(counts.max().item()) if counts.numel() else 0,
+                "norm_min": float(norms.min().item()) if norms.numel() else 0.0,
+                "norm_max": float(norms.max().item()) if norms.numel() else 0.0,
+                "norm_mean": float(norms.mean().item()) if norms.numel() else 0.0,
+            }
+
+        def _buffer_info(tensor):
+            storage = tensor.untyped_storage()
+            return {
+                "data_ptr": tensor.data_ptr(),
+                "storage_data_ptr": storage.data_ptr(),
+                "storage_nbytes": storage.nbytes(),
+                "tensor_nbytes": tensor.numel() * tensor.element_size(),
+                "storage_offset": tensor.storage_offset(),
+                "stride": list(tensor.stride()),
+                "contiguous": tensor.is_contiguous(),
+            }
+
+        def _chunk_hashes(tensor, splits):
+            tensor_cpu = tensor.detach().contiguous().to(device="cpu")
+            hashes = []
+            offset = 0
+            for size in splits:
+                size = int(size)
+                chunk = tensor_cpu.narrow(0, offset, size).contiguous()
+                hashes.append(hashlib.sha256(chunk.view(torch.uint8).numpy().tobytes()).hexdigest())
+                offset += size
+            return hashes
 
         def _patched_dispatch_preprocess(self, hidden_states, topk_ids):
             result = original_dispatch_preprocess(self, hidden_states, topk_ids)
             if not getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False):
                 return result
+
+            topk_cpu = topk_ids.detach().to(device="cpu", dtype=torch.int64)
+            expert_counts = torch.bincount(topk_cpu.reshape(-1))
+            top_experts = torch.topk(expert_counts, min(5, expert_counts.numel()))
+            self._vime_moe_stage_probe = {
+                "moe_input": _row_stats(hidden_states),
+                "routing": {
+                    "unique_patterns": torch.unique(topk_cpu, dim=0).shape[0],
+                    "top_experts": torch.stack((top_experts.indices, top_experts.values), dim=1).tolist(),
+                },
+            }
 
             try:
                 input_splits_cpu = torch.as_tensor(result[3], dtype=torch.int64)
@@ -398,6 +453,26 @@ class _VLLMHijack:
                     "negative_split_count": int(((input_splits_cpu < 0).sum() + (output_splits_cpu < 0).sum()).item()),
                 }
                 self._vime_alltoall_split_probe = split_probe
+
+                send_hashes = _chunk_hashes(result[0], input_splits_cpu.tolist())
+                send_hash_bytes = torch.tensor(
+                    [list(bytes.fromhex(value)) for value in send_hashes],
+                    dtype=torch.uint8,
+                    device=topk_ids.device,
+                )
+                gathered_send_hashes = [torch.empty_like(send_hash_bytes) for _ in range(self.ep_size)]
+                dist.all_gather(gathered_send_hashes, send_hash_bytes, group=self.ep_group)
+                send_hash_matrix = torch.stack(gathered_send_hashes).to(device="cpu")
+                expected_recv_hashes = [
+                    bytes(send_hash_matrix[src_rank, self.ep_rank].tolist()).hex() for src_rank in range(self.ep_size)
+                ]
+                self._vime_alltoall1_output_splits = output_splits_cpu.tolist()
+                self._vime_alltoall1_send_tensor = result[0]
+                self._vime_alltoall1_payload_probe = {
+                    "send_hashes": send_hashes,
+                    "expected_recv_hashes": expected_recv_hashes,
+                    "send_buffer": _buffer_info(result[0]),
+                }
                 logger.warning(
                     "VIME_MOE_ALLTOALL_SPLIT_PROBE ep_rank=%s split=%s input_split_matrix=%s",
                     self.ep_rank,
@@ -407,6 +482,7 @@ class _VLLMHijack:
             except Exception:
                 logger.exception("VIME_MOE_ALLTOALL_SPLIT_PROBE failed to validate split metadata")
                 self._vime_alltoall_split_probe = {"split_probe_error": True}
+                self._vime_alltoall1_payload_probe = {"payload_probe_error": True}
 
             try:
                 actual_mapping = result[1].detach().to(device="cpu", dtype=torch.int64)
@@ -426,6 +502,70 @@ class _VLLMHijack:
                 self._vime_unpermute_mapping_probe = {"mapping_probe_error": True}
 
             return result
+
+        def _patched_dispatch_postprocess(
+            self,
+            global_input_tokens,
+            dynamic_scale_after_all2all,
+            global_input_tokens_local_experts_indices,
+            with_quant,
+        ):
+            probe_pending = getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False)
+            original_tokens = global_input_tokens.detach().clone() if probe_pending else None
+            if probe_pending:
+                self._vime_moe_stage_probe["alltoall1_output"] = _row_stats(global_input_tokens)
+                payload_probe = self._vime_alltoall1_payload_probe
+                send_tensor = self._vime_alltoall1_send_tensor
+                recv_hashes = _chunk_hashes(global_input_tokens, self._vime_alltoall1_output_splits)
+                expected_recv_hashes = payload_probe["expected_recv_hashes"]
+                mismatch_ranks = [
+                    rank for rank in range(self.ep_size) if recv_hashes[rank] != expected_recv_hashes[rank]
+                ]
+                recv_buffer = _buffer_info(global_input_tokens)
+                payload_probe.update(
+                    {
+                        "recv_hashes": recv_hashes,
+                        "mismatch_count": len(mismatch_ranks),
+                        "mismatch_src_ranks": mismatch_ranks,
+                        "recv_buffer": recv_buffer,
+                        "send_storage_nbytes_after_alltoall": send_tensor.untyped_storage().nbytes(),
+                        "send_released_before_postprocess": send_tensor.untyped_storage().nbytes() == 0,
+                        "send_recv_same_ptr": (payload_probe["send_buffer"]["data_ptr"] == recv_buffer["data_ptr"]),
+                    }
+                )
+                del self._vime_alltoall1_send_tensor
+
+            result = original_dispatch_postprocess(
+                self,
+                global_input_tokens,
+                dynamic_scale_after_all2all,
+                global_input_tokens_local_experts_indices,
+                with_quant,
+            )
+            if not probe_pending:
+                return result
+
+            self._vime_moe_stage_probe["gmm_input"] = _row_stats(result[0])
+            if result[2] is None:
+                self._vime_moe_stage_probe["second_permute_roundtrip"] = {"skipped": True}
+            else:
+                assert original_tokens is not None
+                restored_tokens = torch_npu.npu_moe_token_unpermute(result[0], result[2])
+                roundtrip_diff = (restored_tokens - original_tokens).abs()
+                self._vime_moe_stage_probe["second_permute_roundtrip"] = {
+                    "max_abs_diff": float(roundtrip_diff.max().item()),
+                    "mismatch_count": int(torch.count_nonzero(restored_tokens != original_tokens).item()),
+                }
+            return result
+
+        def _patched_combine_preprocess(self, hidden_states, combine_metadata):
+            probe_pending = getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False)
+            if probe_pending:
+                self._vime_moe_stage_probe["gmm_output"] = _row_stats(hidden_states)
+            output = original_combine_preprocess(self, hidden_states, combine_metadata)
+            if probe_pending:
+                self._vime_moe_stage_probe["after_second_unpermute"] = _row_stats(output)
+            return output
 
         def _patched_combine_postprocess(self, permutated_local_input_tokens, combine_metadata):
             probe_pending = getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False)
@@ -487,34 +627,42 @@ class _VLLMHijack:
                     for row in sample_rows
                     if row < actual_cpu.shape[0]
                 ]
+                self._vime_moe_stage_probe["moe_output"] = _row_stats(output)
                 mapping_probe = getattr(self, "_vime_unpermute_mapping_probe", {})
                 split_probe = getattr(self, "_vime_alltoall_split_probe", {})
-                logger.warning(
-                    "VIME_MOE_UNPERMUTE_PROBE "
-                    "ep_rank=%s input_shape=%s output_shape=%s mapping=%s split=%s "
-                    "max_abs_diff=%s mean_abs_diff=%s max_rel_diff=%s "
-                    "mismatch_count=%s scatter_max_abs_diff=%s "
-                    "scatter_mean_abs_diff=%s worst_row=%s row_samples=%s",
-                    self.ep_rank,
-                    tuple(permuted_cpu.shape),
-                    tuple(actual_cpu.shape),
-                    mapping_probe,
-                    split_probe,
-                    float(abs_diff.max().item()) if abs_diff.numel() else 0.0,
-                    float(abs_diff.mean().item()) if abs_diff.numel() else 0.0,
-                    float(rel_diff.max().item()) if rel_diff.numel() else 0.0,
-                    int(mismatch.sum().item()),
-                    float(scatter_abs_diff.max().item()) if scatter_abs_diff.numel() else 0.0,
-                    float(scatter_abs_diff.mean().item()) if scatter_abs_diff.numel() else 0.0,
-                    worst_row,
-                    row_samples,
-                )
+                stage_probe = getattr(self, "_vime_moe_stage_probe", {})
+                report = {
+                    "ep_rank": self.ep_rank,
+                    "input_shape": list(permuted_cpu.shape),
+                    "output_shape": list(actual_cpu.shape),
+                    "mapping": mapping_probe,
+                    "split": split_probe,
+                    "payload": getattr(self, "_vime_alltoall1_payload_probe", {}),
+                    "stages": stage_probe,
+                    "unpermute": {
+                        "max_abs_diff": float(abs_diff.max().item()) if abs_diff.numel() else 0.0,
+                        "mean_abs_diff": float(abs_diff.mean().item()) if abs_diff.numel() else 0.0,
+                        "max_rel_diff": float(rel_diff.max().item()) if rel_diff.numel() else 0.0,
+                        "mismatch_count": int(mismatch.sum().item()),
+                        "scatter_max_abs_diff": (
+                            float(scatter_abs_diff.max().item()) if scatter_abs_diff.numel() else 0.0
+                        ),
+                        "scatter_mean_abs_diff": (
+                            float(scatter_abs_diff.mean().item()) if scatter_abs_diff.numel() else 0.0
+                        ),
+                        "worst_row": worst_row,
+                        "row_samples": row_samples,
+                    },
+                }
+                logger.warning("VIME_MOE_PROBE_JSON %s", json.dumps(report, separators=(",", ":"), sort_keys=True))
             except Exception:
                 logger.exception("VIME_MOE_UNPERMUTE_PROBE failed to compare the final unpermute output")
 
             return output
 
         TokenDispatcherWithAll2AllV._dispatch_preprocess = _patched_dispatch_preprocess
+        TokenDispatcherWithAll2AllV._dispatch_postprocess = _patched_dispatch_postprocess
+        TokenDispatcherWithAll2AllV._combine_preprocess = _patched_combine_preprocess
         TokenDispatcherWithAll2AllV._combine_postprocess = _patched_combine_postprocess
         TokenDispatcherWithAll2AllV._vime_unpermute_probe_pending = False
         TokenDispatcherWithAll2AllV._vime_unpermute_probe_patched = True
