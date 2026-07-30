@@ -478,6 +478,16 @@ class _VLLMHijack:
 
         def _patched_dispatch_preprocess(self, hidden_states, topk_ids):
             result = original_dispatch_preprocess(self, hidden_states, topk_ids)
+            local_expert_ids = result[5]
+            if local_expert_ids is not None:
+                tokens_per_expert = torch.histc(
+                    local_expert_ids,
+                    bins=self.num_local_experts,
+                    min=0,
+                    max=self.num_local_experts,
+                ).to(device=result[2].device, dtype=result[2].dtype)
+                result = (*result[:2], tokens_per_expert, *result[3:])
+
             if not getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False):
                 return result
 
