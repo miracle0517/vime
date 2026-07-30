@@ -81,6 +81,48 @@ def _analyze_report(report: dict) -> tuple[list[str], list[str]]:
     if payload.get("send_recv_same_ptr"):
         warnings.append(f"{prefix}: send and receive buffers reuse the same data pointer")
 
+    combine_payload = report.get("combine_payload", {})
+    if not combine_payload:
+        errors.append(f"{prefix}: second ALLTOALL payload probe record is missing")
+    elif combine_payload.get("mismatch_count") != 0:
+        errors.append(
+            f"{prefix}: second ALLTOALL payload mismatch from src ranks "
+            f"{combine_payload.get('mismatch_src_ranks', [])}"
+        )
+    if combine_payload.get("send_recv_same_ptr"):
+        warnings.append(f"{prefix}: second ALLTOALL send and receive buffers reuse the same data pointer")
+
+    expert_assignment = report.get("expert_assignment", {})
+    if not expert_assignment:
+        errors.append(f"{prefix}: ALLTOALL expert assignment probe record is missing")
+    elif expert_assignment.get("expert_id_mismatch_count") != 0:
+        errors.append(
+            f"{prefix}: ALLTOALL receive rows were assigned to incorrect local experts; "
+            f"mismatches={expert_assignment.get('expert_id_mismatch_count')} "
+            f"first={expert_assignment.get('expert_id_first_mismatch')}"
+        )
+    if expert_assignment.get("expert_count_mismatch_count") != 0:
+        errors.append(f"{prefix}: grouped matmul expert counts differ from independently reconstructed routing counts")
+
+    gmm = report.get("gmm", [])
+    if not gmm:
+        errors.append(f"{prefix}: no grouped matmul probe records")
+    elif not any(stage.get("samples") for stage in gmm):
+        errors.append(f"{prefix}: grouped matmul probe did not produce comparable samples")
+    for stage in gmm:
+        if stage.get("probe_error"):
+            errors.append(f"{prefix}: grouped matmul probe failed")
+            continue
+        for sample in stage.get("samples", []):
+            tolerance = 0.05 + 0.02 * sample.get("reference_abs_max", 0.0)
+            if sample.get("max_abs_diff", 0.0) > tolerance:
+                errors.append(
+                    f"{prefix}: grouped matmul #{stage.get('index')} expert={sample.get('expert')} "
+                    f"row={sample.get('row')} max_abs_diff={sample.get('max_abs_diff')} "
+                    f"exceeds tolerance={tolerance}"
+                )
+                break
+
     stages = report.get("stages", {})
     roundtrip = stages.get("second_permute_roundtrip", {})
     if roundtrip.get("mismatch_count", 0) != 0:
@@ -149,7 +191,7 @@ def main() -> int:
     if warnings:
         print("communication and permutation checks passed; inspect repetition warnings around GMM/combine")
     else:
-        print("all payload, split, permutation and unpermute checks passed")
+        print("all checks passed for the probed ALLTOALL MoE invocation")
     return 0
 
 
