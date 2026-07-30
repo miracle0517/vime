@@ -507,24 +507,6 @@ class _VLLMHijack:
                 expected_output_splits = input_split_matrix[:, self.ep_rank]
                 output_split_diff = output_splits_cpu != expected_output_splits
                 tokens_per_expert_sum = int(result[2].detach().to(device="cpu", dtype=torch.int64).sum().item())
-                sorted_expert_ids = torch.sort(topk_cpu.reshape(-1)).values.to(device=topk_ids.device)
-                gathered_expert_ids = [torch.empty_like(sorted_expert_ids) for _ in range(self.ep_size)]
-                dist.all_gather(gathered_expert_ids, sorted_expert_ids, group=self.ep_group)
-                expected_recv_global_expert_ids = []
-                for src_rank in range(self.ep_size):
-                    src_splits = input_split_matrix[src_rank]
-                    offset = int(src_splits[: self.ep_rank].sum().item())
-                    size = int(src_splits[self.ep_rank].item())
-                    expected_recv_global_expert_ids.append(
-                        gathered_expert_ids[src_rank][offset : offset + size].to(device="cpu")
-                    )
-                expected_recv_global_expert_ids = torch.cat(expected_recv_global_expert_ids)
-                local_expert_start = self.ep_rank * self.num_local_experts
-                self._vime_expected_recv_local_expert_ids = expected_recv_global_expert_ids - local_expert_start
-                self._vime_expected_tokens_per_expert = torch.bincount(
-                    self._vime_expected_recv_local_expert_ids,
-                    minlength=self.num_local_experts,
-                )
                 self._vime_tokens_per_expert = result[2].detach().to(device="cpu", dtype=torch.int64)
                 split_probe = {
                     "input_splits": input_splits_cpu.tolist(),
@@ -604,22 +586,31 @@ class _VLLMHijack:
             original_tokens = global_input_tokens.detach().clone() if probe_pending else None
             if probe_pending:
                 self._vime_moe_stage_probe["alltoall1_output"] = _row_stats(global_input_tokens)
-                actual_local_expert_ids = global_input_tokens_local_experts_indices.detach().to(
-                    device="cpu", dtype=torch.int64
-                )
-                expected_local_expert_ids = self._vime_expected_recv_local_expert_ids
-                expert_id_diff = actual_local_expert_ids != expected_local_expert_ids
-                count_diff = self._vime_tokens_per_expert != self._vime_expected_tokens_per_expert
-                self._vime_expert_assignment_probe = {
-                    "rows": actual_local_expert_ids.numel(),
-                    "expert_id_mismatch_count": int(expert_id_diff.sum().item()),
-                    "expert_id_first_mismatch": (
-                        int(torch.nonzero(expert_id_diff, as_tuple=False)[0].item()) if expert_id_diff.any() else None
-                    ),
-                    "expert_count_mismatch_count": int(count_diff.sum().item()),
-                    "actual_counts": self._vime_tokens_per_expert.tolist(),
-                    "expected_counts": self._vime_expected_tokens_per_expert.tolist(),
-                }
+                try:
+                    local_expert_ids = global_input_tokens_local_experts_indices.detach().to(
+                        device="cpu", dtype=torch.int64
+                    ).reshape(-1)
+                    invalid_count = int(
+                        ((local_expert_ids < 0) | (local_expert_ids >= self.num_local_experts)).sum().item()
+                    )
+                    actual_counts = (
+                        torch.bincount(local_expert_ids, minlength=self.num_local_experts)
+                        if invalid_count == 0
+                        else torch.empty(0, dtype=torch.int64)
+                    )
+                    expected_counts = self._vime_tokens_per_expert
+                    self._vime_expert_assignment_probe = {
+                        "rows": local_expert_ids.numel(),
+                        "invalid_expert_id_count": invalid_count,
+                        "expert_count_mismatch_count": (
+                            int((actual_counts != expected_counts).sum().item()) if invalid_count == 0 else None
+                        ),
+                        "actual_counts": actual_counts.tolist(),
+                        "expected_counts": expected_counts.tolist(),
+                    }
+                except Exception:
+                    logger.exception("VIME_MOE_EXPERT_ASSIGNMENT_PROBE failed")
+                    self._vime_expert_assignment_probe = {"probe_error": True}
                 payload_probe = self._vime_alltoall1_payload_probe
                 send_tensor = self._vime_alltoall1_send_tensor
                 recv_hashes = _chunk_hashes(global_input_tokens, self._vime_alltoall1_output_splits)
@@ -671,53 +662,10 @@ class _VLLMHijack:
             output = original_combine_preprocess(self, hidden_states, combine_metadata)
             if probe_pending:
                 self._vime_moe_stage_probe["after_second_unpermute"] = _row_stats(output)
-                send_splits = torch.as_tensor(combine_metadata.output_splits, dtype=torch.int64).tolist()
-                recv_splits = torch.as_tensor(combine_metadata.input_splits, dtype=torch.int64).tolist()
-                send_hashes = _chunk_hashes(output, send_splits)
-                send_hash_bytes = torch.tensor(
-                    [list(bytes.fromhex(value)) for value in send_hashes],
-                    dtype=torch.uint8,
-                    device=output.device,
-                )
-                gathered_send_hashes = [torch.empty_like(send_hash_bytes) for _ in range(self.ep_size)]
-                dist.all_gather(gathered_send_hashes, send_hash_bytes, group=self.ep_group)
-                send_hash_matrix = torch.stack(gathered_send_hashes).to(device="cpu")
-                self._vime_alltoall2_send_tensor = output
-                self._vime_alltoall2_recv_splits = recv_splits
-                self._vime_alltoall2_payload_probe = {
-                    "send_hashes": send_hashes,
-                    "expected_recv_hashes": [
-                        bytes(send_hash_matrix[src_rank, self.ep_rank].tolist()).hex()
-                        for src_rank in range(self.ep_size)
-                    ],
-                    "send_buffer": _buffer_info(output),
-                }
             return output
 
         def _patched_combine_postprocess(self, permutated_local_input_tokens, combine_metadata):
             probe_pending = getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False)
-            if probe_pending:
-                payload_probe = self._vime_alltoall2_payload_probe
-                recv_hashes = _chunk_hashes(permutated_local_input_tokens, self._vime_alltoall2_recv_splits)
-                mismatch_ranks = [
-                    rank
-                    for rank in range(self.ep_size)
-                    if recv_hashes[rank] != payload_probe["expected_recv_hashes"][rank]
-                ]
-                send_tensor = self._vime_alltoall2_send_tensor
-                recv_buffer = _buffer_info(permutated_local_input_tokens)
-                payload_probe.update(
-                    {
-                        "recv_hashes": recv_hashes,
-                        "mismatch_count": len(mismatch_ranks),
-                        "mismatch_src_ranks": mismatch_ranks,
-                        "recv_buffer": recv_buffer,
-                        "send_storage_nbytes_after_alltoall": send_tensor.untyped_storage().nbytes(),
-                        "send_released_before_postprocess": send_tensor.untyped_storage().nbytes() == 0,
-                        "send_recv_same_ptr": payload_probe["send_buffer"]["data_ptr"] == recv_buffer["data_ptr"],
-                    }
-                )
-                del self._vime_alltoall2_send_tensor
             # Preserve the exact operator input before calling unpermute. This
             # avoids a false comparison if the backend reuses or aliases the
             # input storage while producing the output.
@@ -787,9 +735,7 @@ class _VLLMHijack:
                     "mapping": mapping_probe,
                     "split": split_probe,
                     "payload": getattr(self, "_vime_alltoall1_payload_probe", {}),
-                    "combine_payload": getattr(self, "_vime_alltoall2_payload_probe", {}),
                     "expert_assignment": getattr(self, "_vime_expert_assignment_probe", {}),
-                    "gmm": getattr(TokenDispatcherWithAll2AllV, "_vime_gmm_probe", []),
                     "stages": stage_probe,
                     "unpermute": {
                         "max_abs_diff": float(abs_diff.max().item()) if abs_diff.numel() else 0.0,
@@ -816,7 +762,6 @@ class _VLLMHijack:
         TokenDispatcherWithAll2AllV._dispatch_postprocess = _patched_dispatch_postprocess
         TokenDispatcherWithAll2AllV._combine_preprocess = _patched_combine_preprocess
         TokenDispatcherWithAll2AllV._combine_postprocess = _patched_combine_postprocess
-        torch_npu.npu_grouped_matmul = _grouped_matmul_probe
         TokenDispatcherWithAll2AllV._vime_unpermute_probe_pending = False
         TokenDispatcherWithAll2AllV._vime_unpermute_probe_patched = True
         logger.info("Colocated Ascend A3 detected: installed MoE ALLTOALL unpermute probe")
