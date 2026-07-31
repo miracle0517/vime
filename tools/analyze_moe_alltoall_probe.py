@@ -29,9 +29,7 @@ def _count_mismatch_summary(expert_assignment: dict) -> str:
         for index, (actual_count, expected_count) in enumerate(zip(actual, expected))
         if actual_count != expected_count
     ]
-    cumulative_as_counts = [
-        expected[index] - (expected[index - 1] if index else 0) for index in range(len(expected))
-    ]
+    cumulative_as_counts = [expected[index] - (expected[index - 1] if index else 0) for index in range(len(expected))]
     relation = "different_values"
     if len(actual) != len(expected):
         relation = "different_lengths"
@@ -128,7 +126,8 @@ def _analyze_report(report: dict) -> tuple[list[str], list[str]]:
         if mlp.get("max_abs_diff", 0.0) > tolerance:
             errors.append(
                 f"{prefix}: AllToAll grouped MLP differs from plain matmul reference; "
-                f"expert={mlp.get('expert')} row={mlp.get('row')} "
+                f"compared_experts={mlp.get('compared_experts')} "
+                f"worst_expert={mlp.get('worst_expert')} worst_row={mlp.get('worst_row')} "
                 f"max_abs_diff={mlp.get('max_abs_diff')} tolerance={tolerance} "
                 f"w1_data_ptr={mlp.get('w1_data_ptr')} w2_data_ptr={mlp.get('w2_data_ptr')}"
             )

@@ -480,26 +480,30 @@ class _VLLMHijack:
 
         def _patched_unquant_apply_mlp(*args, **kwargs):
             probe = None
-            if (
-                getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False)
-                and not getattr(TokenDispatcherWithAll2AllV, "_vime_mlp_probe", None)
+            if getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False) and not getattr(
+                TokenDispatcherWithAll2AllV, "_vime_mlp_probe", None
             ):
                 try:
                     hidden_states = kwargs["hidden_states"]
                     w1 = kwargs["w1"]
                     w2 = kwargs["w2"]
                     counts = TokenDispatcherWithAll2AllV._vime_actual_counts
-                    expert = int(counts.argmax().item())
-                    row = int(counts[:expert].sum().item())
                     weight1 = w1.transpose(1, 2) if kwargs.get("need_trans", True) else w1
                     weight2 = w2.transpose(1, 2) if kwargs.get("need_trans", True) else w2
-                    gate_up = torch.matmul(hidden_states[row : row + 1], weight1[expert])
-                    gate, up = gate_up.chunk(2, dim=-1)
-                    reference = torch.matmul(torch.nn.functional.silu(gate) * up, weight2[expert])
+                    starts = torch.cumsum(counts, dim=0) - counts
+                    experts = torch.nonzero(counts > 0, as_tuple=False).reshape(-1)
+                    rows = starts.index_select(0, experts)
+                    references = []
+                    for expert_tensor, row_tensor in zip(experts, rows):
+                        expert = int(expert_tensor.item())
+                        row = int(row_tensor.item())
+                        gate_up = torch.matmul(hidden_states[row : row + 1], weight1[expert])
+                        gate, up = gate_up.chunk(2, dim=-1)
+                        references.append(torch.matmul(torch.nn.functional.silu(gate) * up, weight2[expert]))
                     probe = {
-                        "expert": expert,
-                        "row": row,
-                        "reference": reference,
+                        "experts": experts.tolist(),
+                        "rows": rows.tolist(),
+                        "reference": torch.cat(references),
                         "w1_data_ptr": weight1.data_ptr(),
                         "w2_data_ptr": weight2.data_ptr(),
                     }
@@ -509,20 +513,39 @@ class _VLLMHijack:
 
             output = original_unquant_apply_mlp(*args, **kwargs)
             if probe is not None:
-                actual = output[0][probe["row"] : probe["row"] + 1]
+                rows = torch.tensor(probe["rows"], device=output[0].device, dtype=torch.int64)
+                actual = output[0].index_select(0, rows)
                 reference = probe.pop("reference")
                 abs_diff = (actual.float() - reference.float()).abs()
+                row_max_abs_diff = abs_diff.amax(dim=1)
+                worst = int(row_max_abs_diff.argmax().item())
                 probe.update(
                     {
                         "max_abs_diff": float(abs_diff.max().item()),
                         "mean_abs_diff": float(abs_diff.mean().item()),
                         "reference_abs_max": float(reference.abs().max().item()),
+                        "compared_experts": len(probe["experts"]),
+                        "worst_expert": probe["experts"][worst],
+                        "worst_row": probe["rows"][worst],
                     }
                 )
+                del probe["experts"], probe["rows"]
                 TokenDispatcherWithAll2AllV._vime_mlp_probe = probe
             return output
 
         def _patched_dispatch_preprocess(self, hidden_states, topk_ids):
+            generation = getattr(TokenDispatcherWithAll2AllV, "_vime_weight_update_generation", 0)
+            if self.num_local_experts > 1 and getattr(
+                self, "_vime_seen_weight_update_generation", -1
+            ) != generation:
+                # Colocated sleep/wake can invalidate this non-parameter NPU tensor.
+                expert_ids = self.expert_ids_per_ep_rank
+                self.expert_ids_per_ep_rank = torch.arange(
+                    self.num_experts,
+                    device=expert_ids.device,
+                    dtype=expert_ids.dtype,
+                ).remainder(self.num_local_experts)
+                self._vime_seen_weight_update_generation = generation
             result = original_dispatch_preprocess(self, hidden_states, topk_ids)
             if not getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False):
                 return result
@@ -842,6 +865,7 @@ class _VLLMHijack:
         TokenDispatcherWithAll2AllV._combine_postprocess = _patched_combine_postprocess
         moe_mlp.unquant_apply_mlp = _patched_unquant_apply_mlp
         TokenDispatcherWithAll2AllV._vime_unpermute_probe_pending = False
+        TokenDispatcherWithAll2AllV._vime_weight_update_generation = 0
         TokenDispatcherWithAll2AllV._vime_unpermute_probe_patched = True
         logger.info("Colocated Ascend A3 detected: installed MoE ALLTOALL unpermute probe")
 
@@ -875,6 +899,7 @@ class _VLLMHijack:
 
                 if getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_patched", False):
                     TokenDispatcherWithAll2AllV._vime_unpermute_probe_pending = True
+                    TokenDispatcherWithAll2AllV._vime_weight_update_generation += 1
             except ImportError:
                 pass
             _orig(self, is_checkpoint_format=is_checkpoint_format)
