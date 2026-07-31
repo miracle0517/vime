@@ -118,6 +118,21 @@ def _analyze_report(report: dict) -> tuple[list[str], list[str]]:
             f"{_count_mismatch_summary(expert_assignment)}"
         )
 
+    mlp = report.get("mlp", {})
+    if not mlp:
+        errors.append(f"{prefix}: AllToAll MLP reference probe record is missing")
+    elif mlp.get("probe_error"):
+        errors.append(f"{prefix}: AllToAll MLP reference probe failed")
+    else:
+        tolerance = 0.05 + 0.02 * mlp.get("reference_abs_max", 0.0)
+        if mlp.get("max_abs_diff", 0.0) > tolerance:
+            errors.append(
+                f"{prefix}: AllToAll grouped MLP differs from plain matmul reference; "
+                f"expert={mlp.get('expert')} row={mlp.get('row')} "
+                f"max_abs_diff={mlp.get('max_abs_diff')} tolerance={tolerance} "
+                f"w1_data_ptr={mlp.get('w1_data_ptr')} w2_data_ptr={mlp.get('w2_data_ptr')}"
+            )
+
     stages = report.get("stages", {})
     roundtrip = stages.get("second_permute_roundtrip", {})
     if roundtrip.get("mismatch_count", 0) != 0:

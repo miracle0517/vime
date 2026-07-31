@@ -356,6 +356,7 @@ class _VLLMHijack:
         if get_ascend_device_type() != AscendDeviceType.A3:
             return
 
+        from vllm_ascend.ops.fused_moe import moe_mlp
         from vllm_ascend.ops.fused_moe.token_dispatcher import TokenDispatcherWithAll2AllV
 
         if getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_patched", False):
@@ -367,6 +368,7 @@ class _VLLMHijack:
         original_dispatch_postprocess = TokenDispatcherWithAll2AllV._dispatch_postprocess
         original_combine_preprocess = TokenDispatcherWithAll2AllV._combine_preprocess
         original_combine_postprocess = TokenDispatcherWithAll2AllV._combine_postprocess
+        original_unquant_apply_mlp = moe_mlp.unquant_apply_mlp
         original_grouped_matmul = torch_npu.npu_grouped_matmul
 
         def _row_stats(tensor):
@@ -476,9 +478,52 @@ class _VLLMHijack:
                 TokenDispatcherWithAll2AllV._vime_gmm_probe.append({"probe_error": True})
             return output
 
+        def _patched_unquant_apply_mlp(*args, **kwargs):
+            probe = None
+            if (
+                getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False)
+                and not getattr(TokenDispatcherWithAll2AllV, "_vime_mlp_probe", None)
+            ):
+                try:
+                    hidden_states = kwargs["hidden_states"]
+                    w1 = kwargs["w1"]
+                    w2 = kwargs["w2"]
+                    counts = TokenDispatcherWithAll2AllV._vime_actual_counts
+                    expert = int(counts.argmax().item())
+                    row = int(counts[:expert].sum().item())
+                    weight1 = w1.transpose(1, 2) if kwargs.get("need_trans", True) else w1
+                    weight2 = w2.transpose(1, 2) if kwargs.get("need_trans", True) else w2
+                    gate_up = torch.matmul(hidden_states[row : row + 1], weight1[expert])
+                    gate, up = gate_up.chunk(2, dim=-1)
+                    reference = torch.matmul(torch.nn.functional.silu(gate) * up, weight2[expert])
+                    probe = {
+                        "expert": expert,
+                        "row": row,
+                        "reference": reference,
+                        "w1_data_ptr": weight1.data_ptr(),
+                        "w2_data_ptr": weight2.data_ptr(),
+                    }
+                except Exception:
+                    logger.exception("VIME_MOE_MLP_PROBE failed to build reference")
+                    TokenDispatcherWithAll2AllV._vime_mlp_probe = {"probe_error": True}
+
+            output = original_unquant_apply_mlp(*args, **kwargs)
+            if probe is not None:
+                actual = output[0][probe["row"] : probe["row"] + 1]
+                reference = probe.pop("reference")
+                abs_diff = (actual.float() - reference.float()).abs()
+                probe.update(
+                    {
+                        "max_abs_diff": float(abs_diff.max().item()),
+                        "mean_abs_diff": float(abs_diff.mean().item()),
+                        "reference_abs_max": float(reference.abs().max().item()),
+                    }
+                )
+                TokenDispatcherWithAll2AllV._vime_mlp_probe = probe
+            return output
+
         def _patched_dispatch_preprocess(self, hidden_states, topk_ids):
             result = original_dispatch_preprocess(self, hidden_states, topk_ids)
-            self._vime_tokens_per_expert_tensor = result[2]
             if not getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False):
                 return result
 
@@ -493,6 +538,7 @@ class _VLLMHijack:
                 },
             }
             TokenDispatcherWithAll2AllV._vime_gmm_probe = []
+            TokenDispatcherWithAll2AllV._vime_mlp_probe = {}
 
             try:
                 input_splits_cpu = torch.as_tensor(result[3], dtype=torch.int64)
@@ -584,16 +630,6 @@ class _VLLMHijack:
             with_quant,
         ):
             probe_pending = getattr(TokenDispatcherWithAll2AllV, "_vime_unpermute_probe_pending", False)
-            if global_input_tokens_local_experts_indices is not None:
-                tokens_per_expert = self._vime_tokens_per_expert_tensor
-                corrected_counts = torch.histc(
-                    global_input_tokens_local_experts_indices,
-                    bins=self.num_local_experts,
-                    min=0,
-                    max=self.num_local_experts,
-                ).to(device=tokens_per_expert.device, dtype=tokens_per_expert.dtype)
-                tokens_per_expert.copy_(corrected_counts)
-
             original_tokens = global_input_tokens.detach().clone() if probe_pending else None
             if probe_pending:
                 self._vime_moe_stage_probe["alltoall1_output"] = _row_stats(global_input_tokens)
@@ -611,7 +647,7 @@ class _VLLMHijack:
                         if invalid_count == 0
                         else torch.empty(0, dtype=torch.int64)
                     )
-                    expected_counts = tokens_per_expert.detach().to(device="cpu", dtype=torch.int64)
+                    expected_counts = self._vime_tokens_per_expert
                     self._vime_expert_assignment_probe = {
                         "rows": local_expert_ids.numel(),
                         "invalid_expert_id_count": invalid_count,
@@ -621,6 +657,7 @@ class _VLLMHijack:
                         "actual_counts": actual_counts.tolist(),
                         "expected_counts": expected_counts.tolist(),
                     }
+                    TokenDispatcherWithAll2AllV._vime_actual_counts = actual_counts
                     self._vime_local_expert_ids = local_expert_ids
                 except Exception:
                     logger.exception("VIME_MOE_EXPERT_ASSIGNMENT_PROBE failed")
@@ -776,6 +813,7 @@ class _VLLMHijack:
                     "split": split_probe,
                     "payload": getattr(self, "_vime_alltoall1_payload_probe", {}),
                     "expert_assignment": getattr(self, "_vime_expert_assignment_probe", {}),
+                    "mlp": getattr(TokenDispatcherWithAll2AllV, "_vime_mlp_probe", {}),
                     "stages": stage_probe,
                     "unpermute": {
                         "max_abs_diff": float(abs_diff.max().item()) if abs_diff.numel() else 0.0,
@@ -802,9 +840,10 @@ class _VLLMHijack:
         TokenDispatcherWithAll2AllV._dispatch_postprocess = _patched_dispatch_postprocess
         TokenDispatcherWithAll2AllV._combine_preprocess = _patched_combine_preprocess
         TokenDispatcherWithAll2AllV._combine_postprocess = _patched_combine_postprocess
+        moe_mlp.unquant_apply_mlp = _patched_unquant_apply_mlp
         TokenDispatcherWithAll2AllV._vime_unpermute_probe_pending = False
         TokenDispatcherWithAll2AllV._vime_unpermute_probe_patched = True
-        logger.info("Colocated Ascend A3 detected: installed MoE ALLTOALL expert-count storage fix and probes")
+        logger.info("Colocated Ascend A3 detected: installed MoE ALLTOALL unpermute probe")
 
     @staticmethod
     def _patch_one_worker(worker_cls: type) -> None:
