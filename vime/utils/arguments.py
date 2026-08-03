@@ -2164,6 +2164,10 @@ def vime_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
+    from vime.backends.speculative_training.config import validate_external_draft_args
+
+    validate_external_draft_args(args)
+
     if args.eval_max_context_len is None:
         logger.info(
             f"args.eval_max_context_len is not set. Use args.rollout_max_context_len {args.rollout_max_context_len} as default value."

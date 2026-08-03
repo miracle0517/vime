@@ -1,0 +1,4 @@
+{"prompt":[{"role":"user","content":"Compute 2+2. Answer exactly one line: Answer: \\boxed{4}. Do not explain."}],"label":"4"}
+{"prompt":[{"role":"user","content":"Compute 3*3. Answer exactly one line: Answer: \\boxed{9}. Do not explain."}],"label":"9"}
+{"prompt":[{"role":"user","content":"Compute 12-5. Answer exactly one line: Answer: \\boxed{7}. Do not explain."}],"label":"7"}
+{"prompt":[{"role":"user","content":"Compute 6+8. Answer exactly one line: Answer: \\boxed{14}. Do not explain."}],"label":"14"}

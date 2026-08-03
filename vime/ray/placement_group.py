@@ -137,7 +137,7 @@ def _get_placement_group_layout(args) -> tuple[int, int]:
 
 
 def create_placement_groups(args):
-    """Create placement groups for actor, critic, and rollout engines."""
+    """Create placement groups for actor, critic, and rollout workers."""
 
     num_gpus, rollout_offset = _get_placement_group_layout(args)
 
@@ -152,6 +152,9 @@ def create_placement_groups(args):
     }
 
     result["critic"] = result["actor"] if args.use_critic else None
+    # External Draft optimization is colocated inside Actor rank zero and does
+    # not reserve an additional accelerator bundle.
+    result["draft"] = None
 
     return result
 

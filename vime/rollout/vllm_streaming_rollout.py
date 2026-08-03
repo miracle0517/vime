@@ -40,6 +40,7 @@ from vime.rollout.vllm_rollout import (
     _align_mm_feature_placeholders_to_tokens,
     _build_inference_sampling_params,
     _coerce_flat_int_token_ids,
+    _copy_vllm_generation_meta,
     _mm_render_response_to_generate_body,
     _prepare_prompt_ids,
     prime_encoder,
@@ -181,6 +182,7 @@ async def generate_streaming(args: Namespace, sample: Sample, sampling_params: d
                 except json.JSONDecodeError:
                     logger.warning("vllm_streaming: skipping non-JSON chunk: %r", data_str[:120])
                     continue
+                last_chunk = chunk
 
                 if chunk.get("weight_version") is not None:
                     weight_version = str(chunk["weight_version"])

@@ -1,3 +1,6 @@
+import logging
+import os
+
 import ray
 
 from vime.platforms import current_platform
@@ -24,6 +27,7 @@ def train(args):
     rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
 
     actor_model, critic_model = create_training_models(args, pgs, rollout_manager)
+    draft_model = create_draft_model(args, actor_model)
 
     if args.offload_rollout and not release_train:
         ray.get(rollout_manager.onload_weights.remote())
@@ -42,6 +46,10 @@ def train(args):
         ray.get(rollout_manager.eval.remote(rollout_id=0))
 
     def offload_train(actor_trains_this_step):
+        if os.environ.get("VIME_EXTERNAL_DRAFT_SMOKE_SKIP_ACTOR_UPDATE", "0") == "1":
+            # The smoke path leaves Actor parameters untouched; avoid exercising
+            # unrelated per-rank allocator cleanup before Draft publication.
+            return
         # Each model auto-offloads after train() when offload_train is set,
         # so we only need clear_memory for the non-offload case.
         if not args.offload_train:
@@ -71,7 +79,7 @@ def train(args):
             else:
                 ray.get(value_refs)
         else:
-            ray.get(actor_model.async_train(rollout_id, rollout_data_ref))
+            actor_train_results = ray.get(actor_model.async_train(rollout_id, rollout_data_ref))
 
         if release_train or should_run_periodic_action(
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
@@ -87,7 +95,24 @@ def train(args):
         offload_train(actor_trains)
         if args.offload_rollout and not release_train:
             ray.get(rollout_manager.onload_weights.remote())
-        actor_model.update_weights()
+        if draft_snapshot_ref is not None:
+            actor_model.set_external_draft_weights(
+                draft_snapshot_ref,
+                draft_snapshot_version,
+            )
+        weight_update_results = actor_model.update_weights()
+        if draft_snapshot_version is not None:
+            if not weight_update_results or not all(value is True for value in weight_update_results):
+                raise RuntimeError(
+                    f"Draft {draft_snapshot_version} was staged but rollout weight publication did not complete"
+                )
+            draft_model.mark_published(draft_snapshot_version)
+            _log_draft_result(
+                args,
+                rollout_id,
+                "publish",
+                {"published": 1, "draft_version": int(draft_snapshot_version)},
+            )
 
         if args.offload_rollout:
             ray.get(rollout_manager.onload_kv.remote())
@@ -95,6 +120,8 @@ def train(args):
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             ray.get(rollout_manager.eval.remote(rollout_id))
 
+    if draft_model is not None:
+        draft_model.release()
     ray.get(rollout_manager.dispose.remote())
     finish_tracking(args)
 
