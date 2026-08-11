@@ -38,6 +38,18 @@ def test_feature_round_trip_normalizes_cpu_dtypes():
 
 
 @pytest.mark.unit
+def test_dspark_feature_round_trip_preserves_algorithm_layout():
+    sample = _sample()
+    sample.algorithm = "dspark"
+    sample.hidden_layout = "qwen_dspark_aux_plus_last"
+
+    restored = DraftFeatureSample.from_payload(sample.to_payload())
+
+    assert restored.algorithm == "dspark"
+    assert restored.hidden_layout == "qwen_dspark_aux_plus_last"
+
+
+@pytest.mark.unit
 def test_feature_rejects_non_contiguous_positions():
     sample = _sample()
     sample.hidden_positions[-1] += 1

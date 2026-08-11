@@ -349,6 +349,34 @@ def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm):
 
 
 @pytest.mark.unit
+def test_npu_worker_patch_supports_parameterless_start_weight_update(upw_vllm, monkeypatch):
+    start_calls = []
+
+    class FakeWorker:
+        def __init__(self):
+            self.model_runner = types.SimpleNamespace(model=object())
+
+        def load_model(self):
+            pass
+
+        def start_weight_update(self):
+            start_calls.append(True)
+
+        def wake_up(self, tags=None):
+            pass
+
+    patch_moe = MagicMock()
+    monkeypatch.setattr(upw_vllm._VLLMHijack, "patch_moe_weight_loader", patch_moe)
+    upw_vllm._VLLMHijack._patch_one_worker(FakeWorker)
+
+    worker = FakeWorker()
+    worker.start_weight_update(is_checkpoint_format=True)
+
+    patch_moe.assert_called_once_with(worker.model_runner.model)
+    assert start_calls == [True]
+
+
+@pytest.mark.unit
 def test_send_hf_params_returns_only_distributed_refs(upw_vllm):
     obj = _make_instance(upw_vllm)
     obj.rollout_engines = [RecordingVLLMEngine()]

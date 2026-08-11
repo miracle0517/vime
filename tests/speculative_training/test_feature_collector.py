@@ -89,3 +89,35 @@ def test_collector_reconstructs_sample_window_and_aux_layers(monkeypatch):
     assert payload["hidden_positions"].tolist() == [2, 3, 4, 5]
     assert payload["original_sample_id"] == "dp3-sample7"
     assert payload["target_weight_version"] == "11"
+
+
+@pytest.mark.unit
+def test_dspark_collector_requires_one_complete_future_block(monkeypatch):
+    target = _Target()
+    collector = DraftFeatureCollector(
+        _args(draft_algorithm="dspark", draft_dspark_block_size=3, draft_hidden_window_tokens=8),
+        [target],
+        rollout_id=2,
+        target_weight_version="11",
+    )
+    monkeypatch.setattr(collector, "_gather_sequence_parallel", lambda tensor: tensor)
+    monkeypatch.setattr(collector, "_is_export_rank", lambda: True)
+    tokens = torch.arange(8)
+    batch = {
+        "unconcat_tokens": [tokens],
+        "total_lengths": [8],
+        "response_lengths": [5],
+        "loss_masks": [torch.ones(5)],
+    }
+
+    try:
+        collector.begin_microbatch(batch, [0])
+        target(torch.zeros(8, 1, 4))
+        collector.end_microbatch()
+        payload = collector.pop_payloads()[0]
+    finally:
+        collector.close()
+
+    assert payload["algorithm"] == "dspark"
+    assert payload["hidden_layout"] == "qwen_dspark_aux_plus_last"
+    assert len(payload["input_ids"]) >= 5

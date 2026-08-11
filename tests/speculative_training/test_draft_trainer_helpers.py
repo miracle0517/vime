@@ -69,3 +69,31 @@ def test_actor_colocated_trainer_does_not_join_actor_process_group(monkeypatch):
     assert trainer.rank == 0
     assert trainer.world_size == 1
     assert trainer.model is model
+
+
+@pytest.mark.unit
+def test_dspark_publish_includes_synced_frozen_lm_head():
+    model = _Draft(rows=4, hidden=3)
+    model.embed_tokens.weight.requires_grad_(False)
+    model.lm_head = torch.nn.Linear(3, 4, bias=False)
+    model.lm_head.weight.requires_grad_(False)
+    model.confidence_head = torch.nn.Linear(3, 1)
+    trainer = ExternalDraftTrainer.__new__(ExternalDraftTrainer)
+    trainer.rank = 0
+    trainer.draft_version = 2
+    trainer.target_weight_version = "9"
+    trainer.algorithm = "dspark"
+    trainer.args = Namespace(draft_publish_dtype="bf16")
+    trainer.model = model
+    trainer.architecture_fingerprint = "fingerprint"
+
+    snapshot = trainer.prepare_publish_snapshot()
+
+    assert snapshot["algorithm"] == "dspark"
+    names = {name for name, _ in snapshot["named_tensors"]}
+    assert "lm_head.weight" in names
+    assert "embed_tokens.weight" not in names
+    tensors = dict(snapshot["named_tensors"])
+    assert tensors["lm_head.weight"].dtype == torch.bfloat16
+    assert tensors["confidence_head.weight"].dtype == torch.float32
+    assert tensors["confidence_head.bias"].dtype == torch.float32

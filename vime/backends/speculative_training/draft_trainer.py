@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import inspect
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -17,6 +17,7 @@ from torch.nn.parallel import DistributedDataParallel
 from vime.utils.common import is_npu
 from vime.utils.misc import load_function
 
+from .backends.dspark import collate_dspark_samples, compute_dspark_loss, dspark_trainer_kwargs, sync_dspark_lm_heads
 from .backends.eagle3 import collate_eagle3_samples, compute_eagle3_loss
 from .feature_schema import DraftFeatureSample, VersionedFeatureQueue
 
@@ -37,6 +38,9 @@ def _publish_dtype(name: str) -> torch.dtype:
 
 def _load_draft_model(args: Namespace, device: torch.device) -> torch.nn.Module:
     factory_path = getattr(args, "draft_model_factory_path", None)
+    algorithm = str(getattr(args, "draft_algorithm", "eagle3")).lower()
+    if not factory_path and algorithm == "dspark":
+        factory_path = "vime.backends.speculative_training.factories.speculators_dspark.build_model"
     if factory_path:
         model = load_function(factory_path)(args, device)
     else:
@@ -53,35 +57,52 @@ def _load_draft_model(args: Namespace, device: torch.device) -> torch.nn.Module:
     signature = inspect.signature(model.forward)
     accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
     required = {"input_ids", "hidden_states", "loss_mask"}
+    if algorithm == "dspark":
+        required.update({"verifier_last_hidden_states", "document_ids"})
     missing = required - set(signature.parameters)
     if missing and not accepts_kwargs:
         raise TypeError(
-            "The loaded Draft model is not EAGLE3 training compatible; its forward must accept "
+            f"The loaded Draft model is not {algorithm} training compatible; its forward must accept "
             f"{sorted(required)}. Missing {sorted(missing)}. Supply --draft-model-factory-path "
             "for checkpoints without Transformers auto_map training code."
         )
     config = getattr(model, "config", None)
     configured_target_hidden = getattr(config, "target_hidden_size", None)
+    transformer_config = getattr(config, "transformer_layer_config", None)
+    if algorithm == "dspark":
+        model_type = str(getattr(transformer_config, "model_type", "")).lower()
+        if model_type and not model_type.startswith("qwen3"):
+            raise ValueError(
+                "VIME currently supports only Qwen3-family DSpark checkpoints, got "
+                f"transformer_layer_config.model_type={model_type!r}"
+            )
+    if configured_target_hidden is None and transformer_config is not None:
+        configured_target_hidden = getattr(transformer_config, "hidden_size", None)
     target_hidden = int(getattr(args, "hidden_size", 0) or 0)
     if configured_target_hidden is not None and target_hidden > 0 and int(configured_target_hidden) != target_hidden:
         raise ValueError(
             "Draft checkpoint target_hidden_size does not match the Megatron Target: "
             f"{configured_target_hidden} != {target_hidden}"
         )
+    configured_layer_ids = getattr(config, "aux_hidden_state_layer_ids", None)
     configured_aux_count = getattr(config, "num_aux_hidden_states", None)
+    if configured_aux_count is None and configured_layer_ids is not None:
+        configured_aux_count = len(configured_layer_ids)
     expected_layer_ids = tuple(int(value) for value in args.draft_feature_layer_ids)
     if configured_aux_count is not None and int(configured_aux_count) != len(expected_layer_ids):
         raise ValueError(
             "Draft checkpoint num_aux_hidden_states does not match --draft-feature-layer-ids: "
             f"{configured_aux_count} != {len(expected_layer_ids)}"
         )
-    configured_layer_ids = None
     for value in (
+        configured_layer_ids,
         getattr(config, "eagle_aux_hidden_state_layer_ids", None),
         getattr(config, "target_hidden_layer_ids", None),
-        (getattr(config, "eagle_config", None) or {}).get("target_hidden_layer_ids")
-        if isinstance(getattr(config, "eagle_config", None), dict)
-        else None,
+        (
+            (getattr(config, "eagle_config", None) or {}).get("target_hidden_layer_ids")
+            if isinstance(getattr(config, "eagle_config", None), dict)
+            else None
+        ),
     ):
         if value is not None:
             configured_layer_ids = tuple(int(item) for item in value)
@@ -153,7 +174,7 @@ def _load_checkpoint_tensor(model_path: str, key: str) -> torch.Tensor:
 def _load_target_embedding(model: torch.nn.Module, args: Namespace) -> None:
     model_path = getattr(args, "draft_target_embedding_path", None) or getattr(args, "hf_checkpoint", None)
     if not model_path:
-        raise ValueError("External EAGLE3 training requires a Target checkpoint for Draft embedding initialization")
+        raise ValueError("External Draft training requires a Target checkpoint for Draft embedding initialization")
     key = str(getattr(args, "draft_target_embedding_key", "model.embed_tokens.weight"))
     custom_loader = getattr(model, "load_embedding", None)
     if callable(custom_loader):
@@ -165,7 +186,7 @@ def _load_target_embedding(model: torch.nn.Module, args: Namespace) -> None:
         embedding = getattr(nested_model, "embed_tokens", None)
     weight = getattr(embedding, "weight", None)
     if not torch.is_tensor(weight):
-        raise RuntimeError("EAGLE3 Draft model does not expose embed_tokens.weight or load_embedding()")
+        raise RuntimeError("External Draft model does not expose embed_tokens.weight or load_embedding()")
     source = _load_checkpoint_tensor(str(model_path), key)
     if source.shape != weight.shape:
         raise ValueError(
@@ -178,6 +199,7 @@ def _load_target_embedding(model: torch.nn.Module, args: Namespace) -> None:
 class ExternalDraftTrainer:
     def __init__(self, args: Namespace, *, distributed: bool = True) -> None:
         self.args = args
+        self.algorithm = str(getattr(args, "draft_algorithm", "eagle3")).lower()
         self.device_type = "npu" if is_npu() else "cuda"
         self.current_device = torch.npu.current_device() if is_npu() else torch.cuda.current_device()
         self.device = torch.device(self.device_type, self.current_device)
@@ -224,6 +246,7 @@ class ExternalDraftTrainer:
                     "Draft t2d mapping selects a different number of Target rows than the Draft LM Head: "
                     f"{self.draft_to_target_rows.numel()} != {output_weight.size(0)}"
                 )
+        self.algorithm_train_kwargs = dspark_trainer_kwargs(raw_model, args) if self.algorithm == "dspark" else {}
         trainable = [parameter for parameter in self.model.parameters() if parameter.requires_grad]
         if not trainable:
             raise RuntimeError("External Draft model has no trainable parameters")
@@ -286,6 +309,12 @@ class ExternalDraftTrainer:
                     device=self.device,
                 )
         self.target_lm_head_weight = weight.detach().to(device=self.device, dtype=torch.bfloat16).contiguous()
+        if self.algorithm == "dspark":
+            sync_dspark_lm_heads(
+                _unwrap_model(self.model),
+                self.target_lm_head_weight,
+                self.draft_to_target_rows,
+            )
         self.target_weight_version = str(target_version)
         self.queue.clear_except(self.target_weight_version)
 
@@ -310,23 +339,39 @@ class ExternalDraftTrainer:
         token_sum = 0.0
         top1_sum = 0.0
         top5_sum = 0.0
+        accept_rate_sum = 0.0
+        accept_rate_total = 0.0
+        accept_len_sum = 0.0
+        accept_len_total = 0.0
+        confidence_loss_sum = 0.0
+        confidence_loss_total = 0.0
         grad_norm_sum = 0.0
         successful_steps = 0
         for _ in range(steps):
             samples = self.queue.take(self.target_weight_version, batch_size, repeat=True)
             if not samples:
                 break
-            batch = collate_eagle3_samples(samples, self.device)
+            if self.algorithm == "dspark":
+                batch = collate_dspark_samples(
+                    samples,
+                    self.device,
+                    block_size=int(self.args.draft_dspark_block_size),
+                )
+            else:
+                batch = collate_eagle3_samples(samples, self.device)
             self.optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=self.device_type, dtype=torch.bfloat16):
-                loss, metrics = compute_eagle3_loss(
-                    self.model,
-                    batch,
-                    self.target_lm_head_weight,
-                    draft_to_target_ids=self.draft_to_target_rows,
-                    temporal_decay=float(self.args.draft_temporal_decay),
-                    ttt_length=int(self.args.draft_ttt_length),
-                )
+                if self.algorithm == "dspark":
+                    loss, metrics = compute_dspark_loss(self.model, batch, self.algorithm_train_kwargs)
+                else:
+                    loss, metrics = compute_eagle3_loss(
+                        self.model,
+                        batch,
+                        self.target_lm_head_weight,
+                        draft_to_target_ids=self.draft_to_target_rows,
+                        temporal_decay=float(self.args.draft_temporal_decay),
+                        ttt_length=int(self.args.draft_ttt_length),
+                    )
 
             local_tokens = metrics["token_count"].detach().float()
             global_tokens = local_tokens.clone()
@@ -360,35 +405,76 @@ class ExternalDraftTrainer:
             token_sum += float(metrics["token_count"].item())
             top1_sum += float(metrics["top1_correct"].item())
             top5_sum += float(metrics["top5_correct"].item())
+            accept_rate_sum += float(metrics.get("accept_rate_sum", loss.new_zeros(())).item())
+            accept_rate_total += float(metrics.get("accept_rate_total", loss.new_zeros(())).item())
+            accept_len_sum += float(metrics.get("accept_len_sum", loss.new_zeros(())).item())
+            accept_len_total += float(metrics.get("accept_len_total", loss.new_zeros(())).item())
+            confidence_loss_sum += float(metrics.get("confidence_loss_sum", loss.new_zeros(())).item())
+            confidence_loss_total += float(metrics.get("confidence_loss_total", loss.new_zeros(())).item())
             grad_norm_sum += float(grad_norm.item())
 
         if self.world_size > 1:
             reduced = torch.tensor(
-                [loss_sum, token_sum, top1_sum, top5_sum, grad_norm_sum, float(successful_steps)],
+                [
+                    loss_sum,
+                    token_sum,
+                    top1_sum,
+                    top5_sum,
+                    accept_rate_sum,
+                    accept_rate_total,
+                    accept_len_sum,
+                    accept_len_total,
+                    confidence_loss_sum,
+                    confidence_loss_total,
+                    grad_norm_sum,
+                    float(successful_steps),
+                ],
                 dtype=torch.float64,
                 device=self.device,
             )
             dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
-            loss_sum, token_sum, top1_sum, top5_sum, grad_norm_sum, successful = reduced.tolist()
+            (
+                loss_sum,
+                token_sum,
+                top1_sum,
+                top5_sum,
+                accept_rate_sum,
+                accept_rate_total,
+                accept_len_sum,
+                accept_len_total,
+                confidence_loss_sum,
+                confidence_loss_total,
+                grad_norm_sum,
+                successful,
+            ) = reduced.tolist()
             successful_steps = int(successful / self.world_size)
         if successful_steps <= 0:
             return {"trained": 0, "reason": "no_valid_optimizer_step"}
         self.draft_version += 1
         self.last_trained_rollout = int(rollout_id)
-        return {
+        result = {
             "trained": 1,
+            "algorithm": self.algorithm,
             "draft_version": self.draft_version,
             "target_weight_version": self.target_weight_version,
             "successful_steps": successful_steps,
             "loss": loss_sum / max(token_sum, 1.0),
             "top1_accuracy": top1_sum / max(token_sum, 1.0),
-            "top5_accuracy": top5_sum / max(token_sum, 1.0),
             "valid_tokens": int(token_sum),
             "grad_norm": grad_norm_sum / max(successful_steps * self.world_size, 1),
             "optimizer_steps": self.optimizer_steps,
             "queue_samples": self.queue.count(self.target_weight_version),
             "learning_rate": float(self.optimizer.param_groups[0]["lr"]),
         }
+        if self.algorithm == "eagle3":
+            result["top5_accuracy"] = top5_sum / max(token_sum, 1.0)
+        if accept_rate_total > 0:
+            result["accept_rate"] = accept_rate_sum / accept_rate_total
+        if accept_len_total > 0:
+            result["expected_accept_length"] = accept_len_sum / accept_len_total
+        if confidence_loss_total > 0:
+            result["confidence_loss"] = confidence_loss_sum / confidence_loss_total
+        return result
 
     def prepare_publish_snapshot(self) -> dict[str, Any] | None:
         if self.rank != 0 or self.draft_version <= 0:
@@ -401,7 +487,9 @@ class ExternalDraftTrainer:
             named_tensors = list(exported.items()) if isinstance(exported, dict) else list(exported)
         else:
             named_tensors = [
-                (name, parameter) for name, parameter in raw_model.named_parameters() if parameter.requires_grad
+                (name, parameter)
+                for name, parameter in raw_model.named_parameters()
+                if parameter.requires_grad or (self.algorithm == "dspark" and name == "lm_head.weight")
             ]
         normalized_tensors = []
         seen_names = set()
@@ -412,7 +500,10 @@ class ExternalDraftTrainer:
             if not torch.is_tensor(tensor):
                 raise TypeError(f"Draft publication value {name!r} is not a tensor")
             seen_names.add(name)
-            normalized_tensors.append((name, tensor.detach().to(device="cpu", dtype=dtype).contiguous()))
+            tensor_dtype = (
+                torch.float32 if self.algorithm == "dspark" and name.startswith("confidence_head.") else dtype
+            )
+            normalized_tensors.append((name, tensor.detach().to(device="cpu", dtype=tensor_dtype).contiguous()))
         if not normalized_tensors:
             raise RuntimeError("Draft publication snapshot is empty")
         return {
@@ -420,6 +511,7 @@ class ExternalDraftTrainer:
             "draft_version": str(self.draft_version),
             "trained_against_target_version": str(self.target_weight_version),
             "architecture_fingerprint": self.architecture_fingerprint,
+            "algorithm": self.algorithm,
         }
 
     def save_checkpoint(self, rollout_id: int) -> str | None:

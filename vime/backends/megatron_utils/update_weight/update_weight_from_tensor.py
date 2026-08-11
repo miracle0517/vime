@@ -291,6 +291,15 @@ class _VLLMHijack:
         _orig_start_weight_update = worker_cls.start_weight_update
         _orig_wake_up = worker_cls.wake_up
         has_dummy_kw = "load_dummy_weights" in inspect.signature(_orig_load_model).parameters
+        start_weight_update_params = inspect.signature(_orig_start_weight_update).parameters
+        checkpoint_format_param = start_weight_update_params.get("is_checkpoint_format")
+        accepts_checkpoint_format_kw = checkpoint_format_param is not None and checkpoint_format_param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+        accepts_arbitrary_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in start_weight_update_params.values()
+        )
 
         if has_dummy_kw:
 
@@ -308,7 +317,12 @@ class _VLLMHijack:
             self, is_checkpoint_format: bool = True, _orig=_orig_start_weight_update
         ) -> None:
             _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
-            _orig(self, is_checkpoint_format=is_checkpoint_format)
+            if accepts_checkpoint_format_kw or accepts_arbitrary_kwargs:
+                _orig(self, is_checkpoint_format=is_checkpoint_format)
+            elif checkpoint_format_param is not None:
+                _orig(self, is_checkpoint_format)
+            else:
+                _orig(self)
 
         def _patched_wake_up(self, tags=None, _orig=_orig_wake_up) -> None:
             quant_config = self.vllm_config.quant_config

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from argparse import Namespace
 from collections.abc import Sequence
+from pathlib import Path
 
 
 def external_draft_enabled(args: Namespace) -> bool:
@@ -30,16 +31,39 @@ def parse_int_list(value: object) -> list[int] | None:
     return result
 
 
+def _local_draft_config(args: Namespace) -> dict:
+    model_path = getattr(args, "draft_model_path", None)
+    if not model_path:
+        return {}
+    config_path = Path(str(model_path)) / "config.json"
+    if not config_path.is_file():
+        return {}
+    with config_path.open(encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise TypeError(f"Draft config {config_path} must contain a JSON object")
+    return value
+
+
 def resolve_feature_layer_ids(args: Namespace) -> list[int]:
     explicit = parse_int_list(getattr(args, "draft_feature_layer_ids", None))
     num_layers = int(getattr(args, "num_layers", 0) or 0)
+    algorithm = str(getattr(args, "draft_algorithm", "eagle3")).lower()
     if explicit is None:
-        if num_layers < 5:
+        if algorithm == "dspark":
+            explicit = parse_int_list(_local_draft_config(args).get("aux_hidden_state_layer_ids"))
+            if explicit is None:
+                raise ValueError(
+                    "--draft-feature-layer-ids is required for a remote DSpark checkpoint; "
+                    "for a local Speculators checkpoint it is read from config.json"
+                )
+        elif num_layers < 5:
             raise ValueError(
                 "--draft-feature-layer-ids is required when the Target layer count cannot "
                 "safely derive the EAGLE3 default [2, num_layers//2, num_layers-3]."
             )
-        explicit = [2, num_layers // 2, num_layers - 3]
+        else:
+            explicit = [2, num_layers // 2, num_layers - 3]
     normalized = []
     for layer_id in explicit:
         if layer_id < 0:
@@ -50,6 +74,21 @@ def resolve_feature_layer_ids(args: Namespace) -> list[int]:
             raise ValueError(f"Draft feature layer id {layer_id} is outside Target depth {num_layers}")
         normalized.append(layer_id)
     return normalized
+
+
+def resolve_dspark_block_size(args: Namespace) -> int:
+    value = getattr(args, "draft_dspark_block_size", None)
+    if value is None:
+        value = _local_draft_config(args).get("block_size")
+    if value is None:
+        raise ValueError(
+            "--draft-dspark-block-size is required for a remote DSpark checkpoint; "
+            "for a local Speculators checkpoint it is read from config.json"
+        )
+    value = int(value)
+    if value < 2:
+        raise ValueError("DSpark block size must be at least 2")
+    return value
 
 
 def should_run_draft_interval(rollout_id: int, interval: int | None) -> bool:
@@ -69,8 +108,9 @@ def validate_external_draft_args(args: Namespace) -> None:
     if not external_draft_enabled(args):
         return
 
-    if str(getattr(args, "draft_algorithm", "eagle3")).lower() != "eagle3":
-        raise ValueError("The first external Draft training implementation supports only --draft-algorithm=eagle3")
+    algorithm = str(getattr(args, "draft_algorithm", "eagle3")).lower()
+    if algorithm not in {"eagle3", "dspark"}:
+        raise ValueError("External Draft training supports --draft-algorithm=eagle3 or dspark")
     if not getattr(args, "draft_model_path", None):
         raise ValueError("--enable-external-draft-training requires --draft-model-path")
     if not (getattr(args, "draft_target_embedding_path", None) or getattr(args, "hf_checkpoint", None)):
@@ -109,8 +149,10 @@ def validate_external_draft_args(args: Namespace) -> None:
     if not spec_config:
         raise ValueError("External Draft training requires --vllm-speculative-config")
     method = str(spec_config.get("method", "")).strip().lower()
-    if method not in {"eagle", "eagle3"}:
-        raise ValueError("External Draft training requires vLLM speculative method 'eagle' or 'eagle3'")
+    expected_methods = {"eagle", "eagle3"} if algorithm == "eagle3" else {"dspark"}
+    if method not in expected_methods:
+        expected = "'eagle' or 'eagle3'" if algorithm == "eagle3" else "'dspark'"
+        raise ValueError(f"External {algorithm} training requires vLLM speculative method {expected}")
     configured_model = spec_config.get("model")
     if configured_model and str(configured_model) != str(args.draft_model_path):
         raise ValueError(
@@ -123,6 +165,43 @@ def validate_external_draft_args(args: Namespace) -> None:
 
     layer_ids = resolve_feature_layer_ids(args)
     args.draft_feature_layer_ids = layer_ids
+    if algorithm == "dspark":
+        draft_config = _local_draft_config(args)
+        if draft_config and "speculators_model_type" not in draft_config:
+            raise ValueError("Qwen DSpark online training requires a Speculators-format checkpoint")
+        config_algorithm = str(draft_config.get("speculators_model_type", "dspark")).lower()
+        if config_algorithm != "dspark":
+            raise ValueError(
+                "Qwen DSpark training requires a Speculators DSpark checkpoint, got "
+                f"speculators_model_type={config_algorithm!r}"
+            )
+        transformer_config = draft_config.get("transformer_layer_config")
+        if isinstance(transformer_config, dict):
+            model_type = str(transformer_config.get("model_type", "")).lower()
+            if model_type and not model_type.startswith("qwen3"):
+                raise ValueError(
+                    "VIME currently supports only Qwen3-family DSpark checkpoints, got "
+                    f"transformer_layer_config.model_type={model_type!r}"
+                )
+        markov_head_type = str(draft_config.get("markov_head_type", "vanilla")).lower()
+        if markov_head_type != "vanilla":
+            raise ValueError(
+                "Qwen DSpark serving currently supports only markov_head_type='vanilla', got " f"{markov_head_type!r}"
+            )
+        if bool(draft_config.get("enable_confidence_head", True)) and not bool(
+            draft_config.get("confidence_head_with_markov", True)
+        ):
+            raise ValueError("Qwen DSpark confidence head must use confidence_head_with_markov=true")
+        args.draft_dspark_block_size = resolve_dspark_block_size(args)
+        for name in ("draft_dspark_max_anchors",):
+            if int(getattr(args, name, 0) or 0) <= 0:
+                raise ValueError(f"--{name.replace('_', '-')} must be positive")
+        try:
+            loss_config = json.loads(str(getattr(args, "draft_dspark_loss_fn", "")))
+        except json.JSONDecodeError as exc:
+            raise ValueError("--draft-dspark-loss-fn must be a JSON object") from exc
+        if not isinstance(loss_config, dict) or not loss_config:
+            raise ValueError("--draft-dspark-loss-fn must be a non-empty JSON object")
     for name in (
         "draft_collect_interval",
         "draft_train_interval",

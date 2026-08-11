@@ -144,9 +144,9 @@ class UpdateWeightFromDistributed:
         """
         self.weight_version += 1
         external_draft_pending = self._external_draft_version is not None
-        smoke_draft_only = external_draft_pending and os.environ.get(
-            "VIME_EXTERNAL_DRAFT_SMOKE_SKIP_ACTOR_UPDATE", "0"
-        ) == "1"
+        smoke_draft_only = (
+            external_draft_pending and os.environ.get("VIME_EXTERNAL_DRAFT_SMOKE_SKIP_ACTOR_UPDATE", "0") == "1"
+        )
 
         if dist.get_rank() == 0:
             ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
@@ -203,6 +203,10 @@ class UpdateWeightFromDistributed:
         if not self._is_pp_src_rank:
             return
         payload = self._external_draft_named_tensors
+        # Ascend loads the confidence head atomically and treats a later bucket
+        # without confidence weights as disabling it. Keep one DSpark snapshot
+        # in one model.load_weights call by using one full-snapshot packed buffer.
+        single_load = isinstance(payload, dict) and str(payload.get("algorithm", "")).lower() == "dspark"
         if isinstance(payload, dict):
             payload = payload.get("named_tensors", payload.get("state_dict"))
         if isinstance(payload, dict):
@@ -213,6 +217,33 @@ class UpdateWeightFromDistributed:
         bucket_limit = int(getattr(self.args, "update_weight_buffer_size", 0) or (512 << 20))
         bucket: list[tuple[str, torch.Tensor]] = []
         bucket_bytes = 0
+        device = torch.npu.current_device() if is_npu() else torch.cuda.current_device()
+
+        if single_load:
+            snapshot_bytes = 0
+            for name, value in payload:
+                if not torch.is_tensor(value):
+                    raise TypeError(f"External Draft state {name!r} is not a tensor")
+                snapshot_bytes += value.numel() * value.element_size()
+            while not ray.get(self.rollout_engine_lock.acquire.remote()):
+                time.sleep(0.1)
+            try:
+                refs = update_weights_from_distributed(
+                    self._group_name,
+                    self._model_update_groups,
+                    self.weight_version,
+                    self.rollout_engines,
+                    payload,
+                    packed=True,
+                    transfer_device=device,
+                    packed_buffer_size_bytes=max(snapshot_bytes, 1),
+                    packed_num_buffers=1,
+                )
+                ray.get(refs)
+            finally:
+                ray.get(self.rollout_engine_lock.release.remote())
+            (torch.npu.synchronize() if is_npu() else torch.cuda.synchronize())
+            return
 
         def send_bucket() -> None:
             nonlocal bucket, bucket_bytes
@@ -235,7 +266,6 @@ class UpdateWeightFromDistributed:
             bucket = []
             bucket_bytes = 0
 
-        device = torch.npu.current_device() if is_npu() else torch.cuda.current_device()
         for name, value in payload:
             if not torch.is_tensor(value):
                 raise TypeError(f"External Draft state {name!r} is not a tensor")
@@ -542,6 +572,9 @@ def update_weights_from_distributed(
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
     *,
     packed: bool = False,
+    transfer_device: torch.device | int | None = None,
+    packed_buffer_size_bytes: int | None = None,
+    packed_num_buffers: int | None = None,
 ) -> list[ObjectRef]:
     """
     Send metadata (Ray), broadcast tensors (NCCL rank 0 → engines).
@@ -549,31 +582,58 @@ def update_weights_from_distributed(
     The *group* is a vLLM ``PyNcclCommunicator`` from ``trainer_init``
     in the Megatron trainer process.
     """
+    update_kwargs = {
+        "names": [name for name, _ in converted_named_tensors],
+        "dtypes": [param.dtype for _, param in converted_named_tensors],
+        "shapes": [param.shape for _, param in converted_named_tensors],
+        "group_name": group_name,
+        "weight_version": str(weight_version),
+        "packed": packed,
+    }
+    if packed_buffer_size_bytes is not None:
+        update_kwargs["packed_buffer_size_bytes"] = int(packed_buffer_size_bytes)
+    if packed_num_buffers is not None:
+        update_kwargs["packed_num_buffers"] = int(packed_num_buffers)
     refs = [
         engine.update_weights_from_distributed.remote(
-            names=[name for name, _ in converted_named_tensors],
-            dtypes=[param.dtype for _, param in converted_named_tensors],
-            shapes=[param.shape for _, param in converted_named_tensors],
-            group_name=group_name,
-            weight_version=str(weight_version),
-            packed=packed,
+            **update_kwargs,
         )
         for engine in rollout_engines
     ]
 
-    named_gpu_iter = (
-        (name, (param.data if hasattr(param, "data") else param).contiguous())
-        for name, param in converted_named_tensors
-    )
+    def iter_gpu_tensors():
+        for name, param in converted_named_tensors:
+            tensor = param.data if hasattr(param, "data") else param
+            if transfer_device is not None:
+                tensor = tensor.to(device=transfer_device, non_blocking=False)
+            yield name, tensor.contiguous()
+
+    named_gpu_iter = iter_gpu_tensors()
     if is_npu():
+        trainer_kwargs = {
+            "group": group,
+            "packed": packed,
+        }
+        if packed_buffer_size_bytes is not None:
+            trainer_kwargs["packed_buffer_size_bytes"] = int(packed_buffer_size_bytes)
+        if packed_num_buffers is not None:
+            trainer_kwargs["packed_num_buffers"] = int(packed_num_buffers)
         HCCLWeightTransferEngine.trainer_send_weights(
             named_gpu_iter,
-            HCCLTrainerSendWeightsArgs(group=group, packed=packed),
+            HCCLTrainerSendWeightsArgs(**trainer_kwargs),
         )
     else:
+        trainer_kwargs = {
+            "group": group,
+            "packed": packed,
+        }
+        if packed_buffer_size_bytes is not None:
+            trainer_kwargs["packed_buffer_size_bytes"] = int(packed_buffer_size_bytes)
+        if packed_num_buffers is not None:
+            trainer_kwargs["packed_num_buffers"] = int(packed_num_buffers)
         NCCLWeightTransferEngine.trainer_send_weights(
             named_gpu_iter,
-            NCCLTrainerSendWeightsArgs(group=group, packed=packed),
+            NCCLTrainerSendWeightsArgs(**trainer_kwargs),
         )
 
     return refs

@@ -9,6 +9,10 @@ import torch
 
 
 FEATURE_SCHEMA_VERSION = 1
+_HIDDEN_LAYOUTS = {
+    "eagle3": "eagle3_aux_plus_last",
+    "dspark": "qwen_dspark_aux_plus_last",
+}
 
 
 def _cpu_contiguous(tensor: torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.Tensor:
@@ -40,9 +44,10 @@ class DraftFeatureSample:
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any], *, strict: bool = True) -> DraftFeatureSample:
+        algorithm = str(payload.get("algorithm", "eagle3")).lower()
         sample = cls(
             schema_version=int(payload.get("schema_version", FEATURE_SCHEMA_VERSION)),
-            algorithm=str(payload.get("algorithm", "eagle3")),
+            algorithm=algorithm,
             input_ids=payload["input_ids"],
             loss_mask=payload["loss_mask"],
             position_ids=payload["position_ids"],
@@ -57,7 +62,7 @@ class DraftFeatureSample:
             window_start=int(payload["window_start"]),
             window_end=int(payload["window_end"]),
             aux_layer_ids=tuple(int(item) for item in payload["aux_layer_ids"]),
-            hidden_layout=str(payload.get("hidden_layout", "eagle3_aux_plus_last")),
+            hidden_layout=str(payload.get("hidden_layout", _HIDDEN_LAYOUTS.get(algorithm, ""))),
         )
         sample.validate(strict=strict)
         return sample
@@ -65,8 +70,15 @@ class DraftFeatureSample:
     def validate(self, *, strict: bool = True) -> None:
         if self.schema_version != FEATURE_SCHEMA_VERSION and strict:
             raise ValueError(f"Unsupported Draft feature schema version {self.schema_version}")
-        if self.algorithm.lower() != "eagle3":
+        algorithm = self.algorithm.lower()
+        if algorithm not in _HIDDEN_LAYOUTS:
             raise ValueError(f"Unsupported Draft feature algorithm {self.algorithm!r}")
+        expected_layout = _HIDDEN_LAYOUTS[algorithm]
+        if strict and self.hidden_layout != expected_layout:
+            raise ValueError(
+                f"Draft feature hidden layout {self.hidden_layout!r} does not match "
+                f"algorithm {algorithm!r}: expected {expected_layout!r}"
+            )
         tensor_fields = (
             "input_ids",
             "loss_mask",
@@ -96,7 +108,7 @@ class DraftFeatureSample:
         if mismatches:
             raise ValueError(f"Draft feature row mismatch: input_ids={rows}, others={mismatches}")
         if rows < 3:
-            raise ValueError("EAGLE3 feature windows require at least three token rows")
+            raise ValueError("Draft feature windows require at least three token rows")
         if self.window_start < 0 or self.window_end <= self.window_start:
             raise ValueError(f"Invalid Draft feature window [{self.window_start}, {self.window_end})")
         if self.window_end - self.window_start != rows:
