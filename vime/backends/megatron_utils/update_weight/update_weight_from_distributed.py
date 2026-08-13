@@ -16,7 +16,6 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 from tqdm import tqdm
 from vllm.distributed.weight_transfer.nccl_engine import NCCLTrainerSendWeightsArgs, NCCLWeightTransferEngine
-from vllm_ascend.distributed.weight_transfer.hccl_engine import HCCLTrainerSendWeightsArgs, HCCLWeightTransferEngine
 
 from vime.utils.common import is_npu
 from vime.utils.distributed_utils import get_gloo_group
@@ -610,6 +609,13 @@ def update_weights_from_distributed(
 
     named_gpu_iter = iter_gpu_tensors()
     if is_npu():
+        # Keep vllm-ascend optional for CUDA installations. Importing this at
+        # module load time prevents the NCCL path from starting without it.
+        from vllm_ascend.distributed.weight_transfer.hccl_engine import (
+            HCCLTrainerSendWeightsArgs,
+            HCCLWeightTransferEngine,
+        )
+
         trainer_kwargs = {
             "group": group,
             "packed": packed,

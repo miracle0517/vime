@@ -21,6 +21,14 @@ class _Actor:
         self.train_external_draft = _RemoteMethod(self._train)
         self.prepare_external_draft_publish_snapshot = _RemoteMethod(self._snapshot)
         self.save_external_draft = _RemoteMethod(lambda rollout_id: f"draft-{rollout_id}.pt")
+        self.export_external_draft = _RemoteMethod(
+            lambda rollout_id: {
+                "complete": True,
+                "path": f"draft-hf-{rollout_id}",
+                "weight_files": ["model.safetensors"],
+                "weight_bytes": 1024,
+            }
+        )
 
     def _collect(self, feature_refs, target_head, target_version):
         self.calls.append((feature_refs, target_head, target_version))
@@ -66,3 +74,49 @@ def test_draft_group_delegates_to_actor_rank_zero(monkeypatch):
     assert snapshot_ref[0] == "object-ref"
     assert version == "1"
     assert group.save_draft(3) == ["draft-3.pt"]
+    assert group.save_draft(4, export_speculators=True) == [
+        "draft-4.pt",
+        {
+            "complete": True,
+            "path": "draft-hf-4",
+            "weight_files": ["model.safetensors"],
+            "weight_bytes": 1024,
+        },
+    ]
+    assert group.save_draft(5, save_checkpoint=False, export_speculators=True) == [
+        {
+            "complete": True,
+            "path": "draft-hf-5",
+            "weight_files": ["model.safetensors"],
+            "weight_bytes": 1024,
+        }
+    ]
+
+
+@pytest.mark.unit
+def test_draft_group_does_not_report_disabled_save_as_a_path(monkeypatch):
+    import vime.backends.speculative_training.draft_group as module
+
+    monkeypatch.setattr(module.ray, "get", lambda value: value)
+    rank_zero = _Actor()
+    rank_zero.save_external_draft = _RemoteMethod(lambda rollout_id: None)
+    actor_group = Namespace(_actor_handlers=[rank_zero])
+
+    assert ExternalDraftTrainGroup(Namespace(), actor_group).save_draft(3) == []
+
+
+@pytest.mark.unit
+def test_draft_group_rejects_a_missing_requested_export(monkeypatch):
+    import vime.backends.speculative_training.draft_group as module
+
+    monkeypatch.setattr(module.ray, "get", lambda value: value)
+    rank_zero = _Actor()
+    rank_zero.export_external_draft = _RemoteMethod(lambda rollout_id: None)
+    actor_group = Namespace(_actor_handlers=[rank_zero])
+
+    with pytest.raises(RuntimeError, match="did not return a complete artifact"):
+        ExternalDraftTrainGroup(Namespace(), actor_group).save_draft(
+            3,
+            save_checkpoint=False,
+            export_speculators=True,
+        )

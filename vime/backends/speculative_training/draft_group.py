@@ -38,8 +38,12 @@ class ExternalDraftTrainGroup:
         if len(versions) != 1:
             raise RuntimeError(f"Actor Draft feature versions diverged: {sorted(versions)}")
         target_version = versions.pop()
-        feature_refs = [value["draft_features_ref"] for value in results if value.get("draft_features_ref") is not None]
-        head_refs = [value["draft_target_lm_head_ref"] for value in results if value.get("draft_target_lm_head_ref") is not None]
+        feature_refs = [
+            value["draft_features_ref"] for value in results if value.get("draft_features_ref") is not None
+        ]
+        head_refs = [
+            value["draft_target_lm_head_ref"] for value in results if value.get("draft_target_lm_head_ref") is not None
+        ]
         if not head_refs:
             raise RuntimeError("No Actor rank exported the Target LM Head for Draft supervision")
         worker_result = ray.get(
@@ -82,6 +86,28 @@ class ExternalDraftTrainGroup:
             )
         self.last_published_draft_version = draft_version
 
-    def save_draft(self, rollout_id: int, force_sync: bool = False):
+    def save_draft(
+        self,
+        rollout_id: int,
+        force_sync: bool = False,
+        save_checkpoint: bool = True,
+        export_speculators: bool = False,
+    ):
         del force_sync
-        return [ray.get(self._draft_actor.save_external_draft.remote(rollout_id))]
+        saved_paths = []
+        if save_checkpoint:
+            saved_paths.append(ray.get(self._draft_actor.save_external_draft.remote(rollout_id)))
+        if export_speculators:
+            export_result = ray.get(self._draft_actor.export_external_draft.remote(rollout_id))
+            if (
+                not isinstance(export_result, dict)
+                or not export_result.get("complete")
+                or not export_result.get("path")
+                or not export_result.get("weight_files")
+                or int(export_result.get("weight_bytes", 0)) <= 0
+            ):
+                raise RuntimeError(
+                    "DSpark HuggingFace export was requested but Actor rank zero did not return a complete artifact"
+                )
+            saved_paths.append(export_result)
+        return [result for result in saved_paths if result is not None]

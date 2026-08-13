@@ -33,8 +33,26 @@ Qwen serving 路径限定 `markov_head_type=vanilla`；启用 confidence head �
 --draft-batch-size-per-gpu 4 \
 --draft-dspark-max-anchors 64 \
 --draft-dspark-loss-fn '{"ce":0.1,"tv":0.9}' \
+--save /outputs/actor-checkpoints \
+--save-interval 10 \
+--draft-save-hf /outputs/dspark-{rollout_id} \
 --vllm-speculative-config '{"method":"dspark","model":"/models/qwen3-dspark-speculators"}'
 ```
+
+`--draft-save-hf` 使用与主模型 `--save-hf` 相同的 `{rollout_id}` 路径模板习惯。Draft 达到
+`--draft-save-interval` 或最后一个 rollout 时，将完整参数转为 CPU 连续张量后调用 `save_pretrained`，
+原子导出 `config.json`、PyTorch HuggingFace 权重和完成标记；它不依赖 Actor 的 `--save-interval`。
+失败的导出不会覆盖上一个有效目录。导出目录不得与原始 `--draft-model-path` 或 Actor 的
+`--save-hf` 目录相同。目前此选项仅支持 DSpark。
+
+仅设置 `--vllm-speculative-config method=dspark` 只代表 rollout engine 使用 DSpark 推理，本身没有可保存的
+训练副本。设置 `--draft-save-hf` 后，VIME 会自动启用 External Draft 训练副本、将算法归一化为 DSpark，
+并在未显式设置 `--draft-model-path` 时使用 speculative config 中的 `model`。如果 Actor rank 0 未返回经过
+完整性校验的导出结果，训练会直接报错，不再静默跳过保存。
+
+导出实际发生在 Actor rank 0 所在主机，成功日志会包含该主机名、绝对路径、权重文件列表和总字节数。
+Ray 多机运行时应将 `--draft-save-hf` 指向所有节点可见的共享文件系统；否则模型已经写入 worker 本地磁盘，
+但在提交任务的 head 节点上看不到。
 
 本地 checkpoint 的 `block_size` 和 `aux_hidden_state_layer_ids` 会从 `config.json` 读取；远程
 checkpoint 必须显式提供 `--draft-dspark-block-size` 和 `--draft-feature-layer-ids`。`max_anchors`

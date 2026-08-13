@@ -1460,6 +1460,18 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
             group.add_argument("--draft-publish-dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
             group.add_argument("--draft-checkpoint-path", type=str, default=None)
             group.add_argument("--draft-save-interval", type=int, default=None)
+            group.add_argument(
+                "--draft-save-hf",
+                type=str,
+                default=None,
+                help=(
+                    "Path used to export a trained DSpark model in HuggingFace/Speculators format on "
+                    "--draft-save-interval "
+                    "and at the final rollout. Supports {rollout_id} formatting and must not resolve to "
+                    "--draft-model-path. With vLLM method=dspark, this option also enables the external "
+                    "Draft training replica and infers --draft-model-path from the speculative model."
+                ),
+            )
             group.add_argument("--draft-queue-max-samples", type=int, default=2048)
             group.add_argument("--draft-vocab-mapping-path", type=str, default=None)
             group.add_argument("--draft-random-seed", type=int, default=1234)

@@ -268,6 +268,8 @@ class _VLLMHijack:
     - Patches NPUWorker.load_model and NPUWorker.start_weight_update to fix
       MoE weight_loader missing on EP (a vLLM bug where w13_weight/w2_weight
       params lack weight_loader attr when EP is enabled).
+    - Adds the missing Draft weight-update target/session methods on older
+      vLLM-Ascend workers while preserving newer native implementations.
     - Patches ApplyRotaryEmb.__init__ to skip flash_attn import
       (mindspeed/megatron backends introduce flash_attn as a dummy module,
       but vllm_ascend does not use it).
@@ -289,7 +291,11 @@ class _VLLMHijack:
 
         _orig_load_model = worker_cls.load_model
         _orig_start_weight_update = worker_cls.start_weight_update
+        _orig_start_draft_weight_update = getattr(worker_cls, "start_draft_weight_update", None)
+        _orig_update_weights = getattr(worker_cls, "update_weights", None)
+        _orig_finish_weight_update = getattr(worker_cls, "finish_weight_update", None)
         _orig_wake_up = worker_cls.wake_up
+        needs_draft_update_compat = not callable(_orig_start_draft_weight_update)
         has_dummy_kw = "load_dummy_weights" in inspect.signature(_orig_load_model).parameters
         start_weight_update_params = inspect.signature(_orig_start_weight_update).parameters
         checkpoint_format_param = start_weight_update_params.get("is_checkpoint_format")
@@ -318,11 +324,74 @@ class _VLLMHijack:
         ) -> None:
             _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
             if accepts_checkpoint_format_kw or accepts_arbitrary_kwargs:
-                _orig(self, is_checkpoint_format=is_checkpoint_format)
+                result = _orig(self, is_checkpoint_format=is_checkpoint_format)
             elif checkpoint_format_param is not None:
-                _orig(self, is_checkpoint_format)
+                result = _orig(self, is_checkpoint_format)
             else:
-                _orig(self)
+                result = _orig(self)
+            if needs_draft_update_compat:
+                self._weight_update_is_draft = False
+            return result
+
+        def _patched_start_draft_weight_update(self) -> None:
+            check_engine = getattr(self, "_check_weight_transfer_engine", None)
+            if callable(check_engine):
+                check_engine()
+            if getattr(self, "_weight_update_active", False):
+                raise RuntimeError(
+                    "start_draft_weight_update called while a weight update is already active. "
+                    "Call finish_weight_update first."
+                )
+
+            check_nz = getattr(self, "_check_nz_disabled", None)
+            if callable(check_nz):
+                check_nz()
+            engine = getattr(self, "weight_transfer_engine", None)
+            if engine is None:
+                raise RuntimeError("Draft weight update requires an initialized weight transfer engine")
+            if not bool(getattr(engine, "supports_draft_weight_update", True)):
+                raise RuntimeError(f"{type(engine).__name__} does not support draft model weight updates")
+
+            model_runner = getattr(self, "model_runner", None)
+            drafter = getattr(model_runner, "drafter", None)
+            draft_getter = getattr(drafter, "get_model", None)
+            draft_model = draft_getter() if callable(draft_getter) else getattr(drafter, "model", None)
+            speculative_config = getattr(self, "speculative_config", None)
+            if speculative_config is None:
+                speculative_config = getattr(getattr(self, "vllm_config", None), "speculative_config", None)
+            draft_model_config = getattr(speculative_config, "draft_model_config", None)
+            if draft_model is None or draft_model_config is None:
+                raise RuntimeError("Draft model weight update requested, but no Draft model/config is configured")
+
+            _VLLMHijack.patch_moe_weight_loader(draft_model)
+            try:
+                engine.set_weight_update_target(draft_model, draft_model_config)
+                engine.start_weight_update()
+            except BaseException:
+                engine.reset_weight_update_target()
+                raise
+            self._weight_update_active = True
+            self._weight_update_is_draft = True
+
+        def _patched_update_weights(self, update_info, _orig=_orig_update_weights):
+            try:
+                return _orig(self, update_info)
+            except BaseException:
+                if getattr(self, "_weight_update_is_draft", False):
+                    self.weight_transfer_engine.reset_weight_update_target()
+                    self._weight_update_active = False
+                    self._weight_update_is_draft = False
+                raise
+
+        def _patched_finish_weight_update(self, _orig=_orig_finish_weight_update):
+            is_draft = bool(getattr(self, "_weight_update_is_draft", False))
+            try:
+                return _orig(self)
+            finally:
+                if is_draft:
+                    self.weight_transfer_engine.reset_weight_update_target()
+                    self._weight_update_active = False
+                    self._weight_update_is_draft = False
 
         def _patched_wake_up(self, tags=None, _orig=_orig_wake_up) -> None:
             quant_config = self.vllm_config.quant_config
@@ -341,6 +410,12 @@ class _VLLMHijack:
 
         worker_cls.load_model = _patched_load_model  # type: ignore[attr-defined]
         worker_cls.start_weight_update = _patched_start_weight_update  # type: ignore[attr-defined]
+        if needs_draft_update_compat:
+            worker_cls.start_draft_weight_update = _patched_start_draft_weight_update  # type: ignore[attr-defined]
+            if callable(_orig_update_weights):
+                worker_cls.update_weights = _patched_update_weights  # type: ignore[attr-defined]
+            if callable(_orig_finish_weight_update):
+                worker_cls.finish_weight_update = _patched_finish_weight_update  # type: ignore[attr-defined]
         worker_cls.wake_up = _patched_wake_up  # type: ignore[attr-defined]
 
     @staticmethod

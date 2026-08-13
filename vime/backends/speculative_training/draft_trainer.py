@@ -6,9 +6,12 @@ import json
 import logging
 import math
 import os
+import shutil
+import socket
 from argparse import Namespace
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import torch
 import torch.distributed as dist
@@ -19,6 +22,7 @@ from vime.utils.misc import load_function
 
 from .backends.dspark import collate_dspark_samples, compute_dspark_loss, dspark_trainer_kwargs, sync_dspark_lm_heads
 from .backends.eagle3 import collate_eagle3_samples, compute_eagle3_loss
+from .config import make_dspark_vllm_compatible_config
 from .feature_schema import DraftFeatureSample, VersionedFeatureQueue
 
 logger = logging.getLogger(__name__)
@@ -28,12 +32,37 @@ def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
     return model.module if isinstance(model, DistributedDataParallel) else model
 
 
+def _cpu_contiguous_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """Materialize a portable state dict before a worker writes it to disk.
+
+    In particular, safetensors cannot reliably serialize Ascend NPU storages
+    directly.  Keeping the staging tensors on CPU also prevents the saved
+    checkpoint from depending on the accelerator device tag.
+    """
+
+    state_dict = {}
+    for name, value in model.state_dict().items():
+        if not torch.is_tensor(value):
+            raise TypeError(f"Draft state dict value {name!r} is not a tensor")
+        state_dict[name] = value.detach().to(device="cpu").contiguous()
+    if not state_dict:
+        raise RuntimeError("Draft state dict is empty")
+    return state_dict
+
+
 def _publish_dtype(name: str) -> torch.dtype:
     return {
         "bf16": torch.bfloat16,
         "fp16": torch.float16,
         "fp32": torch.float32,
     }[name]
+
+
+def _dspark_training_only_tensor(name: str) -> bool:
+    """Return whether a Speculators tensor has no vLLM DSpark counterpart."""
+
+    parts = name.split(".")
+    return "verifier_lm_head" in parts or "verifier_norm" in parts or "t2d" in parts
 
 
 def _load_draft_model(args: Namespace, device: torch.device) -> torch.nn.Module:
@@ -495,14 +524,20 @@ class ExternalDraftTrainer:
         seen_names = set()
         for name, tensor in named_tensors:
             name = str(name)
+            if self.algorithm == "dspark" and _dspark_training_only_tensor(name):
+                continue
             if name in seen_names:
                 raise ValueError(f"Draft publication contains duplicate parameter name {name!r}")
             if not torch.is_tensor(tensor):
                 raise TypeError(f"Draft publication value {name!r} is not a tensor")
             seen_names.add(name)
-            tensor_dtype = (
-                torch.float32 if self.algorithm == "dspark" and name.startswith("confidence_head.") else dtype
-            )
+            parts = name.split(".")
+            if not tensor.is_floating_point():
+                tensor_dtype = tensor.dtype
+            elif self.algorithm == "dspark" and "confidence_head" in parts:
+                tensor_dtype = torch.float32
+            else:
+                tensor_dtype = dtype
             normalized_tensors.append((name, tensor.detach().to(device="cpu", dtype=tensor_dtype).contiguous()))
         if not normalized_tensors:
             raise RuntimeError("Draft publication snapshot is empty")
@@ -537,6 +572,141 @@ class ExternalDraftTrainer:
         )
         os.replace(temporary_path, final_path)
         return str(final_path)
+
+    def export_hf_model(self, rollout_id: int) -> dict[str, Any] | None:
+        """Export the trained DSpark model as a reloadable HuggingFace directory."""
+
+        export_template = getattr(self.args, "draft_save_hf", None)
+        if self.rank != 0 or not export_template:
+            return None
+        if self.algorithm != "dspark":
+            raise ValueError("--draft-save-hf currently supports only --draft-algorithm=dspark")
+
+        output_path = Path(str(export_template).format(rollout_id=int(rollout_id))).expanduser()
+        source_path = Path(str(self.args.draft_model_path)).expanduser()
+        if source_path.exists() and source_path.resolve() == output_path.resolve():
+            raise ValueError("--draft-save-hf must not overwrite the original --draft-model-path")
+        actor_export_template = getattr(self.args, "save_hf", None)
+        if actor_export_template:
+            actor_output_path = Path(str(actor_export_template).format(rollout_id=int(rollout_id))).expanduser()
+            if actor_output_path.resolve() == output_path.resolve():
+                raise ValueError("--draft-save-hf must not overwrite the Actor --save-hf directory")
+
+        raw_model = _unwrap_model(self.model)
+        save_pretrained = getattr(raw_model, "save_pretrained", None)
+        if not callable(save_pretrained):
+            raise TypeError("The DSpark training model must implement save_pretrained() for --draft-save-hf")
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = output_path.parent / f".{output_path.name}.tmp-{uuid4().hex}"
+        backup_path = output_path.parent / f".{output_path.name}.backup-{uuid4().hex}"
+        model_state_dict = _cpu_contiguous_state_dict(raw_model)
+        logger.info(
+            "Saving %s Draft model in HuggingFace format to %s (%s CPU tensors)",
+            self.algorithm,
+            output_path,
+            len(model_state_dict),
+        )
+        try:
+            temporary_path.mkdir(parents=False, exist_ok=False)
+            # The state dict is already materialized as contiguous CPU tensors,
+            # so safetensors never sees an Ascend storage. Force one unsharded
+            # file to match the original two-file DSpark checkpoint layout.
+            save_pretrained(
+                temporary_path,
+                state_dict=model_state_dict,
+                safe_serialization=True,
+                max_shard_size="100GB",
+            )
+            config_path = temporary_path / "config.json"
+            weight_path = temporary_path / "model.safetensors"
+            if (
+                not config_path.is_file()
+                or config_path.stat().st_size == 0
+                or not weight_path.is_file()
+                or weight_path.stat().st_size == 0
+            ):
+                raise RuntimeError(
+                    "DSpark save_pretrained() did not produce a complete model directory with exactly two files at "
+                    f"{temporary_path.resolve()}: config.json="
+                    f"{config_path.is_file() and config_path.stat().st_size > 0}, "
+                    f"model.safetensors={weight_path.is_file() and weight_path.stat().st_size > 0}"
+                )
+            try:
+                saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"DSpark export contains an invalid config.json: {config_path}") from exc
+            if not isinstance(saved_config, dict):
+                raise RuntimeError(f"DSpark export config.json must contain a JSON object: {config_path}")
+            if str(saved_config.get("speculators_model_type", "")).lower() != "dspark":
+                raise RuntimeError(
+                    "DSpark export config.json must contain speculators_model_type='dspark' so the model "
+                    "can be reloaded by Speculators"
+                )
+            nested_speculators_config = saved_config.get("speculators_config")
+            if nested_speculators_config is not None and not isinstance(nested_speculators_config, dict):
+                raise RuntimeError(
+                    f"DSpark export config.json speculators_config must be an object or null: {config_path}"
+                )
+            model_config = getattr(raw_model, "config", None)
+            transformer_config = getattr(model_config, "transformer_layer_config", None)
+            try:
+                saved_config = make_dspark_vllm_compatible_config(
+                    saved_config,
+                    transformer_config=transformer_config,
+                )
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "DSpark export config.json cannot be converted to the combined vLLM/Speculators schema"
+                ) from exc
+            config_path.write_text(
+                json.dumps(saved_config, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            retained_names = {"config.json", "model.safetensors"}
+            for artifact in temporary_path.iterdir():
+                if artifact.name in retained_names:
+                    continue
+                if artifact.is_dir():
+                    shutil.rmtree(artifact)
+                else:
+                    artifact.unlink()
+
+            if output_path.exists():
+                os.replace(output_path, backup_path)
+            try:
+                os.replace(temporary_path, output_path)
+            except BaseException:
+                if backup_path.exists() and not output_path.exists():
+                    os.replace(backup_path, output_path)
+                raise
+            if backup_path.exists():
+                shutil.rmtree(backup_path, ignore_errors=True)
+        finally:
+            model_state_dict.clear()
+            if temporary_path.exists():
+                shutil.rmtree(temporary_path, ignore_errors=True)
+            if backup_path.exists() and output_path.exists():
+                shutil.rmtree(backup_path, ignore_errors=True)
+
+        weight_files = ["model.safetensors"]
+        result = {
+            "complete": True,
+            "path": str(output_path.resolve()),
+            "hostname": socket.gethostname(),
+            "weight_files": weight_files,
+            "weight_bytes": sum((output_path / name).stat().st_size for name in weight_files),
+            "draft_version": self.draft_version,
+            "rollout_id": int(rollout_id),
+            "algorithm": self.algorithm,
+        }
+        logger.info("Successfully saved external Draft model: %s", result)
+        return result
+
+    # Kept as a compatibility alias for callers introduced with the initial
+    # DSpark-only export implementation.
+    def export_speculators_model(self, rollout_id: int) -> dict[str, Any] | None:
+        return self.export_hf_model(rollout_id)
 
     def _load_checkpoint_if_present(self) -> None:
         checkpoint_path = getattr(self.args, "draft_checkpoint_path", None)

@@ -11,6 +11,9 @@ ARG MEGATRON_COMMIT=3714d81d418c9f1bca4594fc35f9e8289f652862
 ARG MEGATRON_BRIDGE_COMMIT=3fd3768045422d0aa5c97e90a4e6c659aea9acb9
 ARG MINDSPEED_COMMIT=fc63de5c48426dd019c3b3f39e65f5bdf56e4086
 ARG MBRIDGE_COMMIT=89eb10887887bc74853f89a4de258c0702932a1c
+# DSpark is evolving with vLLM. Production builds should override this with
+# the exact Speculators commit used to create the deployed Draft checkpoint.
+ARG SPECULATORS_REF=main
 ARG SOC_VERSION="ascend910_9391"
 ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 ARG APTMIRROR=""
@@ -81,6 +84,14 @@ RUN git clone https://gitcode.com/Ascend/MindSpeed.git /root/MindSpeed && \
 RUN git clone https://github.com/ISEEKYAN/mbridge.git /root/mbridge && \
     git -C /root/mbridge checkout "${MBRIDGE_COMMIT}"
 
+# Install Speculators and its in-repository hs_connectors workspace package
+# from the same revision. --no-deps protects the Ascend PyTorch/vLLM stack;
+# Vime's requirements install supplies the shared runtime dependencies below.
+RUN git clone https://github.com/vllm-project/speculators.git /root/speculators && \
+    git -C /root/speculators checkout "${SPECULATORS_REF}" && \
+    pip install --no-deps --no-build-isolation /root/speculators/hs_connectors && \
+    pip install --no-deps --no-build-isolation /root/speculators
+
 # Apply NPU training-stack patches from build context (/tmp/npu_patch).
 RUN for patch_file in /tmp/npu_patch/*.patch; do \
       base="$(basename "${patch_file}")"; \
@@ -124,9 +135,10 @@ RUN git clone --depth 1 --branch 2026.6.0 \
     cd /root && \
     rm -rf /root/sgl-kernel-npu
 
-# Minimal import check.
+# Minimal import check, including the exact DSpark training imports used when a
+# Megatron Ray actor initializes its external Draft trainer.
 RUN source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
-    python3 -c 'import megatron, mindspeed, torch_memory_saver, vime, vllm, vllm_ascend;'
+    python3 -c 'import hs_connectors, megatron, mindspeed, torch_memory_saver, vime, vllm, vllm_ascend; from speculators.models.dspark.config import DSparkSpeculatorConfig; from speculators.models.dspark.core import DSparkDraftModel;'
 
 WORKDIR /root/vime
 ENTRYPOINT []

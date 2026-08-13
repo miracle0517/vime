@@ -3,9 +3,11 @@ from __future__ import annotations
 import pytest
 import torch
 
+from vime.backends.speculative_training.backends import dspark
 from vime.backends.speculative_training.backends.dspark import (
     collate_dspark_samples,
     compute_dspark_loss,
+    dspark_trainer_kwargs,
     sync_dspark_lm_heads,
 )
 from vime.backends.speculative_training.feature_schema import DraftFeatureSample
@@ -87,3 +89,55 @@ def test_dspark_syncs_restricted_draft_and_verifier_heads():
     expected = target[[0, 2, 4]]
     assert torch.equal(model.lm_head.weight, expected)
     assert torch.equal(model.verifier_lm_head.weight, expected)
+
+
+class _TrainerKwargsModel(torch.nn.Module):
+    def __init__(self, loss_config):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.ones(()))
+        self.loss_config = loss_config
+
+    def get_trainer_kwargs(self, **kwargs):
+        return {"loss_config": self.loss_config, "max_anchors": kwargs["max_anchors"]}, {}
+
+
+def _trainer_args():
+    return type(
+        "Args",
+        (),
+        {
+            "draft_dspark_loss_fn": '{"ce": 0.1, "tv": 0.9}',
+            "draft_dspark_decay_gamma": 4.0,
+            "draft_dspark_max_anchors": 64,
+            "draft_dspark_confidence_head_alpha": 1.0,
+            "draft_dspark_per_position_loss_weight": "fixed-exp-decay",
+            "draft_dspark_dpace_alpha": 0.5,
+        },
+    )()
+
+
+@pytest.mark.unit
+def test_dspark_npu_replaces_only_fused_distribution_losses(monkeypatch):
+    ce_loss = lambda logits, targets: logits  # noqa: E731
+    fused_tv = lambda logits, targets: logits  # noqa: E731
+    eager_tv = lambda logits, targets: targets  # noqa: E731
+    model = _TrainerKwargsModel({"ce": (ce_loss, 0.1), "tv": (fused_tv, 0.9)})
+    monkeypatch.setattr(dspark, "_model_device_type", lambda model: "npu")
+    monkeypatch.setattr(dspark, "_load_eager_speculators_loss", lambda name: eager_tv)
+
+    kwargs = dspark_trainer_kwargs(model, _trainer_args())
+
+    assert kwargs["loss_config"]["ce"] == (ce_loss, 0.1)
+    assert kwargs["loss_config"]["tv"] == (eager_tv, 0.9)
+    assert model.loss_config["tv"] == (fused_tv, 0.9)
+
+
+@pytest.mark.unit
+def test_dspark_cuda_keeps_speculators_resolved_losses(monkeypatch):
+    fused_tv = lambda logits, targets: logits  # noqa: E731
+    model = _TrainerKwargsModel({"tv": (fused_tv, 0.9)})
+    monkeypatch.setattr(dspark, "_model_device_type", lambda model: "cuda")
+
+    kwargs = dspark_trainer_kwargs(model, _trainer_args())
+
+    assert kwargs["loss_config"]["tv"] == (fused_tv, 0.9)

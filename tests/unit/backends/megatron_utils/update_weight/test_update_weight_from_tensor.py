@@ -336,8 +336,8 @@ def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm):
     native_wake_up = FakeWorker.wake_up
     upw_vllm._VLLMHijack._patch_one_worker(FakeWorker)
 
-    assert FakeWorker.update_weights is native_update_weights
-    assert FakeWorker.finish_weight_update is native_finish_weight_update
+    assert FakeWorker.update_weights is not native_update_weights
+    assert FakeWorker.finish_weight_update is not native_finish_weight_update
     assert FakeWorker.wake_up is not native_wake_up
 
     worker = FakeWorker()
@@ -374,6 +374,185 @@ def test_npu_worker_patch_supports_parameterless_start_weight_update(upw_vllm, m
 
     patch_moe.assert_called_once_with(worker.model_runner.model)
     assert start_calls == [True]
+
+
+@pytest.mark.unit
+def test_npu_worker_patch_routes_draft_update_to_drafter_and_restores_target(upw_vllm, monkeypatch):
+    target_model = object()
+    target_config = object()
+    draft_model = object()
+    draft_config = object()
+
+    class FakeTransferEngine:
+        supports_draft_weight_update = True
+
+        def __init__(self):
+            self.model = target_model
+            self.model_config = target_config
+            self.started_targets = []
+            self.updated_targets = []
+            self.finished_targets = []
+
+        def set_weight_update_target(self, model, model_config):
+            self.model = model
+            self.model_config = model_config
+
+        def reset_weight_update_target(self):
+            self.model = target_model
+            self.model_config = target_config
+
+        def start_weight_update(self):
+            self.started_targets.append((self.model, self.model_config))
+
+        def update_weights(self, update_info):
+            self.updated_targets.append((self.model, update_info))
+
+        def finish_weight_update(self):
+            self.finished_targets.append(self.model)
+
+    class FakeWorker:
+        def __init__(self):
+            self.weight_transfer_engine = FakeTransferEngine()
+            self._weight_update_active = False
+            self.model_runner = types.SimpleNamespace(
+                model=target_model,
+                drafter=types.SimpleNamespace(get_model=lambda: draft_model),
+            )
+            self.vllm_config = types.SimpleNamespace(
+                quant_config=None,
+                speculative_config=types.SimpleNamespace(draft_model_config=draft_config),
+            )
+
+        def load_model(self):
+            pass
+
+        def start_weight_update(self):
+            self.weight_transfer_engine.start_weight_update()
+            self._weight_update_active = True
+
+        def update_weights(self, update_info):
+            self.weight_transfer_engine.update_weights(update_info)
+
+        def finish_weight_update(self):
+            self.weight_transfer_engine.finish_weight_update()
+            self._weight_update_active = False
+
+        def wake_up(self, tags=None):
+            pass
+
+    monkeypatch.setattr(upw_vllm._VLLMHijack, "patch_moe_weight_loader", lambda model: None)
+    upw_vllm._VLLMHijack._patch_one_worker(FakeWorker)
+    worker = FakeWorker()
+
+    worker.start_draft_weight_update()
+    worker.update_weights({"names": ["layers.0.weight"]})
+    worker.finish_weight_update()
+
+    engine = worker.weight_transfer_engine
+    assert engine.started_targets == [(draft_model, draft_config)]
+    assert engine.updated_targets == [(draft_model, {"names": ["layers.0.weight"]})]
+    assert engine.finished_targets == [draft_model]
+    assert (engine.model, engine.model_config) == (target_model, target_config)
+    assert worker._weight_update_active is False
+    assert worker._weight_update_is_draft is False
+
+
+@pytest.mark.unit
+def test_npu_worker_patch_restores_target_when_draft_update_fails(upw_vllm, monkeypatch):
+    target_model = object()
+    draft_model = object()
+
+    class FakeTransferEngine:
+        supports_draft_weight_update = True
+
+        def __init__(self):
+            self.model = target_model
+
+        def set_weight_update_target(self, model, model_config):
+            self.model = model
+
+        def reset_weight_update_target(self):
+            self.model = target_model
+
+        def start_weight_update(self):
+            pass
+
+        def update_weights(self, update_info):
+            raise RuntimeError("transfer failed")
+
+        def finish_weight_update(self):
+            pass
+
+    class FakeWorker:
+        def __init__(self):
+            self.weight_transfer_engine = FakeTransferEngine()
+            self._weight_update_active = False
+            self.model_runner = types.SimpleNamespace(
+                model=target_model,
+                drafter=types.SimpleNamespace(get_model=lambda: draft_model),
+            )
+            self.vllm_config = types.SimpleNamespace(
+                speculative_config=types.SimpleNamespace(draft_model_config=object())
+            )
+
+        def load_model(self):
+            pass
+
+        def start_weight_update(self):
+            pass
+
+        def update_weights(self, update_info):
+            return self.weight_transfer_engine.update_weights(update_info)
+
+        def finish_weight_update(self):
+            pass
+
+        def wake_up(self, tags=None):
+            pass
+
+    monkeypatch.setattr(upw_vllm._VLLMHijack, "patch_moe_weight_loader", lambda model: None)
+    upw_vllm._VLLMHijack._patch_one_worker(FakeWorker)
+    worker = FakeWorker()
+    worker.start_draft_weight_update()
+
+    with pytest.raises(RuntimeError, match="transfer failed"):
+        worker.update_weights({"names": ["layers.0.weight"]})
+
+    assert worker.weight_transfer_engine.model is target_model
+    assert worker._weight_update_active is False
+    assert worker._weight_update_is_draft is False
+
+
+@pytest.mark.unit
+def test_npu_worker_patch_preserves_native_draft_update_api(upw_vllm):
+    class FakeWorker:
+        def load_model(self):
+            pass
+
+        def start_weight_update(self):
+            pass
+
+        def start_draft_weight_update(self):
+            pass
+
+        def update_weights(self, update_info):
+            pass
+
+        def finish_weight_update(self):
+            pass
+
+        def wake_up(self, tags=None):
+            pass
+
+    native_start_draft = FakeWorker.start_draft_weight_update
+    native_update = FakeWorker.update_weights
+    native_finish = FakeWorker.finish_weight_update
+
+    upw_vllm._VLLMHijack._patch_one_worker(FakeWorker)
+
+    assert FakeWorker.start_draft_weight_update is native_start_draft
+    assert FakeWorker.update_weights is native_update
+    assert FakeWorker.finish_weight_update is native_finish
 
 
 @pytest.mark.unit

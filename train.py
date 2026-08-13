@@ -3,7 +3,6 @@ import os
 
 import ray
 
-from vime.utils import logging_utils
 from vime.backends.speculative_training.config import should_run_draft_interval
 from vime.ray.placement_group import (
     create_draft_model,
@@ -11,6 +10,7 @@ from vime.ray.placement_group import (
     create_rollout_manager,
     create_training_models,
 )
+from vime.utils import logging_utils
 from vime.utils.arguments import parse_args
 from vime.utils.common import is_npu
 from vime.utils.logging_utils import configure_logger, finish_tracking, init_tracking, update_tracking_open_metrics
@@ -54,6 +54,15 @@ def train(args):
     # create the actor and critic models
     actor_model, critic_model = create_training_models(args, pgs, rollout_manager)
     draft_model = create_draft_model(args, actor_model)
+    if getattr(args, "draft_save_hf", None):
+        if draft_model is None:
+            raise RuntimeError("DSpark export was requested but no trainable Draft replica was created")
+        logger.info(
+            "External DSpark export enabled: template=%s, interval=%s. Artifacts are written on "
+            "Actor rank zero; use a shared path when Ray workers run on multiple hosts.",
+            args.draft_save_hf,
+            args.draft_save_interval,
+        )
 
     if args.offload_rollout:
         ray.get(rollout_manager.onload_weights.remote())
@@ -98,6 +107,8 @@ def train(args):
             )
         if args.rollout_global_dataset:
             ray.get(rollout_manager.save.remote(rollout_id))
+
+    draft_export_completed = False
 
     # train loop.
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
@@ -145,13 +156,20 @@ def train(args):
         if actor_save_due:
             save(rollout_id)
 
-        draft_save_due = draft_model is not None and (
+        draft_checkpoint_due = draft_model is not None and (
             (args.draft_save_interval is None and actor_save_due)
             or should_run_draft_interval(rollout_id, args.draft_save_interval)
             or rollout_id == args.num_rollout - 1
         )
-        if draft_save_due:
-            draft_model.save_draft(rollout_id, force_sync=rollout_id == args.num_rollout - 1)
+        if draft_checkpoint_due:
+            draft_save_results = draft_model.save_draft(
+                rollout_id,
+                force_sync=rollout_id == args.num_rollout - 1,
+                export_speculators=bool(getattr(args, "draft_save_hf", None)),
+            )
+            if getattr(args, "draft_save_hf", None):
+                draft_export_completed = True
+            logger.info("External Draft save completed: %s", draft_save_results)
 
         offload_train(actor_trains_this_step)
         if args.offload_rollout:
@@ -180,6 +198,18 @@ def train(args):
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             ray.get(rollout_manager.eval.remote(rollout_id))
+
+    if draft_model is not None and getattr(args, "draft_save_hf", None) and not draft_export_completed:
+        # The loop is empty for eval-only jobs and already-completed resumes.
+        # An explicit export request must still produce an artifact instead of
+        # being silently ignored.
+        export_rollout_id = max(int(args.num_rollout or 0) - 1, 0)
+        draft_save_results = draft_model.save_draft(
+            export_rollout_id,
+            force_sync=True,
+            export_speculators=True,
+        )
+        logger.info("External Draft final export completed without a training iteration: %s", draft_save_results)
 
     if draft_model is not None:
         draft_model.release()
