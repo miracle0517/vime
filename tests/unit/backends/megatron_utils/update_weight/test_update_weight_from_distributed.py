@@ -30,6 +30,8 @@ _STUBBED_MODULES = (
     "ray",
     "ray.actor",
     "vime.utils.distributed_utils",
+    "vime.backends.megatron_utils.megatron_to_hf",
+    "vime.backends.megatron_utils.megatron_to_hf.hf_weight_iterator_base",
     "vllm",
     "vllm.distributed",
     "vllm.distributed.weight_transfer",
@@ -99,12 +101,31 @@ def _install_stubs():
     vime_utils.get_gloo_group = MagicMock(return_value="gloo")
     sys.modules.setdefault("vime.utils.distributed_utils", vime_utils)
 
+    megatron_to_hf = types.ModuleType("vime.backends.megatron_utils.megatron_to_hf")
+    megatron_to_hf.__path__ = []
+    megatron_to_hf.convert_to_hf = lambda args, model_name, name, param, quantization_config: [(name, param)]
+    hf_iterator_module = types.ModuleType("vime.backends.megatron_utils.megatron_to_hf.hf_weight_iterator_base")
+
+    class DummyHfWeightIteratorBase:
+        @staticmethod
+        def create(*args, **kwargs):
+            return None
+
+    hf_iterator_module.HfWeightIteratorBase = DummyHfWeightIteratorBase
+    sys.modules.setdefault("vime.backends.megatron_utils.megatron_to_hf", megatron_to_hf)
+    sys.modules.setdefault(
+        "vime.backends.megatron_utils.megatron_to_hf.hf_weight_iterator_base",
+        hf_iterator_module,
+    )
+
     nccl_mod = types.ModuleType("vllm.distributed.weight_transfer.nccl_engine")
 
     class DummyNCCLTrainerSendWeightsArgs:
-        def __init__(self, *, group, packed):
+        def __init__(self, *, group, packed, packed_buffer_size_bytes=None, packed_num_buffers=None):
             self.group = group
             self.packed = packed
+            self.packed_buffer_size_bytes = packed_buffer_size_bytes
+            self.packed_num_buffers = packed_num_buffers
 
     class DummyNCCLWeightTransferEngine:
         @staticmethod
@@ -180,9 +201,11 @@ def _make_dummy_nccl_engine(*, send_seen: list[dict] | None = None, init_seen: l
     """Build dummy NCCL types; patch on *upw* module (top-level import, not sys.modules)."""
 
     class DummyNCCLTrainerSendWeightsArgs:
-        def __init__(self, *, group, packed):
+        def __init__(self, *, group, packed, packed_buffer_size_bytes=None, packed_num_buffers=None):
             self.group = group
             self.packed = packed
+            self.packed_buffer_size_bytes = packed_buffer_size_bytes
+            self.packed_num_buffers = packed_num_buffers
 
     class DummyNCCLWeightTransferEngine:
         @staticmethod
@@ -193,6 +216,8 @@ def _make_dummy_nccl_engine(*, send_seen: list[dict] | None = None, init_seen: l
                         "items": list(iterator),
                         "group": trainer_args.group,
                         "packed": trainer_args.packed,
+                        "packed_buffer_size_bytes": trainer_args.packed_buffer_size_bytes,
+                        "packed_num_buffers": trainer_args.packed_num_buffers,
                     }
                 )
 
@@ -349,6 +374,30 @@ def test_remote_kwargs_include_packed_true(upw, monkeypatch):
 
 
 @pytest.mark.unit
+def test_packed_snapshot_metadata_reaches_engine_and_trainer(upw, monkeypatch):
+    engine = RecordingEngine()
+    seen_send = []
+    _patch_trainer_send(monkeypatch, upw, seen_send)
+
+    upw.update_weights_from_distributed(
+        "draft",
+        DummyGroup(),
+        8,
+        [engine],
+        _real_tensors(n=1),
+        packed=True,
+        packed_buffer_size_bytes=4096,
+        packed_num_buffers=1,
+    )
+
+    assert seen_send[0]["packed_buffer_size_bytes"] == 4096
+    assert seen_send[0]["packed_num_buffers"] == 1
+    remote_kwargs = engine.update_weights_from_distributed.calls[0].kwargs
+    assert remote_kwargs["packed_buffer_size_bytes"] == 4096
+    assert remote_kwargs["packed_num_buffers"] == 1
+
+
+@pytest.mark.unit
 def test_remote_kwargs_include_packed_false(upw, monkeypatch):
     group = DummyGroup()
     engine = RecordingEngine()
@@ -497,6 +546,50 @@ def test_bridge_path_forwards_packed_flag_and_listifies_chunks(upw, monkeypatch)
         (["bridge.0"], True, "pbar"),
         (["bridge.1"], True, "pbar"),
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transfer_fails", [False, True])
+def test_dspark_snapshot_uses_one_packed_transfer_and_releases_lock(upw, monkeypatch, transfer_fails):
+    obj = _make_instance(upw)
+    obj.weight_version = 7
+    obj.rollout_engines = [RecordingEngine()]
+    obj._external_draft_named_tensors = {
+        "algorithm": "dspark",
+        "named_tensors": [
+            ("draft.weight", torch.zeros(2, dtype=torch.float32)),
+            ("draft.index", torch.zeros(3, dtype=torch.int64)),
+        ],
+    }
+    calls = []
+
+    def transfer(*args, **kwargs):
+        calls.append((args, kwargs))
+        if transfer_fails:
+            raise RuntimeError("injected transfer failure")
+        return ["ref"]
+
+    monkeypatch.setattr(upw, "update_weights_from_distributed", transfer)
+    monkeypatch.setattr(upw, "is_npu", lambda: False)
+    monkeypatch.setattr(upw.torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(upw.torch.cuda, "synchronize", lambda: None)
+
+    if transfer_fails:
+        with pytest.raises(RuntimeError, match="injected transfer failure"):
+            upw.UpdateWeightFromDistributed._send_external_draft_weights_to_rollout_engines(obj)
+    else:
+        upw.UpdateWeightFromDistributed._send_external_draft_weights_to_rollout_engines(obj)
+
+    assert len(calls) == 1
+    _, kwargs = calls[0]
+    assert kwargs == {
+        "packed": True,
+        "transfer_device": 0,
+        "packed_buffer_size_bytes": 32,
+        "packed_num_buffers": 1,
+    }
+    assert len(obj.rollout_engine_lock.acquire.calls) == 1
+    assert len(obj.rollout_engine_lock.release.calls) == 1
 
 
 @pytest.mark.unit

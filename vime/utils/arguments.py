@@ -1468,12 +1468,20 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
                     "Path used to export a trained DSpark model in HuggingFace/Speculators format on "
                     "--draft-save-interval "
                     "and at the final rollout. Supports {rollout_id} formatting and must not resolve to "
-                    "--draft-model-path. With vLLM method=dspark, this option also enables the external "
-                    "Draft training replica and infers --draft-model-path from the speculative model."
+                    "--draft-model-path. Requires explicit --enable-external-draft-training and "
+                    "--draft-algorithm=dspark; it never enables Draft training implicitly."
                 ),
             )
             group.add_argument("--draft-queue-max-samples", type=int, default=2048)
-            group.add_argument("--draft-vocab-mapping-path", type=str, default=None)
+            group.add_argument(
+                "--draft-vocab-mapping-path",
+                type=str,
+                default=None,
+                help=(
+                    "Optional external mapping for custom Draft factories. Qwen DSpark requires t2d/d2t to be "
+                    "embedded in --draft-model-path so rollout and training load the same mapping."
+                ),
+            )
             group.add_argument("--draft-random-seed", type=int, default=1234)
             group.add_argument(
                 "--draft-freeze-embeddings",

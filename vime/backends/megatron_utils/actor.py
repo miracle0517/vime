@@ -763,8 +763,17 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def prepare_external_draft_publish_snapshot(self):
         """Export trained Draft tensors through Ray's object store."""
-        snapshot = self._require_external_draft_trainer().prepare_publish_snapshot()
-        return None if snapshot is None else ray.put(snapshot)
+        trainer = self._require_external_draft_trainer()
+        snapshot = trainer.prepare_publish_snapshot()
+        if snapshot is None:
+            return None
+        if trainer.algorithm != "dspark":
+            return ray.put(snapshot)
+        return {
+            "snapshot_ref": ray.put(snapshot),
+            "draft_version": snapshot["draft_version"],
+            "trained_against_target_version": snapshot["trained_against_target_version"],
+        }
 
     def save_external_draft(self, rollout_id: int):
         """Checkpoint the Draft state owned by Actor rank zero."""

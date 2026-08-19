@@ -307,6 +307,12 @@ class _VLLMHijack:
             parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in start_weight_update_params.values()
         )
 
+        def _speculative_method(worker) -> str:
+            speculative_config = getattr(worker, "speculative_config", None)
+            if speculative_config is None:
+                speculative_config = getattr(getattr(worker, "vllm_config", None), "speculative_config", None)
+            return str(getattr(speculative_config, "method", "")).strip().lower()
+
         if has_dummy_kw:
 
             def _patched_load_model(self, *, load_dummy_weights: bool = False, _orig=_orig_load_model) -> None:
@@ -323,13 +329,20 @@ class _VLLMHijack:
             self, is_checkpoint_format: bool = True, _orig=_orig_start_weight_update
         ) -> None:
             _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
-            if accepts_checkpoint_format_kw or accepts_arbitrary_kwargs:
-                result = _orig(self, is_checkpoint_format=is_checkpoint_format)
-            elif checkpoint_format_param is not None:
-                result = _orig(self, is_checkpoint_format)
+            is_dspark = _speculative_method(self) == "dspark"
+            if is_dspark:
+                if accepts_checkpoint_format_kw or accepts_arbitrary_kwargs:
+                    result = _orig(self, is_checkpoint_format=is_checkpoint_format)
+                elif checkpoint_format_param is not None:
+                    result = _orig(self, is_checkpoint_format)
+                else:
+                    result = _orig(self)
             else:
-                result = _orig(self)
-            if needs_draft_update_compat:
+                # Preserve the pre-DSpark EAGLE/custom behavior exactly. The
+                # signature adaptation below is part of the paired DSpark
+                # runtime contract, not a generic worker API migration.
+                result = _orig(self, is_checkpoint_format=is_checkpoint_format)
+            if needs_draft_update_compat and is_dspark:
                 self._weight_update_is_draft = False
             return result
 
@@ -349,16 +362,37 @@ class _VLLMHijack:
             engine = getattr(self, "weight_transfer_engine", None)
             if engine is None:
                 raise RuntimeError("Draft weight update requires an initialized weight transfer engine")
-            if not bool(getattr(engine, "supports_draft_weight_update", True)):
-                raise RuntimeError(f"{type(engine).__name__} does not support draft model weight updates")
+            speculative_config = getattr(self, "speculative_config", None)
+            if speculative_config is None:
+                speculative_config = getattr(getattr(self, "vllm_config", None), "speculative_config", None)
+            if _speculative_method(self) != "dspark":
+                raise RuntimeError(
+                    "VIME's legacy NPUWorker Draft-update compatibility hook is DSpark-only; "
+                    "other algorithms require a native runtime implementation"
+                )
+            if (
+                not bool(getattr(engine, "supports_draft_weight_update", False))
+                or not callable(getattr(engine, "set_weight_update_target", None))
+                or not callable(getattr(engine, "reset_weight_update_target", None))
+            ):
+                raise RuntimeError(
+                    f"{type(engine).__name__} does not implement the DSpark weight-update target contract"
+                )
 
             model_runner = getattr(self, "model_runner", None)
             drafter = getattr(model_runner, "drafter", None)
             draft_getter = getattr(drafter, "get_model", None)
             draft_model = draft_getter() if callable(draft_getter) else getattr(drafter, "model", None)
-            speculative_config = getattr(self, "speculative_config", None)
-            if speculative_config is None:
-                speculative_config = getattr(getattr(self, "vllm_config", None), "speculative_config", None)
+            if draft_model is None:
+                # Ascend MRV2 stores DSpark in ``speculator`` and paired vLLM
+                # exposes ``get_draft_model``. Keep the older EAGLE lookup
+                # order unchanged and use these fallbacks only for DSpark.
+                runner_draft_getter = getattr(model_runner, "get_draft_model", None)
+                draft_model = runner_draft_getter() if callable(runner_draft_getter) else None
+                if draft_model is None:
+                    speculator = getattr(model_runner, "speculator", None)
+                    draft_getter = getattr(speculator, "get_model", None)
+                    draft_model = draft_getter() if callable(draft_getter) else getattr(speculator, "model", None)
             draft_model_config = getattr(speculative_config, "draft_model_config", None)
             if draft_model is None or draft_model_config is None:
                 raise RuntimeError("Draft model weight update requested, but no Draft model/config is configured")

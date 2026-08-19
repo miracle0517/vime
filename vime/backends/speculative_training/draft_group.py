@@ -19,6 +19,7 @@ class ExternalDraftTrainGroup:
             raise RuntimeError("Actor-colocated Draft training requires an initialized Actor group")
         self._draft_actor = actor_group._actor_handlers[0]
         self.base_args = args
+        self.algorithm = str(getattr(args, "draft_algorithm", "eagle3")).lower()
         self.last_train_result = None
         self.last_published_draft_version = -1
 
@@ -63,8 +64,10 @@ class ExternalDraftTrainGroup:
         }
 
     def train_draft(self, rollout_id: int):
-        self.last_train_result = ray.get(self._draft_actor.train_external_draft.remote(rollout_id))
-        return self.last_train_result
+        result = ray.get(self._draft_actor.train_external_draft.remote(rollout_id))
+        if self.algorithm != "dspark" or (isinstance(result, dict) and int(result.get("trained", 0))):
+            self.last_train_result = result
+        return result
 
     def prepare_publish_snapshot(self):
         if not isinstance(self.last_train_result, dict) or not int(self.last_train_result.get("trained", 0)):
@@ -75,7 +78,23 @@ class ExternalDraftTrainGroup:
         snapshot = ray.get(self._draft_actor.prepare_external_draft_publish_snapshot.remote())
         if snapshot is None:
             return None
-        snapshot_ref = snapshot if isinstance(snapshot, ray.ObjectRef) else ray.put(snapshot)
+        if self.algorithm == "dspark":
+            if not isinstance(snapshot, dict) or "snapshot_ref" not in snapshot:
+                raise RuntimeError("Actor returned an invalid DSpark snapshot envelope")
+            snapshot_version = int(snapshot.get("draft_version", -1))
+            snapshot_target_version = str(snapshot.get("trained_against_target_version"))
+            expected_target_version = str(self.last_train_result.get("target_weight_version"))
+            if snapshot_version != candidate_version or snapshot_target_version != expected_target_version:
+                raise RuntimeError(
+                    "DSpark snapshot metadata does not match the successful training result: "
+                    f"candidate=({candidate_version}, {expected_target_version}), "
+                    f"snapshot=({snapshot_version}, {snapshot_target_version})"
+                )
+            snapshot_ref = snapshot["snapshot_ref"]
+            if not isinstance(snapshot_ref, ray.ObjectRef):
+                snapshot_ref = ray.put(snapshot_ref)
+        else:
+            snapshot_ref = snapshot if isinstance(snapshot, ray.ObjectRef) else ray.put(snapshot)
         return snapshot_ref, str(candidate_version)
 
     def mark_published(self, draft_version: str) -> None:
@@ -86,28 +105,20 @@ class ExternalDraftTrainGroup:
             )
         self.last_published_draft_version = draft_version
 
-    def save_draft(
-        self,
-        rollout_id: int,
-        force_sync: bool = False,
-        save_checkpoint: bool = True,
-        export_speculators: bool = False,
-    ):
+    def save_draft(self, rollout_id: int, force_sync: bool = False):
         del force_sync
-        saved_paths = []
-        if save_checkpoint:
-            saved_paths.append(ray.get(self._draft_actor.save_external_draft.remote(rollout_id)))
-        if export_speculators:
-            export_result = ray.get(self._draft_actor.export_external_draft.remote(rollout_id))
-            if (
-                not isinstance(export_result, dict)
-                or not export_result.get("complete")
-                or not export_result.get("path")
-                or not export_result.get("weight_files")
-                or int(export_result.get("weight_bytes", 0)) <= 0
-            ):
-                raise RuntimeError(
-                    "DSpark HuggingFace export was requested but Actor rank zero did not return a complete artifact"
-                )
-            saved_paths.append(export_result)
-        return [result for result in saved_paths if result is not None]
+        return [ray.get(self._draft_actor.save_external_draft.remote(rollout_id))]
+
+    def export_draft(self, rollout_id: int):
+        export_result = ray.get(self._draft_actor.export_external_draft.remote(rollout_id))
+        if (
+            not isinstance(export_result, dict)
+            or not export_result.get("complete")
+            or not export_result.get("path")
+            or not export_result.get("weight_files")
+            or int(export_result.get("weight_bytes", 0)) <= 0
+        ):
+            raise RuntimeError(
+                "DSpark HuggingFace export was requested but Actor rank zero did not return a complete artifact"
+            )
+        return export_result

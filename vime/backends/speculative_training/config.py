@@ -13,18 +13,13 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 _DRAFT_CONFIG_CACHE_ATTR = "_vime_draft_checkpoint_config"
-_DRAFT_LAYER_ID_KEYS = (
-    "aux_hidden_state_layer_ids",
-    "eagle_aux_hidden_state_layer_ids",
-    "target_hidden_layer_ids",
-    "target_layer_ids",
-)
 _DSPARK_QWEN_LAYOUT_FIELDS = (
     "hidden_size",
     "intermediate_size",
     "num_hidden_layers",
     "num_attention_heads",
     "num_key_value_heads",
+    "head_dim",
     "vocab_size",
 )
 _DSPARK_SERVING_FIELDS = (
@@ -117,6 +112,14 @@ def make_dspark_vllm_compatible_config(
     result["speculators_model_type"] = "dspark"
     result["model_type"] = "qwen3"
     result["architectures"] = ["Qwen3DSparkModel"]
+    sample_from_anchor = result.get("sample_from_anchor")
+    if not isinstance(sample_from_anchor, bool):
+        raise ValueError(
+            "DSpark config must define boolean sample_from_anchor so vLLM proposal alignment is unambiguous"
+        )
+    # Speculators names the training convention from the proposal side;
+    # vLLM names the same choice from the verifier's bonus-anchor side.
+    result["dspark_bonus_anchor"] = not sample_from_anchor
 
     layer_ids = parse_int_list(config.get("aux_hidden_state_layer_ids"))
     if layer_ids is not None:
@@ -125,6 +128,24 @@ def make_dspark_vllm_compatible_config(
         result["aux_hidden_state_layer_ids"] = layer_ids
         result["eagle_aux_hidden_state_layer_ids"] = layer_ids
         result["target_layer_ids"] = [layer_id - 1 for layer_id in layer_ids]
+
+        dflash_config = result.get("dflash_config")
+        if dflash_config is None:
+            dflash_config = {}
+        if not isinstance(dflash_config, dict):
+            raise TypeError("DSpark dflash_config must be a dictionary when present")
+        dflash_config = deepcopy(dflash_config)
+        dflash_config["target_layer_ids"] = list(result["target_layer_ids"])
+        dflash_config["mask_token_id"] = result.get("mask_token_id")
+        # Speculators makes full attention non-causal and optionally makes
+        # sliding-window attention non-causal too. vLLM's omitted default
+        # already represents the former mixed behavior; only the latter needs
+        # an explicit all-layer override.
+        if bool(result.get("sliding_window_non_causal", False)):
+            dflash_config["causal"] = False
+        else:
+            dflash_config.pop("causal", None)
+        result["dflash_config"] = dflash_config
 
     nested_speculators_config = result.get("speculators_config")
     if nested_speculators_config is not None and not isinstance(nested_speculators_config, dict):
@@ -142,79 +163,58 @@ def ensure_local_dspark_vllm_config(
     *,
     resolved_config: object | None = None,
 ) -> dict:
-    """Atomically upgrade a legacy local VIME export before vLLM starts.
+    """Normalize a local Speculators checkpoint for vLLM before startup.
 
-    This is deliberately additive: the Speculators discriminator and nested
-    transformer config remain in place, so the same two-file directory stays
-    reloadable for continued Draft training.
+    The typed Speculators config has already passed preflight. This conversion
+    is deliberately additive: the discriminator and nested transformer config
+    remain in place, so the same two-file directory stays reloadable for Draft
+    training. No architecture values are reconstructed from tensor shapes or
+    from an unrelated Target config.
     """
-
-    model_type = str(config.get("model_type", "")).lower()
-    architectures = config.get("architectures")
-    if (
-        model_type == "qwen3"
-        and isinstance(architectures, list)
-        and "Qwen3DSparkModel" in architectures
-        and all(config.get(name) is not None for name in _DSPARK_QWEN_LAYOUT_FIELDS)
-    ):
-        return config
-    if model_type == "speculators":
-        # Newer vLLM versions have a dedicated adapter, but it requires the
-        # nested proposal/verifier metadata. A bare model_type="speculators"
-        # would merely postpone this startup failure to the adapter validator.
-        speculators_config = config.get("speculators_config")
-        proposal_methods = speculators_config.get("proposal_methods") if isinstance(speculators_config, dict) else None
-        first_proposal = proposal_methods[0] if isinstance(proposal_methods, list) and proposal_methods else None
-        verifier = speculators_config.get("verifier") if isinstance(speculators_config, dict) else None
-        if (
-            isinstance(first_proposal, dict)
-            and first_proposal.get("speculative_tokens") is not None
-            and isinstance(verifier, dict)
-            and "name_or_path" in verifier
-            and isinstance(config.get("transformer_layer_config"), dict)
-            and str(config.get("speculators_model_type", "")).lower() == "dspark"
-        ):
-            return config
 
     model_path = Path(str(getattr(args, "draft_model_path", ""))).expanduser()
     config_path = model_path / "config.json"
     if not model_path.is_dir() or not config_path.is_file():
         return config
 
+    raw_transformer = config.get("transformer_layer_config")
+    if not isinstance(raw_transformer, dict):
+        raise ValueError(
+            f"DSpark checkpoint {model_path} must contain a raw transformer_layer_config object before "
+            "it can be normalized for vLLM"
+        )
+    missing_layout = [name for name in _DSPARK_QWEN_LAYOUT_FIELDS if raw_transformer.get(name) is None]
+    if missing_layout:
+        raise ValueError(
+            f"DSpark checkpoint {model_path} raw transformer_layer_config is missing {missing_layout}; "
+            "typed defaults cannot be persisted as guessed tensor layout"
+        )
+    if not isinstance(config.get("sample_from_anchor"), bool):
+        raise ValueError(
+            f"DSpark checkpoint {model_path} must explicitly define boolean sample_from_anchor before "
+            "serving alignment can be normalized"
+        )
+
     source_config = deepcopy(config)
     if resolved_config is not None and hasattr(resolved_config, "to_dict"):
         resolved_dict = resolved_config.to_dict()
         if isinstance(resolved_dict, dict):
-            source_config.update(deepcopy(resolved_dict))
-    transformer = getattr(resolved_config, "transformer_layer_config", None)
-    if transformer is None:
-        transformer = source_config.get("transformer_layer_config")
-    if transformer is None and model_type == "qwen3":
-        transformer = source_config
+            for name, value in resolved_dict.items():
+                if name != "transformer_layer_config" and name not in source_config:
+                    source_config[name] = deepcopy(value)
+    transformer = raw_transformer
 
     try:
         normalized = make_dspark_vllm_compatible_config(source_config, transformer_config=transformer)
-    except ValueError as original_error:
-        # Speculators writes transformer_layer_config with to_diff_dict(). Fill
-        # fields equal to Qwen3 defaults before enforcing the full-layout guard.
-        if not isinstance(transformer, dict):
-            raise ValueError(
-                f"Legacy DSpark checkpoint {model_path} is missing both a vLLM model_type and a usable "
-                "transformer_layer_config. Re-export it from the original DSpark checkpoint."
-            ) from original_error
-        try:
-            from transformers import AutoConfig
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"DSpark checkpoint {model_path} cannot be converted to a vLLM Qwen3 config without guessing its "
+            "tensor layout or proposal alignment. Restore config.json from the matching original checkpoint "
+            "or export it again with the updated VIME code."
+        ) from exc
 
-            kwargs = deepcopy(transformer)
-            nested_model_type = str(kwargs.pop("model_type", "qwen3"))
-            expanded = AutoConfig.for_model(nested_model_type, **kwargs).to_dict()
-            normalized = make_dspark_vllm_compatible_config(source_config, transformer_config=expanded)
-        except Exception as expansion_error:
-            raise ValueError(
-                f"Legacy DSpark checkpoint {model_path} cannot be converted to a vLLM Qwen3 config without "
-                "guessing its tensor layout. Restore config.json from the matching original checkpoint or "
-                "export it again with the updated VIME code."
-            ) from expansion_error
+    if normalized == config:
+        return config
 
     temporary_path = config_path.with_name(f".{config_path.name}.vime-{uuid4().hex}.tmp")
     try:
@@ -310,23 +310,13 @@ def resolve_feature_layer_ids(args: Namespace) -> list[int]:
     if explicit is None:
         if algorithm == "dspark":
             draft_config = load_draft_checkpoint_config(args)
-            explicit = parse_int_list(_draft_config_value(draft_config, _DRAFT_LAYER_ID_KEYS[:-1]))
+            explicit = parse_int_list(draft_config.get("aux_hidden_state_layer_ids"))
             if explicit is None:
-                dense_target_layer_ids = parse_int_list(_draft_config_value(draft_config, ("target_layer_ids",)))
-                if dense_target_layer_ids is not None:
-                    # Dense vLLM/DeepSpec DSpark checkpoints store the decoder
-                    # layer preceding each captured hidden state.
-                    explicit = [layer_id + 1 for layer_id in dense_target_layer_ids]
-            if explicit is None:
-                if num_layers < 5:
-                    raise ValueError(
-                        f"DSpark checkpoint {args.draft_model_path!r} config.json does not define any of "
-                        f"{list(_DRAFT_LAYER_ID_KEYS)}, and the Target layer count is unavailable; "
-                        "pass --draft-feature-layer-ids explicitly"
-                    )
-                # Match Speculators' resolve_target_layer_ids default for
-                # checkpoints created without an explicit target layer list.
-                explicit = [2, num_layers // 2, num_layers - 3]
+                raise ValueError(
+                    f"DSpark checkpoint {args.draft_model_path!r} config.json does not define "
+                    "aux_hidden_state_layer_ids. VIME does not infer checkpoint layer identity from "
+                    "vLLM target_layer_ids, command-line values, or Target depth."
+                )
         elif num_layers < 5:
             raise ValueError(
                 "--draft-feature-layer-ids is required when the Target layer count cannot "
@@ -382,41 +372,9 @@ def _speculative_config(args: Namespace) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _activate_dspark_training_for_export(args: Namespace) -> None:
-    """Turn a DSpark inference export request into an explicit training setup.
-
-    ``--vllm-speculative-config`` only configures the rollout engine.  Before
-    this normalization, combining it with ``--draft-save-hf`` could still
-    leave external Draft training disabled, so the save path was silently
-    skipped because no trainable Draft replica existed.
-    """
-
-    if not getattr(args, "draft_save_hf", None):
-        return
-    spec_config = _speculative_config(args)
-    method = str(spec_config.get("method", "")).strip().lower()
-    if method != "dspark":
-        if not external_draft_enabled(args):
-            raise ValueError(
-                "--draft-save-hf requires DSpark inference (--vllm-speculative-config method=dspark) "
-                "or explicit --enable-external-draft-training"
-            )
-        return
-
-    args.enable_external_draft_training = True
-    args.draft_algorithm = "dspark"
-    if not getattr(args, "draft_model_path", None):
-        configured_model = spec_config.get("model")
-        if not configured_model:
-            raise ValueError(
-                "--draft-save-hf with DSpark inference requires a model in --vllm-speculative-config "
-                "or --draft-model-path"
-            )
-        args.draft_model_path = str(configured_model)
-
-
 def validate_external_draft_args(args: Namespace) -> None:
-    _activate_dspark_training_for_export(args)
+    if getattr(args, "draft_save_hf", None) and not external_draft_enabled(args):
+        raise ValueError("--draft-save-hf requires explicit --enable-external-draft-training")
     if not external_draft_enabled(args):
         return
 
@@ -433,6 +391,8 @@ def validate_external_draft_args(args: Namespace) -> None:
         raise ValueError("External Draft feature collection currently requires --train-backend=megatron")
     if bool(getattr(args, "debug_rollout_only", False)):
         raise ValueError("External Draft training is unavailable with --debug-rollout-only")
+    if algorithm == "dspark" and bool(getattr(args, "debug_train_only", False)):
+        raise ValueError("External Draft online publication is unavailable with --debug-train-only")
     if bool(getattr(args, "colocate", False)):
         raise ValueError("The external Draft MVP requires a disaggregated rollout; --colocate is not supported")
     if bool(getattr(args, "release_train", False)):
@@ -450,6 +410,16 @@ def validate_external_draft_args(args: Namespace) -> None:
         raise ValueError("External Draft publication requires --update-weight-mode=full")
     if str(getattr(args, "update_weight_transport", "nccl")) != "nccl":
         raise ValueError("External Draft publication currently requires --update-weight-transport=nccl")
+    worker_extension = getattr(args, "vllm_worker_extension_cls", None)
+    required_worker_extension = (
+        "vime.backends.megatron_utils.update_weight.update_weight_from_tensor.vLLMWorkerExtension"
+    )
+    if algorithm == "dspark" and worker_extension not in (None, required_worker_extension):
+        raise ValueError(
+            "External Draft publication requires VIME's vLLMWorkerExtension so the paired vLLM-Ascend "
+            "NPUWorker can enter a Draft weight-update session; a custom --vllm-worker-extension-cls "
+            "would replace that compatibility hook"
+        )
     if int(getattr(args, "pipeline_model_parallel_size", 1) or 1) != 1:
         raise ValueError("The external Draft MVP currently requires pipeline model parallel size 1")
     if int(getattr(args, "context_parallel_size", 1) or 1) != 1:
@@ -466,32 +436,97 @@ def validate_external_draft_args(args: Namespace) -> None:
         expected = "'eagle' or 'eagle3'" if algorithm == "eagle3" else "'dspark'"
         raise ValueError(f"External {algorithm} training requires vLLM speculative method {expected}")
     configured_model = spec_config.get("model")
+    if algorithm == "dspark" and not configured_model:
+        raise ValueError(
+            "External Draft training requires vLLM speculative config model to identify --draft-model-path"
+        )
     if configured_model and str(configured_model) != str(args.draft_model_path):
         raise ValueError(
             "vLLM speculative model and --draft-model-path must identify the same checkpoint: "
             f"{configured_model!r} != {args.draft_model_path!r}"
         )
+    requested_speculative_tokens = spec_config.get("num_speculative_tokens")
+    if algorithm == "dspark":
+        if requested_speculative_tokens is None:
+            raise ValueError("Qwen DSpark online training requires an explicit positive vLLM num_speculative_tokens")
+        try:
+            requested_speculative_tokens = int(requested_speculative_tokens)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("vLLM num_speculative_tokens must be an integer for Qwen DSpark") from exc
+        if requested_speculative_tokens <= 0:
+            raise ValueError("vLLM num_speculative_tokens must be positive for Qwen DSpark")
     acceptance_method = str(spec_config.get("acceptance_method", "")).strip().lower()
     if acceptance_method in {"typical_acceptance_sampler", "typical", "topk"}:
         raise ValueError("External Draft RL rollout requires a lossless speculative acceptance method")
+    rejection_sample_method = str(spec_config.get("rejection_sample_method", "standard")).strip().lower()
+    if algorithm == "dspark" and rejection_sample_method != "standard":
+        raise ValueError(
+            "External Draft RL rollout requires rejection_sample_method='standard'; synthetic acceptance does "
+            "not preserve the Target sampling distribution"
+        )
+    if algorithm == "dspark" and getattr(args, "draft_vocab_mapping_path", None):
+        raise ValueError(
+            "Qwen DSpark does not support --draft-vocab-mapping-path as a trainer-only override. The rollout "
+            "engine loads its mapping before the first hot update, so reduced-vocabulary t2d/d2t must be "
+            "stored in --draft-model-path."
+        )
 
     layer_ids = resolve_feature_layer_ids(args)
     args.draft_feature_layer_ids = layer_ids
     if algorithm == "dspark":
         draft_config = load_draft_checkpoint_config(args)
         local_checkpoint_has_weights = _local_checkpoint_has_weights(args.draft_model_path)
-        config_algorithm = str(draft_config.get("speculators_model_type", "dspark")).lower()
+        config_algorithm = str(draft_config.get("speculators_model_type", "")).lower()
         if config_algorithm != "dspark":
             raise ValueError(
-                "Qwen DSpark training requires a Speculators DSpark checkpoint, got "
+                "Qwen DSpark training requires a canonical Speculators DSpark checkpoint, got "
                 f"speculators_model_type={config_algorithm!r}"
             )
+        if parse_int_list(draft_config.get("aux_hidden_state_layer_ids")) is None:
+            raise ValueError(
+                "Qwen DSpark training requires checkpoint config.json to define "
+                "aux_hidden_state_layer_ids; command-line layer IDs cannot prove which Target features trained "
+                "the checkpoint"
+            )
+        local_model_path = Path(str(args.draft_model_path)).expanduser()
+        if not local_model_path.is_dir():
+            layer_ids = parse_int_list(draft_config["aux_hidden_state_layer_ids"])
+            try:
+                expected_hybrid = make_dspark_vllm_compatible_config(draft_config)
+            except (TypeError, ValueError):
+                expected_hybrid = {}
+            architectures = draft_config.get("architectures")
+            transformer_config = draft_config.get("transformer_layer_config")
+            mirrored_qwen_fields = tuple(transformer_config) if isinstance(transformer_config, dict) else ()
+            direct_hybrid = (
+                str(draft_config.get("model_type", "")).lower() == "qwen3"
+                and isinstance(architectures, list)
+                and "Qwen3DSparkModel" in architectures
+                and bool(mirrored_qwen_fields)
+                and all(
+                    draft_config.get(name) == expected_hybrid.get(name)
+                    for name in (
+                        *mirrored_qwen_fields,
+                        "target_layer_ids",
+                        "eagle_aux_hidden_state_layer_ids",
+                        "dspark_bonus_anchor",
+                        "dflash_config",
+                    )
+                )
+            )
+            if not direct_hybrid:
+                raise ValueError(
+                    "Remote DSpark online training requires an already exported direct Qwen3 hybrid config. "
+                    "The generic model_type='speculators' adapter does not preserve anchor/alignment fields "
+                    "consistently across vLLM GPU and Ascend runners. Download the checkpoint to a writable "
+                    "local directory and normalize/export it with this VIME revision first."
+                )
         transformer_config = draft_config.get("transformer_layer_config")
         if isinstance(transformer_config, dict):
             model_type = str(transformer_config.get("model_type", "")).lower()
-            if model_type and not model_type.startswith("qwen3"):
+            if model_type and model_type != "qwen3":
                 raise ValueError(
-                    "VIME currently supports only Qwen3-family DSpark checkpoints, got "
+                    "VIME currently supports only dense Qwen3 DSpark checkpoints, got "
                     f"transformer_layer_config.model_type={model_type!r}"
                 )
         markov_head_type = str(draft_config.get("markov_head_type", "vanilla")).lower()
@@ -500,6 +535,18 @@ def validate_external_draft_args(args: Namespace) -> None:
                 "Qwen DSpark serving currently supports only markov_head_type='vanilla', got " f"{markov_head_type!r}"
             )
         args.draft_dspark_block_size = resolve_dspark_block_size(args)
+        sample_from_anchor = draft_config.get("sample_from_anchor")
+        if isinstance(sample_from_anchor, bool):
+            proposal_capacity = (
+                int(args.draft_dspark_block_size) if sample_from_anchor else int(args.draft_dspark_block_size) - 1
+            )
+            if requested_speculative_tokens > proposal_capacity:
+                raise ValueError(
+                    "vLLM num_speculative_tokens exceeds the DSpark checkpoint capacity: "
+                    f"{requested_speculative_tokens} > {proposal_capacity} "
+                    f"(block_size={args.draft_dspark_block_size}, "
+                    f"sample_from_anchor={sample_from_anchor})"
+                )
         for name in ("draft_dspark_max_anchors",):
             if int(getattr(args, name, 0) or 0) <= 0:
                 raise ValueError(f"--{name.replace('_', '-')} must be positive")
@@ -509,16 +556,21 @@ def validate_external_draft_args(args: Namespace) -> None:
             raise ValueError("--draft-dspark-loss-fn must be a JSON object") from exc
         if not isinstance(loss_config, dict) or not loss_config:
             raise ValueError("--draft-dspark-loss-fn must be a non-empty JSON object")
-        # A local checkpoint can be checked without downloading or allocating
-        # the full model. Fail on the driver before Ray reserves NPU actors.
+        if local_model_path.is_dir() and not local_checkpoint_has_weights:
+            raise ValueError(
+                f"Local DSpark checkpoint {str(local_model_path)!r} contains config.json but no "
+                "*.safetensors or pytorch_model*.bin weights"
+            )
+        # A local checkpoint can be checked without allocating the full model.
+        # Fail on the driver before Ray reserves NPU actors.
         if local_checkpoint_has_weights:
             from .factories.speculators_dspark import preflight_dspark_checkpoint
 
             resolved_config = preflight_dspark_checkpoint(args)
-            # Legacy --draft-save-hf directories used Speculators' nested
-            # config only. Upgrade them only after tensor-layout preflight has
-            # resolved every field from the actual checkpoint weights.
-            draft_config = ensure_local_dspark_vllm_config(
+            # Legacy VIME exports may have a complete Speculators config but
+            # omit the top-level Qwen fields required by vLLM. Upgrade only
+            # that known schema difference after typed preflight succeeds.
+            ensure_local_dspark_vllm_config(
                 args,
                 draft_config,
                 resolved_config=resolved_config,
@@ -545,6 +597,9 @@ def validate_external_draft_args(args: Namespace) -> None:
     ):
         if int(getattr(args, name, 0) or 0) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
+    draft_save_interval = getattr(args, "draft_save_interval", None)
+    if algorithm == "dspark" and draft_save_interval is not None and int(draft_save_interval) <= 0:
+        raise ValueError("--draft-save-interval must be positive when provided")
     rate = float(getattr(args, "draft_collection_sample_rate", 1.0))
     if rate <= 0 or rate > 1:
         raise ValueError("--draft-collection-sample-rate must be in (0, 1]")

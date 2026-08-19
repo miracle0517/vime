@@ -331,13 +331,9 @@ def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm):
             if self.vllm_config.quant_config is None and (tags is None or "weights" in tags):
                 self.moe_transposed = True
 
-    native_update_weights = FakeWorker.update_weights
-    native_finish_weight_update = FakeWorker.finish_weight_update
     native_wake_up = FakeWorker.wake_up
     upw_vllm._VLLMHijack._patch_one_worker(FakeWorker)
 
-    assert FakeWorker.update_weights is not native_update_weights
-    assert FakeWorker.finish_weight_update is not native_finish_weight_update
     assert FakeWorker.wake_up is not native_wake_up
 
     worker = FakeWorker()
@@ -355,6 +351,7 @@ def test_npu_worker_patch_supports_parameterless_start_weight_update(upw_vllm, m
     class FakeWorker:
         def __init__(self):
             self.model_runner = types.SimpleNamespace(model=object())
+            self.vllm_config = types.SimpleNamespace(speculative_config=types.SimpleNamespace(method="dspark"))
 
         def load_model(self):
             pass
@@ -377,7 +374,8 @@ def test_npu_worker_patch_supports_parameterless_start_weight_update(upw_vllm, m
 
 
 @pytest.mark.unit
-def test_npu_worker_patch_routes_draft_update_to_drafter_and_restores_target(upw_vllm, monkeypatch):
+@pytest.mark.parametrize("runner_layout", ["public_getter", "mrv1_drafter", "mrv2_speculator"])
+def test_npu_worker_patch_routes_draft_update_and_restores_target(upw_vllm, monkeypatch, runner_layout):
     target_model = object()
     target_config = object()
     draft_model = object()
@@ -414,13 +412,16 @@ def test_npu_worker_patch_routes_draft_update_to_drafter_and_restores_target(upw
         def __init__(self):
             self.weight_transfer_engine = FakeTransferEngine()
             self._weight_update_active = False
-            self.model_runner = types.SimpleNamespace(
-                model=target_model,
-                drafter=types.SimpleNamespace(get_model=lambda: draft_model),
-            )
+            self.model_runner = types.SimpleNamespace(model=target_model)
+            if runner_layout == "public_getter":
+                self.model_runner.get_draft_model = lambda: draft_model
+            elif runner_layout == "mrv1_drafter":
+                self.model_runner.drafter = types.SimpleNamespace(get_model=lambda: draft_model)
+            else:
+                self.model_runner.speculator = types.SimpleNamespace(model=draft_model)
             self.vllm_config = types.SimpleNamespace(
                 quant_config=None,
-                speculative_config=types.SimpleNamespace(draft_model_config=draft_config),
+                speculative_config=types.SimpleNamespace(method="dspark", draft_model_config=draft_config),
             )
 
         def load_model(self):
@@ -458,6 +459,74 @@ def test_npu_worker_patch_routes_draft_update_to_drafter_and_restores_target(upw
 
 
 @pytest.mark.unit
+def test_npu_worker_patch_rejects_dspark_transfer_engine_without_draft_target_contract(upw_vllm):
+    class IncompleteTransferEngine:
+        def start_weight_update(self):
+            pass
+
+    class FakeWorker:
+        def __init__(self):
+            self.weight_transfer_engine = IncompleteTransferEngine()
+            self._weight_update_active = False
+            self.vllm_config = types.SimpleNamespace(
+                speculative_config=types.SimpleNamespace(method="dspark", draft_model_config=object())
+            )
+
+        def load_model(self):
+            pass
+
+        def start_weight_update(self):
+            pass
+
+        def update_weights(self, update_info):
+            pass
+
+        def finish_weight_update(self):
+            pass
+
+        def wake_up(self, tags=None):
+            pass
+
+    upw_vllm._VLLMHijack._patch_one_worker(FakeWorker)
+
+    with pytest.raises(RuntimeError, match="DSpark weight-update target contract"):
+        FakeWorker().start_draft_weight_update()
+
+
+@pytest.mark.unit
+def test_legacy_npu_worker_compat_does_not_extend_eagle_draft_updates(upw_vllm):
+    class FakeWorker:
+        def __init__(self):
+            self.weight_transfer_engine = object()
+            self._weight_update_active = False
+            self.model_runner = types.SimpleNamespace(model=object())
+            self.vllm_config = types.SimpleNamespace(
+                quant_config=None,
+                speculative_config=types.SimpleNamespace(method="eagle3", draft_model_config=object()),
+            )
+
+        def load_model(self):
+            pass
+
+        def start_weight_update(self):
+            pass
+
+        def update_weights(self, update_info):
+            pass
+
+        def finish_weight_update(self):
+            pass
+
+        def wake_up(self, tags=None):
+            pass
+
+    upw_vllm._VLLMHijack._patch_one_worker(FakeWorker)
+
+    with pytest.raises(RuntimeError, match="compatibility hook is DSpark-only"):
+        FakeWorker().start_draft_weight_update()
+
+
+@pytest.mark.unit
 def test_npu_worker_patch_restores_target_when_draft_update_fails(upw_vllm, monkeypatch):
     target_model = object()
     draft_model = object()
@@ -492,7 +561,7 @@ def test_npu_worker_patch_restores_target_when_draft_update_fails(upw_vllm, monk
                 drafter=types.SimpleNamespace(get_model=lambda: draft_model),
             )
             self.vllm_config = types.SimpleNamespace(
-                speculative_config=types.SimpleNamespace(draft_model_config=object())
+                speculative_config=types.SimpleNamespace(method="dspark", draft_model_config=object())
             )
 
         def load_model(self):

@@ -1,14 +1,38 @@
 from __future__ import annotations
 
-import importlib
-import logging
 from typing import Any
 
 import torch
 
 from ..feature_schema import DraftFeatureSample
 
-logger = logging.getLogger(__name__)
+
+def has_valid_draft_vocab_mapping(model: torch.nn.Module) -> bool:
+    """Validate the exact reduced-vocabulary mapping used by training and serving."""
+
+    if not bool(getattr(model, "use_draft_vocab", False)):
+        return True
+    t2d = getattr(model, "t2d", None)
+    d2t = getattr(model, "d2t", None)
+    verifier_vocab_size = int(getattr(model, "verifier_vocab_size", 0) or 0)
+    draft_vocab_size = int(getattr(model, "draft_vocab_size", 0) or 0)
+    if (
+        not torch.is_tensor(t2d)
+        or not torch.is_tensor(d2t)
+        or t2d.dim() != 1
+        or d2t.dim() != 1
+        or t2d.numel() != verifier_vocab_size
+        or d2t.numel() != draft_vocab_size
+    ):
+        return False
+    selected_target_rows = torch.nonzero(t2d.detach().bool(), as_tuple=False).reshape(-1)
+    draft_offsets = d2t.detach().to(device="cpu", dtype=torch.long)
+    reconstructed_target_rows = torch.arange(draft_vocab_size, dtype=torch.long) + draft_offsets
+    return bool(
+        selected_target_rows.numel() == draft_vocab_size
+        and not d2t.is_floating_point()
+        and torch.equal(reconstructed_target_rows, selected_target_rows.to(device="cpu"))
+    )
 
 
 def collate_dspark_samples(
@@ -71,16 +95,19 @@ def dspark_trainer_kwargs(model: torch.nn.Module, args: Any) -> dict[str, Any]:
     resolver = getattr(model, "get_trainer_kwargs", None)
     if not callable(resolver):
         raise TypeError("Speculators DSpark model must implement get_trainer_kwargs()")
+    # af3f1795495 accepts this through **kwargs but selects eager fallback on
+    # non-CUDA devices internally.  Later revisions consume the hint directly
+    # and may also return a dedicated tv_loss_fn.  Preserve both contracts.
+    loss_implementation = "eager" if _model_device_type(model) == "npu" else "fused"
     train_kwargs, _ = resolver(
         loss_fn=str(args.draft_dspark_loss_fn),
+        loss_implementation=loss_implementation,
         dflash_decay_gamma=float(args.draft_dspark_decay_gamma),
         max_anchors=int(args.draft_dspark_max_anchors),
         confidence_head_alpha=float(args.draft_dspark_confidence_head_alpha),
         per_position_loss_weight=str(args.draft_dspark_per_position_loss_weight),
         dpace_alpha=float(args.draft_dspark_dpace_alpha),
     )
-    if _model_device_type(model) == "npu":
-        train_kwargs = _replace_fused_losses_for_npu(train_kwargs)
     return train_kwargs
 
 
@@ -89,52 +116,6 @@ def _model_device_type(model: torch.nn.Module) -> str | None:
     if tensor is None:
         tensor = next(iter(model.buffers()), None)
     return tensor.device.type if tensor is not None else None
-
-
-def _load_eager_speculators_loss(name: str):
-    attribute = {"tv": "tv_loss", "nla": "neg_log_acceptance_loss"}[name]
-    for module_name in ("speculators.losses", "speculators.models.metrics"):
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError:
-            continue
-        loss_fn = getattr(module, attribute, None)
-        if callable(loss_fn):
-            return loss_fn
-    raise ImportError(
-        f"The installed Speculators package does not expose eager {name!r} loss; "
-        "install a Speculators revision compatible with VIME's DSpark backend"
-    )
-
-
-def _replace_fused_losses_for_npu(train_kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Keep Ascend away from Speculators' CUDA/ROCm Triton loss kernels."""
-
-    loss_config = train_kwargs.get("loss_config")
-    if not isinstance(loss_config, dict):
-        raise TypeError("Speculators DSpark get_trainer_kwargs() must return a loss_config dictionary")
-
-    resolved = dict(loss_config)
-    replacements = []
-    for name in ("tv", "nla"):
-        entry = resolved.get(name)
-        if entry is None:
-            continue
-        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
-            raise TypeError(f"Speculators DSpark loss_config[{name!r}] must be a (callable, weight) pair")
-        _, weight = entry
-        resolved[name] = (_load_eager_speculators_loss(name), weight)
-        replacements.append(name)
-
-    if replacements:
-        logger.info(
-            "Using eager Speculators loss on NPU for: %s (Triton fused kernels are CUDA/ROCm-only)",
-            ", ".join(replacements),
-        )
-
-    result = dict(train_kwargs)
-    result["loss_config"] = resolved
-    return result
 
 
 def compute_dspark_loss(

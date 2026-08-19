@@ -135,17 +135,20 @@ def train(args):
 
         draft_snapshot_ref = None
         draft_snapshot_version = None
-        if draft_model is not None and actor_trains_this_step and actor_train_results is not None:
-            collect_result = draft_model.collect_actor_results(actor_train_results)
-            collected_this_rollout = int(collect_result.get("accepted", 0)) > 0
-            if collected_this_rollout:
-                logger.info("External Draft feature collection: %s", collect_result)
-                _log_draft_result(args, rollout_id, "collect", collect_result)
-            if collected_this_rollout and should_run_draft_interval(rollout_id, args.draft_train_interval):
-                draft_train_result = draft_model.train_draft(rollout_id)
-                logger.info("External Draft training: %s", draft_train_result)
-                _log_draft_result(args, rollout_id, "train", draft_train_result)
-            if should_run_draft_interval(rollout_id, args.draft_publish_interval):
+        if draft_model is not None and actor_trains_this_step:
+            if actor_train_results is not None:
+                collect_result = draft_model.collect_actor_results(actor_train_results)
+                collected_this_rollout = int(collect_result.get("accepted", 0)) > 0
+                if collected_this_rollout:
+                    logger.info("External Draft feature collection: %s", collect_result)
+                    _log_draft_result(args, rollout_id, "collect", collect_result)
+                if collected_this_rollout and should_run_draft_interval(rollout_id, args.draft_train_interval):
+                    draft_train_result = draft_model.train_draft(rollout_id)
+                    logger.info("External Draft training: %s", draft_train_result)
+                    _log_draft_result(args, rollout_id, "train", draft_train_result)
+            if (
+                actor_train_results is not None or str(getattr(args, "draft_algorithm", "eagle3")).lower() == "dspark"
+            ) and should_run_draft_interval(rollout_id, args.draft_publish_interval):
                 prepared_snapshot = draft_model.prepare_publish_snapshot()
                 if prepared_snapshot is not None:
                     draft_snapshot_ref, draft_snapshot_version = prepared_snapshot
@@ -162,14 +165,18 @@ def train(args):
             or rollout_id == args.num_rollout - 1
         )
         if draft_checkpoint_due:
-            draft_save_results = draft_model.save_draft(
-                rollout_id,
-                force_sync=rollout_id == args.num_rollout - 1,
-                export_speculators=bool(getattr(args, "draft_save_hf", None)),
-            )
-            if getattr(args, "draft_save_hf", None):
-                draft_export_completed = True
-            logger.info("External Draft save completed: %s", draft_save_results)
+            if str(getattr(args, "draft_algorithm", "eagle3")).lower() == "dspark":
+                draft_save_results = draft_model.save_draft(
+                    rollout_id,
+                    force_sync=rollout_id == args.num_rollout - 1,
+                )
+                draft_save_results = [result for result in draft_save_results if result is not None]
+                if getattr(args, "draft_save_hf", None):
+                    draft_save_results.append(draft_model.export_draft(rollout_id))
+                    draft_export_completed = True
+                logger.info("External DSpark save completed: %s", draft_save_results)
+            else:
+                draft_model.save_draft(rollout_id, force_sync=rollout_id == args.num_rollout - 1)
 
         offload_train(actor_trains_this_step)
         if args.offload_rollout:
@@ -204,12 +211,8 @@ def train(args):
         # An explicit export request must still produce an artifact instead of
         # being silently ignored.
         export_rollout_id = max(int(args.num_rollout or 0) - 1, 0)
-        draft_save_results = draft_model.save_draft(
-            export_rollout_id,
-            force_sync=True,
-            export_speculators=True,
-        )
-        logger.info("External Draft final export completed without a training iteration: %s", draft_save_results)
+        draft_export_result = draft_model.export_draft(export_rollout_id)
+        logger.info("External Draft final export completed without a training iteration: %s", draft_export_result)
 
     if draft_model is not None:
         draft_model.release()

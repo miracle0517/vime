@@ -11,9 +11,9 @@ ARG MEGATRON_COMMIT=3714d81d418c9f1bca4594fc35f9e8289f652862
 ARG MEGATRON_BRIDGE_COMMIT=3fd3768045422d0aa5c97e90a4e6c659aea9acb9
 ARG MINDSPEED_COMMIT=fc63de5c48426dd019c3b3f39e65f5bdf56e4086
 ARG MBRIDGE_COMMIT=89eb10887887bc74853f89a4de258c0702932a1c
-# DSpark is evolving with vLLM. Production builds should override this with
-# the exact Speculators commit used to create the deployed Draft checkpoint.
-ARG SPECULATORS_REF=main
+# Keep checkpoint parsing, training, and export on one reviewed schema. Override
+# only when the replacement revision is validated with the same DSpark artifact.
+ARG SPECULATORS_REF=af3f1795495b5393c7c9aed3f1d55a42d47878ae
 ARG SOC_VERSION="ascend910_9391"
 ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 ARG APTMIRROR=""

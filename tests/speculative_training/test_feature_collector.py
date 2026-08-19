@@ -92,7 +92,8 @@ def test_collector_reconstructs_sample_window_and_aux_layers(monkeypatch):
 
 
 @pytest.mark.unit
-def test_dspark_collector_requires_one_complete_future_block(monkeypatch):
+@pytest.mark.parametrize(("response_length", "expected_count"), [(4, 1), (3, 0)])
+def test_dspark_collector_requires_one_complete_future_block(monkeypatch, response_length, expected_count):
     target = _Target()
     collector = DraftFeatureCollector(
         _args(draft_algorithm="dspark", draft_dspark_block_size=3, draft_hidden_window_tokens=8),
@@ -102,22 +103,24 @@ def test_dspark_collector_requires_one_complete_future_block(monkeypatch):
     )
     monkeypatch.setattr(collector, "_gather_sequence_parallel", lambda tensor: tensor)
     monkeypatch.setattr(collector, "_is_export_rank", lambda: True)
-    tokens = torch.arange(8)
+    tokens = torch.arange(response_length + 3)
     batch = {
         "unconcat_tokens": [tokens],
-        "total_lengths": [8],
-        "response_lengths": [5],
-        "loss_masks": [torch.ones(5)],
+        "total_lengths": [len(tokens)],
+        "response_lengths": [response_length],
+        "loss_masks": [torch.ones(response_length)],
     }
 
     try:
         collector.begin_microbatch(batch, [0])
-        target(torch.zeros(8, 1, 4))
+        target(torch.zeros(len(tokens), 1, 4))
         collector.end_microbatch()
-        payload = collector.pop_payloads()[0]
+        payloads = collector.pop_payloads()
     finally:
         collector.close()
 
-    assert payload["algorithm"] == "dspark"
-    assert payload["hidden_layout"] == "qwen_dspark_aux_plus_last"
-    assert len(payload["input_ids"]) >= 5
+    assert len(payloads) == expected_count
+    if payloads:
+        assert payloads[0]["algorithm"] == "dspark"
+        assert payloads[0]["hidden_layout"] == "qwen_dspark_aux_plus_last"
+        assert len(payloads[0]["input_ids"]) == 5

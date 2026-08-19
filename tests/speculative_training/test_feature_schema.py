@@ -50,6 +50,18 @@ def test_dspark_feature_round_trip_preserves_algorithm_layout():
 
 
 @pytest.mark.unit
+def test_eagle3_payload_keeps_legacy_algorithm_and_layout_contract():
+    payload = _sample().to_payload()
+    payload["algorithm"] = "EAGLE3"
+    payload["hidden_layout"] = "legacy_custom_layout"
+
+    restored = DraftFeatureSample.from_payload(payload)
+
+    assert restored.algorithm == "EAGLE3"
+    assert restored.hidden_layout == "legacy_custom_layout"
+
+
+@pytest.mark.unit
 def test_feature_rejects_non_contiguous_positions():
     sample = _sample()
     sample.hidden_positions[-1] += 1

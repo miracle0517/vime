@@ -1,8 +1,11 @@
 from argparse import Namespace
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
+import torch
 
+from vime.backends.speculative_training.config import make_dspark_vllm_compatible_config
 from vime.backends.speculative_training.factories import speculators_dspark
 
 
@@ -12,492 +15,372 @@ class _ConfigType:
     @classmethod
     def from_dict(cls, value):
         cls.received = value
-        return SimpleNamespace(aux_hidden_state_layer_ids=value["aux_hidden_state_layer_ids"])
+        return SimpleNamespace(aux_hidden_state_layer_ids=value.get("aux_hidden_state_layer_ids"))
 
 
-class _DefaultingConfigType:
-    @classmethod
-    def from_dict(cls, value):
-        """Emulate a runtime that defaults a missing nested Qwen config."""
-
-        return SimpleNamespace(
-            transformer_layer_config=SimpleNamespace(
-                model_type="qwen3",
-                hidden_size=4096,
-                intermediate_size=22016,
-                num_hidden_layers=32,
-                num_attention_heads=32,
-                num_key_value_heads=32,
-                head_dim=128,
-                vocab_size=151936,
-                layer_types=["full_attention"] * 32,
-                max_window_layers=32,
-            ),
-            aux_hidden_state_layer_ids=value["aux_hidden_state_layer_ids"],
-            draft_vocab_size=32000,
-            markov_rank=128,
-            enable_confidence_head=False,
-            confidence_head_with_markov=False,
-            target_hidden_size=4096,
-        )
-
-
-def _qwen4b_dspark_shapes():
-    shapes = {
-        "fc.weight": (2560, 12800),
-        "hidden_norm.weight": (2560,),
-        "norm.weight": (2560,),
-        "lm_head.weight": (151936, 2560),
-        "markov_head.markov_w1.weight": (151936, 256),
-        "markov_head.markov_w2.weight": (151936, 256),
-        "confidence_head.proj.weight": (1, 2816),
-        "confidence_head.proj.bias": (1,),
+def _checkpoint_config(**overrides):
+    config = {
+        "speculators_model_type": "dspark",
+        "speculators_config": None,
+        "aux_hidden_state_layer_ids": [2, 14, 29],
+        "transformer_layer_config": {
+            "model_type": "qwen3",
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 16,
+            "vocab_size": 256,
+        },
+        "draft_vocab_size": 256,
+        "block_size": 8,
+        "target_hidden_size": 64,
+        "mask_token_id": 255,
+        "markov_rank": 16,
+        "markov_head_type": "vanilla",
+        "enable_confidence_head": True,
+        "confidence_head_with_markov": True,
+        "sample_from_anchor": True,
     }
-    for layer_id in range(5):
-        prefix = f"layers.{layer_id}"
-        shapes.update(
-            {
-                f"{prefix}.self_attn.q_proj.weight": (4096, 2560),
-                f"{prefix}.self_attn.k_proj.weight": (1024, 2560),
-                f"{prefix}.self_attn.v_proj.weight": (1024, 2560),
-                f"{prefix}.self_attn.o_proj.weight": (2560, 4096),
-                f"{prefix}.self_attn.q_norm.weight": (128,),
-                f"{prefix}.self_attn.k_norm.weight": (128,),
-                f"{prefix}.mlp.gate_proj.weight": (9728, 2560),
-                f"{prefix}.mlp.up_proj.weight": (9728, 2560),
-                f"{prefix}.mlp.down_proj.weight": (2560, 9728),
-                f"{prefix}.input_layernorm.weight": (2560,),
-                f"{prefix}.post_attention_layernorm.weight": (2560,),
-            }
-        )
-    return shapes
+    config.update(overrides)
+    return config
+
+
+def _validated_config(**overrides):
+    config = SimpleNamespace(
+        transformer_layer_config=SimpleNamespace(model_type="qwen3", hidden_size=64, vocab_size=256),
+        target_hidden_size=64,
+        markov_head_type="vanilla",
+        markov_rank=16,
+        enable_confidence_head=True,
+        confidence_head_with_markov=True,
+        mask_token_id=255,
+        block_size=8,
+        sample_from_anchor=True,
+    )
+    for name, value in overrides.items():
+        setattr(config, name, value)
+    return config
 
 
 @pytest.mark.unit
-def test_dspark_factory_preserves_checkpoint_layer_ids(monkeypatch):
-    checkpoint_config = {
-        "aux_hidden_state_layer_ids": [2, 14, 29],
-        "speculators_model_type": "legacy-value",
-        "speculators_config": None,
-        "transformer_layer_config": {},
-    }
+def test_build_config_normalizes_serialized_null_without_mutating_source(monkeypatch):
+    source = _checkpoint_config()
+    original = deepcopy(source)
+    monkeypatch.setattr(speculators_dspark, "load_draft_checkpoint_config", lambda args: source)
+
+    config = speculators_dspark._build_config(
+        Namespace(draft_feature_layer_ids=[2, 14, 29]),
+        _ConfigType,
+    )
+
+    assert config.aux_hidden_state_layer_ids == [2, 14, 29]
+    assert "speculators_config" not in _ConfigType.received
+    assert source == original
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        (
+            {"transformer_layer_config": {"model_type": "qwen3"}},
+            "speculators_model_type='dspark'",
+        ),
+        (
+            {"speculators_model_type": "dspark"},
+            "must contain transformer_layer_config",
+        ),
+        (
+            {
+                "speculators_model_type": "dspark",
+                "transformer_layer_config": {"model_type": "qwen3_next"},
+            },
+            "only dense Qwen3",
+        ),
+    ],
+)
+def test_build_config_rejects_noncanonical_schema(monkeypatch, config, message):
+    monkeypatch.setattr(speculators_dspark, "load_draft_checkpoint_config", lambda args: config)
+
+    with pytest.raises(ValueError, match=message):
+        speculators_dspark._build_config(Namespace(draft_feature_layer_ids=[2, 14, 29]), _ConfigType)
+
+
+@pytest.mark.unit
+def test_build_config_rejects_explicit_layer_ids_when_metadata_is_missing(monkeypatch):
+    source = _checkpoint_config()
+    source.pop("aux_hidden_state_layer_ids")
+    monkeypatch.setattr(speculators_dspark, "load_draft_checkpoint_config", lambda args: source)
+
+    with pytest.raises(ValueError, match="must define aux_hidden_state_layer_ids"):
+        speculators_dspark._build_config(
+            Namespace(draft_feature_layer_ids=[2, 14, 29]),
+            _ConfigType,
+        )
+
+
+@pytest.mark.unit
+def test_build_config_rejects_layer_override(monkeypatch):
+    monkeypatch.setattr(
+        speculators_dspark,
+        "load_draft_checkpoint_config",
+        lambda args: _checkpoint_config(aux_hidden_state_layer_ids=[2, 14, 29]),
+    )
+
+    with pytest.raises(ValueError, match="Remove the command-line override"):
+        speculators_dspark._build_config(
+            Namespace(draft_feature_layer_ids=[2, 10, 20, 29]),
+            _ConfigType,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_installed_speculators_config_parses_supported_contract(monkeypatch, hybrid):
+    config_module = pytest.importorskip("speculators.models.dspark.config")
+    checkpoint_config = _checkpoint_config()
+    if hybrid:
+        checkpoint_config = make_dspark_vllm_compatible_config(checkpoint_config)
     monkeypatch.setattr(
         speculators_dspark,
         "load_draft_checkpoint_config",
         lambda args: checkpoint_config,
     )
-    args = Namespace(draft_feature_layer_ids=[2, 14, 29])
 
-    speculators_dspark._build_config(args, _ConfigType)
-
-    assert _ConfigType.received["aux_hidden_state_layer_ids"] == [2, 14, 29]
-    assert _ConfigType.received["speculators_model_type"] == "dspark"
-    assert "speculators_config" not in _ConfigType.received
-    assert checkpoint_config["speculators_model_type"] == "legacy-value"
-    assert checkpoint_config["speculators_config"] is None
-
-
-@pytest.mark.unit
-def test_dspark_factory_fills_missing_layer_ids_from_resolved_args(monkeypatch):
-    monkeypatch.setattr(
-        speculators_dspark,
-        "load_draft_checkpoint_config",
-        lambda args: {"aux_hidden_state_layer_ids": None, "transformer_layer_config": {}},
-    )
-    args = Namespace(draft_model_path="/not/local", draft_feature_layer_ids=[2, 16, 29])
-
-    config = speculators_dspark._build_config(args, _ConfigType)
-
-    assert config.aux_hidden_state_layer_ids == [2, 16, 29]
-
-
-@pytest.mark.unit
-def test_dspark_factory_uses_fc_shape_to_reject_wrong_implicit_layer_count(monkeypatch):
-    monkeypatch.setattr(
-        speculators_dspark,
-        "_checkpoint_tensor_shapes",
-        lambda path: {"fc.weight": (64, 256)},
-    )
-    monkeypatch.setattr(
-        speculators_dspark,
-        "load_draft_checkpoint_config",
-        lambda args: {
-            "aux_hidden_state_layer_ids": None,
-            "transformer_layer_config": {"hidden_size": 64},
-        },
-    )
-    args = Namespace(draft_model_path="/models/dspark", draft_feature_layer_ids=[2, 16, 29])
-
-    with pytest.raises(ValueError, match="expects 4 auxiliary hidden states"):
-        speculators_dspark._build_config(args, _ConfigType)
-
-
-@pytest.mark.unit
-def test_dspark_factory_recovers_old_config_head_layout():
-    config = {
-        "aux_hidden_state_layer_ids": None,
-        "transformer_layer_config": {"hidden_size": 64},
-    }
-    shapes = {
-        "fc.weight": (64, 192),
-        "layers.0.self_attn.q_proj.weight": (64, 64),
-        "lm_head.weight": (1000, 64),
-        "markov_head.markov_w1.weight": (2000, 32),
-        "markov_head.markov_w2.weight": (1000, 32),
-        "confidence_head.proj.weight": (1, 96),
-    }
-
-    speculators_dspark._recover_missing_layout(config, (2, 16, 29), shapes)
-
-    assert config["aux_hidden_state_layer_ids"] == [2, 16, 29]
-    assert config["draft_vocab_size"] == 1000
-    assert config["markov_rank"] == 32
-    assert config["enable_confidence_head"] is True
-    assert config["confidence_head_with_markov"] is True
-
-
-@pytest.mark.unit
-def test_dspark_factory_disables_absent_optional_heads_from_local_weights():
-    config = {
-        "aux_hidden_state_layer_ids": [2, 16, 29],
-        "markov_rank": 256,
-        "enable_confidence_head": True,
-        "confidence_head_with_markov": True,
-        "transformer_layer_config": {"hidden_size": 64},
-    }
-    shapes = {
-        "fc.weight": (64, 192),
-        "lm_head.weight": (1000, 64),
-    }
-
-    speculators_dspark._recover_missing_layout(config, (2, 16, 29), shapes)
-
-    assert config["markov_rank"] == 0
-    assert config["enable_confidence_head"] is False
-    assert config["confidence_head_with_markov"] is False
-
-
-@pytest.mark.unit
-def test_dspark_factory_accepts_disabled_markov_and_confidence_heads():
-    config = SimpleNamespace(
-        transformer_layer_config=SimpleNamespace(
-            hidden_size=64,
-            vocab_size=1000,
-            num_hidden_layers=1,
-            num_attention_heads=1,
-            num_key_value_heads=1,
-            head_dim=64,
-            intermediate_size=128,
-        ),
-        aux_hidden_state_layer_ids=[2, 16, 29],
-        draft_vocab_size=1000,
-        markov_rank=0,
-        enable_confidence_head=False,
-        confidence_head_with_markov=False,
-    )
-    shapes = {
-        "fc.weight": (64, 192),
-        "hidden_norm.weight": (64,),
-        "norm.weight": (64,),
-        "lm_head.weight": (1000, 64),
-        "layers.0.self_attn.q_proj.weight": (64, 64),
-        "layers.0.self_attn.k_proj.weight": (64, 64),
-        "layers.0.self_attn.v_proj.weight": (64, 64),
-        "layers.0.self_attn.o_proj.weight": (64, 64),
-        "layers.0.self_attn.q_norm.weight": (64,),
-        "layers.0.self_attn.k_norm.weight": (64,),
-        "layers.0.mlp.gate_proj.weight": (128, 64),
-        "layers.0.mlp.up_proj.weight": (128, 64),
-        "layers.0.mlp.down_proj.weight": (64, 128),
-        "layers.0.input_layernorm.weight": (64,),
-        "layers.0.post_attention_layernorm.weight": (64,),
-    }
-
-    speculators_dspark._validate_checkpoint_layout(config, shapes)
-
-
-@pytest.mark.unit
-def test_dspark_factory_recovers_stale_transformer_layout_from_weights(monkeypatch):
-    config = {
-        "aux_hidden_state_layer_ids": [2, 9, 18, 27, 33],
-        "draft_vocab_size": 32000,
-        "markov_rank": 128,
-        "enable_confidence_head": True,
-        "confidence_head_with_markov": True,
-        "transformer_layer_config": {
-            "hidden_size": 4096,
-            "intermediate_size": 20480,
-            "num_hidden_layers": 32,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "head_dim": 128,
-            "layer_types": ["full_attention"] * 32,
-            "max_window_layers": 32,
-        },
-    }
-    shapes = _qwen4b_dspark_shapes()
-
-    monkeypatch.setattr(speculators_dspark, "load_draft_checkpoint_config", lambda args: config)
-    monkeypatch.setattr(speculators_dspark, "_checkpoint_tensor_shapes", lambda path: shapes)
-    args = Namespace(draft_model_path="/models/dspark", draft_feature_layer_ids=[2, 9, 18, 27, 33])
-    recovered = speculators_dspark._build_config(args, _DefaultingConfigType)
-
-    transformer = vars(recovered.transformer_layer_config)
-    assert transformer["hidden_size"] == 2560
-    assert transformer["vocab_size"] == 151936
-    assert transformer["intermediate_size"] == 9728
-    assert transformer["num_hidden_layers"] == 5
-    assert transformer["num_attention_heads"] == 32
-    assert transformer["num_key_value_heads"] == 8
-    assert transformer["layer_types"] == ["full_attention"] * 5
-    assert transformer["max_window_layers"] == 5
-    assert recovered.target_hidden_size == 2560
-    assert recovered.draft_vocab_size == 151936
-    assert recovered.markov_rank == 256
-    assert recovered.enable_confidence_head is True
-    assert recovered.confidence_head_with_markov is True
-    assert config["transformer_layer_config"]["hidden_size"] == 4096
-
-
-@pytest.mark.unit
-def test_dspark_factory_recovers_completely_missing_transformer_config(monkeypatch):
-    config = {
-        "aux_hidden_state_layer_ids": [2, 9, 18, 27, 33],
-        "draft_vocab_size": 32000,
-        "markov_rank": 128,
-        "enable_confidence_head": True,
-        "confidence_head_with_markov": True,
-    }
-    shapes = _qwen4b_dspark_shapes()
-    monkeypatch.setattr(speculators_dspark, "load_draft_checkpoint_config", lambda args: config)
-    monkeypatch.setattr(speculators_dspark, "_checkpoint_tensor_shapes", lambda path: shapes)
-    monkeypatch.setattr(
-        speculators_dspark,
-        "_target_transformer_config",
-        lambda args: {"model_type": "qwen3", "rope_theta": 1000000.0, "rms_norm_eps": 1e-6},
-    )
-    args = Namespace(draft_model_path="/models/dspark", draft_feature_layer_ids=[2, 9, 18, 27, 33])
-
-    recovered = speculators_dspark._build_config(args, _DefaultingConfigType)
-
-    transformer = recovered.transformer_layer_config
-    assert transformer.num_hidden_layers == 5
-    assert transformer.hidden_size == 2560
-    assert transformer.intermediate_size == 9728
-    assert transformer.num_attention_heads == 32
-    assert transformer.num_key_value_heads == 8
-    assert transformer.rope_theta == 1000000.0
-    assert transformer.rope_parameters == {"rope_type": "default", "rope_theta": 1000000.0}
-    assert transformer.rms_norm_eps == 1e-6
-    assert recovered.target_hidden_size == 2560
-    assert recovered.markov_rank == 256
-    assert recovered.confidence_head_with_markov is True
-    assert "transformer_layer_config" not in config
-
-
-@pytest.mark.unit
-def test_dspark_factory_normalizes_legacy_rope_scaling():
-    config = {
-        "transformer_layer_config": {
-            "model_type": "qwen3",
-            "rope_theta": 500000.0,
-            "rope_scaling": {"type": "yarn", "factor": 4.0},
-        }
-    }
-
-    speculators_dspark._normalize_qwen_rope_config(config, Namespace())
-
-    assert config["transformer_layer_config"]["rope_parameters"] == {
-        "rope_type": "yarn",
-        "factor": 4.0,
-        "rope_theta": 500000.0,
-    }
-
-
-@pytest.mark.unit
-def test_dspark_factory_fills_new_rope_parameters_from_megatron_args():
-    config = {"transformer_layer_config": {"model_type": "qwen3"}}
-
-    speculators_dspark._normalize_qwen_rope_config(config, Namespace(rotary_base=250000.0))
-
-    assert config["transformer_layer_config"]["rope_parameters"] == {
-        "rope_type": "default",
-        "rope_theta": 250000.0,
-    }
-
-
-@pytest.mark.unit
-def test_dspark_factory_preserves_target_rope_scaling(monkeypatch):
-    config = {"transformer_layer_config": {"model_type": "qwen3"}}
-    monkeypatch.setattr(
-        speculators_dspark,
-        "_target_transformer_config",
-        lambda args: {
-            "model_type": "qwen3",
-            "rope_theta": 750000.0,
-            "rope_scaling": {"type": "linear", "factor": 2.0},
-        },
+    config = speculators_dspark._build_config(
+        Namespace(draft_feature_layer_ids=[2, 14, 29]),
+        config_module.DSparkSpeculatorConfig,
     )
 
-    speculators_dspark._normalize_qwen_rope_config(config, Namespace())
-
-    assert config["transformer_layer_config"]["rope_parameters"] == {
-        "rope_type": "linear",
-        "factor": 2.0,
-        "rope_theta": 750000.0,
-    }
+    assert config.speculators_model_type == "dspark"
+    assert config.transformer_layer_config.model_type == "qwen3"
+    assert config.speculators_config is None
 
 
 @pytest.mark.unit
-def test_dspark_factory_rejects_invalid_rope_parameters():
-    config = {"transformer_layer_config": {"model_type": "qwen3", "rope_parameters": []}}
-
-    with pytest.raises(TypeError, match="rope_parameters must be a JSON object"):
-        speculators_dspark._normalize_qwen_rope_config(config, Namespace())
-
-
-@pytest.mark.unit
-def test_dspark_factory_uses_nested_transformer_config_without_local_weights():
-    config = {
-        "draft_model_config": {
-            "hf_config": {
-                "model_type": "qwen3",
-                "hidden_size": 2560,
-                "num_hidden_layers": 5,
-            }
-        }
-    }
-
-    speculators_dspark._ensure_transformer_config(config, Namespace(), {})
-
-    assert config["transformer_layer_config"] == {
-        "model_type": "qwen3",
-        "hidden_size": 2560,
-        "num_hidden_layers": 5,
-    }
-
-
-@pytest.mark.unit
-def test_dspark_factory_rejects_unrecoverable_remote_config():
-    with pytest.raises(ValueError, match="omits transformer_layer_config"):
-        speculators_dspark._ensure_transformer_config({}, Namespace(), {})
-
-
-@pytest.mark.unit
-def test_dspark_factory_rejects_target_hidden_size_mismatch_before_ray():
-    config = SimpleNamespace(
-        transformer_layer_config=SimpleNamespace(
-            model_type="qwen3",
-            hidden_size=2560,
-            vocab_size=151936,
-            rope_parameters={"rope_type": "default", "rope_theta": 1000000.0},
-        ),
-        target_hidden_size=2560,
-        markov_head_type="vanilla",
-        markov_rank=256,
+def test_validate_dspark_config_accepts_supported_contract():
+    speculators_dspark._validate_dspark_config(
+        Namespace(hidden_size=64, vllm_speculative_config={"num_speculative_tokens": 4}),
+        _validated_config(),
     )
-    args = Namespace(hidden_size=4096)
-
-    with pytest.raises(ValueError, match="configured Megatron Target uses hidden_size=4096"):
-        speculators_dspark._validate_dspark_config(args, config)
 
 
 @pytest.mark.unit
-def test_dspark_factory_checks_mask_token_against_verifier_vocab():
-    config = SimpleNamespace(
-        transformer_layer_config=SimpleNamespace(
-            model_type="qwen3",
-            hidden_size=64,
-            vocab_size=200,
-            rope_parameters={"rope_type": "default", "rope_theta": 1000000.0},
-        ),
-        target_hidden_size=64,
-        draft_vocab_size=100,
-        markov_head_type="vanilla",
-        markov_rank=0,
-        enable_confidence_head=False,
-        confidence_head_with_markov=False,
-        mask_token_id=250,
-    )
-    args = Namespace(hidden_size=64)
-
-    with pytest.raises(ValueError, match=r"outside verifier vocabulary \[0, 200\)"):
-        speculators_dspark._validate_dspark_config(args, config)
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"markov_head_type": "gated"}, "only markov_head_type='vanilla'"),
+        ({"markov_rank": -1}, "must be non-negative"),
+        ({"block_size": 1}, "must be at least 2"),
+        ({"mask_token_id": None}, "must define mask_token_id"),
+        ({"mask_token_id": 256}, "outside verifier vocabulary"),
+    ],
+)
+def test_validate_dspark_config_rejects_unsupported_values(override, message):
+    with pytest.raises(ValueError, match=message):
+        speculators_dspark._validate_dspark_config(Namespace(hidden_size=64), _validated_config(**override))
 
 
 @pytest.mark.unit
-def test_dspark_factory_rejects_qwen3_variants_not_supported_by_backbone():
-    config = SimpleNamespace(transformer_layer_config=SimpleNamespace(model_type="qwen3_next"))
-
-    with pytest.raises(ValueError, match="only dense Qwen3"):
-        speculators_dspark._validate_dspark_config(Namespace(), config)
-
-
-@pytest.mark.unit
-def test_dspark_factory_rejects_missing_enabled_head_weights():
-    config = SimpleNamespace(
-        transformer_layer_config=SimpleNamespace(
-            hidden_size=64,
-            vocab_size=2000,
-            num_hidden_layers=1,
-            num_attention_heads=1,
-            num_key_value_heads=1,
-            head_dim=64,
-            intermediate_size=128,
-        ),
-        aux_hidden_state_layer_ids=[2, 16, 29],
-        draft_vocab_size=1000,
-        markov_rank=32,
-        enable_confidence_head=True,
-        confidence_head_with_markov=True,
-    )
-    shapes = {
-        "fc.weight": (64, 192),
-        "layers.0.self_attn.q_proj.weight": (64, 64),
-        "lm_head.weight": (1000, 64),
-        "markov_head.markov_w1.weight": (2000, 32),
-        "markov_head.markov_w2.weight": (1000, 32),
-    }
-
-    with pytest.raises(ValueError, match="confidence_head.proj.weight: missing"):
-        speculators_dspark._validate_checkpoint_layout(config, shapes)
+@pytest.mark.parametrize(
+    "config",
+    [
+        _validated_config(enable_confidence_head=True, confidence_head_with_markov=False),
+        _validated_config(enable_confidence_head=True, markov_rank=0),
+    ],
+)
+def test_validate_dspark_config_rejects_invalid_confidence_head(config):
+    with pytest.raises(ValueError, match="confidence"):
+        speculators_dspark._validate_dspark_config(Namespace(hidden_size=64), config)
 
 
 @pytest.mark.unit
-def test_dspark_factory_rejects_layer_override_before_loading_weights(monkeypatch):
-    monkeypatch.setattr(
-        speculators_dspark,
-        "load_draft_checkpoint_config",
-        lambda args: {"aux_hidden_state_layer_ids": [2, 14, 29], "transformer_layer_config": {}},
-    )
-    args = Namespace(draft_feature_layer_ids=[2, 10, 20, 29])
-
-    with pytest.raises(ValueError, match="Remove the command-line override"):
-        speculators_dspark._build_config(args, _ConfigType)
+def test_validate_dspark_config_rejects_target_hidden_size_mismatch():
+    with pytest.raises(ValueError, match="configured Megatron Target uses hidden_size=128"):
+        speculators_dspark._validate_dspark_config(
+            Namespace(hidden_size=128),
+            _validated_config(),
+        )
 
 
 @pytest.mark.unit
-def test_dspark_factory_explains_checkpoint_shape_mismatch():
+@pytest.mark.parametrize(
+    ("sample_from_anchor", "requested", "available"),
+    [(True, 9, 8), (False, 8, 7)],
+)
+def test_validate_dspark_config_rejects_tokens_beyond_checkpoint_capacity(
+    sample_from_anchor,
+    requested,
+    available,
+):
+    with pytest.raises(ValueError, match=rf"{requested} > {available}"):
+        speculators_dspark._validate_dspark_config(
+            Namespace(hidden_size=64, vllm_speculative_config={"num_speculative_tokens": requested}),
+            _validated_config(sample_from_anchor=sample_from_anchor),
+        )
+
+
+@pytest.mark.unit
+def test_load_pretrained_model_explains_checkpoint_mismatch():
     class _ModelType:
         @staticmethod
         def from_pretrained(*args, **kwargs):
-            raise RuntimeError("You set `ignore_mismatched_sizes` to `False`")
+            raise RuntimeError("ignore_mismatched_sizes=False")
 
-    config = SimpleNamespace(
-        transformer_layer_config=SimpleNamespace(
-            model_type="qwen3",
-            hidden_size=2560,
-            vocab_size=151936,
-        ),
-        aux_hidden_state_layer_ids=[2, 14, 29],
-        draft_vocab_size=151936,
-        markov_rank=256,
-        enable_confidence_head=True,
-    )
+    config = _validated_config()
+    config.aux_hidden_state_layer_ids = [2, 14, 29]
+    config.draft_vocab_size = 256
     args = Namespace(draft_model_path="/models/dspark")
 
-    with pytest.raises(RuntimeError, match="randomly initialize") as error:
+    with pytest.raises(RuntimeError, match="do not match config.json") as error:
         speculators_dspark._load_pretrained_model(_ModelType, args, config)
 
-    assert "hidden_size=2560" in str(error.value)
-    assert "markov_rank=256" in str(error.value)
+    assert "hidden_size=64" in str(error.value)
+    assert "markov_rank=16" in str(error.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("loading_info", "message"),
+    [
+        ({"missing_keys": ["markov_head.proj.weight"]}, "missing_keys"),
+        ({"unexpected_keys": ["layers.99.weight"]}, "unexpected_keys"),
+        ({"mismatched_keys": [("confidence_head.weight", (4, 4), (8, 4))]}, "mismatched_keys"),
+    ],
+)
+def test_load_pretrained_model_rejects_partial_or_extra_state(loading_info, message):
+    model = torch.nn.Linear(2, 2)
+
+    class _ModelType:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            assert kwargs["output_loading_info"] is True
+            return model, loading_info
+
+    with pytest.raises(RuntimeError, match=message):
+        speculators_dspark._load_pretrained_model(
+            _ModelType,
+            Namespace(draft_model_path="/models/dspark", draft_vocab_mapping_path=None),
+            _validated_config(),
+        )
+
+
+@pytest.mark.unit
+def test_load_pretrained_model_preserves_safe_speculators_verifier_hook():
+    class _Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def load_verifier_weights(self):
+            self.calls.append(("verifier",))
+
+    model = _Model()
+
+    class _ModelType:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            assert kwargs["output_loading_info"] is True
+            return model, {"missing_keys": [], "unexpected_keys": [], "mismatched_keys": [], "error_msgs": []}
+
+    result = speculators_dspark._load_pretrained_model(
+        _ModelType,
+        Namespace(draft_model_path="/models/dspark"),
+        _validated_config(),
+    )
+
+    assert result is model
+    assert model.calls == [("verifier",)]
+
+
+@pytest.mark.unit
+def test_load_pretrained_model_rejects_ignored_but_missing_vocab_mapping():
+    class _Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.use_draft_vocab = True
+            self.verifier_vocab_size = 4
+            self.draft_vocab_size = 2
+            self.register_buffer("t2d", torch.zeros(4, dtype=torch.bool))
+            self.register_buffer("d2t", torch.zeros(2, dtype=torch.long))
+
+    model = _Model()
+
+    class _ModelType:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return model, {"missing_keys": [], "unexpected_keys": [], "mismatched_keys": [], "error_msgs": []}
+
+    with pytest.raises(RuntimeError, match="missing a complete t2d/d2t mapping"):
+        speculators_dspark._load_pretrained_model(
+            _ModelType,
+            Namespace(draft_model_path="/models/dspark"),
+            _validated_config(),
+        )
+
+
+@pytest.mark.unit
+def test_external_vocab_mapping_path_cannot_bypass_checkpoint_validation():
+    class _Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.use_draft_vocab = True
+            self.verifier_vocab_size = 4
+            self.draft_vocab_size = 2
+            self.register_buffer("t2d", torch.zeros(4, dtype=torch.bool))
+            self.register_buffer("d2t", torch.zeros(2, dtype=torch.long))
+            self.verifier_calls = 0
+
+        def load_verifier_weights(self):
+            self.verifier_calls += 1
+
+    model = _Model()
+
+    class _ModelType:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return model, {"missing_keys": [], "unexpected_keys": [], "mismatched_keys": [], "error_msgs": []}
+
+    with pytest.raises(RuntimeError, match="missing a complete t2d/d2t mapping"):
+        speculators_dspark._load_pretrained_model(
+            _ModelType,
+            Namespace(draft_model_path="/models/dspark", draft_vocab_mapping_path="/mappings/dspark.pt"),
+            _validated_config(),
+        )
+
+    assert model.verifier_calls == 0
+
+
+@pytest.mark.unit
+def test_reduced_vocab_checkpoint_accepts_nontrivial_offset_mapping():
+    class _Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.use_draft_vocab = True
+            self.verifier_vocab_size = 4
+            self.draft_vocab_size = 2
+            self.register_buffer("t2d", torch.tensor([False, True, False, True]))
+            # Target rows [1, 3] minus Draft ids [0, 1].
+            self.register_buffer("d2t", torch.tensor([1, 2], dtype=torch.long))
+            self.verifier_calls = 0
+
+        def load_verifier_weights(self):
+            self.verifier_calls += 1
+
+    model = _Model()
+
+    class _ModelType:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return model, {"missing_keys": [], "unexpected_keys": [], "mismatched_keys": [], "error_msgs": []}
+
+    result = speculators_dspark._load_pretrained_model(
+        _ModelType,
+        Namespace(draft_model_path="/models/dspark"),
+        _validated_config(),
+    )
+
+    assert result is model
+    assert model.verifier_calls == 1
