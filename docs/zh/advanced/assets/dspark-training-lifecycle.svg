@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1050" viewBox="0 0 1600 1050" role="img" aria-labelledby="title desc">
+  <title id="title">VIME 单轮 RL 与 DSpark 在线训练精确时序</title>
+  <desc id="desc">从 rollout、Actor 更新前特征采集、Actor 优化、Draft 训练、候选冻结、保存到 Target 与 Draft 顺序发布的完整时序。</desc>
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}.head{fill:#0f172a;rx:12}.life{stroke:#94a3b8;stroke-width:2;stroke-dasharray:7 6}.msg{stroke:#2563eb;stroke-width:2.5;fill:none;marker-end:url(#a)}.data{stroke:#7c3aed;stroke-width:2.5;fill:none;marker-end:url(#b)}.weight{stroke:#dc2626;stroke-width:3.5;fill:none;marker-end:url(#c)}
+      .title{font:700 28px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#0f172a}.h{font:700 17px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#fff}.t{font:15px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#1e293b}.s{font:13px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#475569}.note{fill:#fffbeb;stroke:#f59e0b;stroke-width:1.5;rx:10}.good{fill:#ecfdf5;stroke:#10b981;stroke-width:1.5;rx:10}.risk{fill:#fff1f2;stroke:#e11d48;stroke-width:1.5;rx:10}
+    </style>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#2563eb"/></marker>
+    <marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#7c3aed"/></marker>
+    <marker id="c" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#dc2626"/></marker>
+  </defs>
+  <rect class="bg" width="1600" height="1050"/>
+  <text class="title" x="50" y="48">一轮 VIME RL + DSpark：真实执行顺序与版本关系</text>
+
+  <g>
+    <rect class="head" x="60" y="80" width="220" height="55"/><text class="h" x="123" y="114">Rollout Engine</text>
+    <rect class="head" x="360" y="80" width="220" height="55"/><text class="h" x="440" y="114">Driver</text>
+    <rect class="head" x="660" y="80" width="220" height="55"/><text class="h" x="705" y="105">Megatron Actor</text><text class="h" x="730" y="126">ranks</text>
+    <rect class="head" x="960" y="80" width="220" height="55"/><text class="h" x="1000" y="105">Draft Trainer</text><text class="h" x="1010" y="126">Actor rank 0</text>
+    <rect class="head" x="1260" y="80" width="270" height="55"/><text class="h" x="1320" y="114">Weight Publisher</text>
+    <line class="life" x1="170" y1="135" x2="170" y2="995"/><line class="life" x1="470" y1="135" x2="470" y2="995"/><line class="life" x1="770" y1="135" x2="770" y2="995"/><line class="life" x1="1070" y1="135" x2="1070" y2="995"/><line class="life" x1="1395" y1="135" x2="1395" y2="995"/>
+  </g>
+
+  <path class="msg" d="M470 175 L180 175"/><text class="t" x="240" y="165">generate(rollout_id)，serving Target=Tₙ</text>
+  <path class="data" d="M180 220 L460 220"/><text class="t" x="245" y="211">rollout tokens / rewards / logprobs</text>
+  <path class="msg" d="M470 270 L760 270"/><text class="t" x="535" y="260">async_train(rollout)</text>
+
+  <rect class="note" x="620" y="295" width="300" height="100"/>
+  <text class="t" x="642" y="323">pre-update forward-only</text>
+  <text class="s" x="642" y="349">捕获 aux hidden + final hidden</text>
+  <text class="s" x="642" y="372">导出 LM Head(Tₙ) 与 teacher version</text>
+  <path class="data" d="M770 400 C770 425 940 425 1060 425"/><text class="t" x="820" y="416">Ray ObjectRefs</text>
+
+  <rect class="risk" x="620" y="450" width="300" height="82"/>
+  <text class="t" x="642" y="480">Actor RL backward + optimizer</text>
+  <text class="s" x="642" y="506">Actor live policy：Tₙ → Tₙ₊₁</text>
+  <path class="msg" d="M760 560 L480 560"/><text class="t" x="535" y="550">Actor train 返回 feature manifest</text>
+  <path class="msg" d="M470 605 L1060 605"/><text class="t" x="640" y="595">collect：resolve refs + sync 双 LM Heads(Tₙ)</text>
+
+  <rect class="note" x="930" y="630" width="280" height="92"/>
+  <text class="t" x="952" y="658">VersionedFeatureQueue</text>
+  <text class="s" x="952" y="683">clear_except(Tₙ)</text>
+  <text class="s" x="952" y="704">拒绝版本不匹配 payload</text>
+  <path class="msg" d="M470 750 L1060 750"/><text class="t" x="660" y="740">train interval 命中且 accepted &gt; 0</text>
+
+  <rect class="good" x="920" y="770" width="300" height="118"/>
+  <text class="t" x="942" y="799">DSpark forward/backward/AdamW</text>
+  <text class="s" x="942" y="825">至少 1 个 finite optimizer step</text>
+  <text class="s" x="942" y="849">draft_version += 1</text>
+  <text class="s" x="942" y="872">冻结 candidate Dₖ(Tₙ) + CPU LM Head</text>
+  <path class="msg" d="M1060 910 L480 910"/><text class="t" x="630" y="900">candidate metadata / snapshot gate</text>
+  <path class="msg" d="M470 945 L1385 945"/><text class="t" x="690" y="935">stage snapshot；pause 后先 Target Tₙ₊₁，再 Draft Dₖ(Tₙ)</text>
+  <path class="weight" d="M1385 980 L180 980"/><text class="t" x="570" y="1020">同一 generation pause 内顺序发布 → resume；成功后 mark_published(k)</text>
+
+  <rect class="risk" x="60" y="760" width="470" height="125"/>
+  <text class="t" x="82" y="790">版本含义</text>
+  <text class="s" x="82" y="817">• 同轮成功训练并发布：最小 teacher lag = 1</text>
+  <text class="s" x="82" y="842">• publish cadence 延迟时，Target − teacher gap 可大于 1</text>
+  <text class="s" x="82" y="867">• save/export 在 publish 前，不代表 serving 已切换</text>
+</svg>

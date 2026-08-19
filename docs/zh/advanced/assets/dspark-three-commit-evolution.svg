@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">VIME DSpark 最近三个提交的工程演进</title>
+  <desc id="desc">按 9bc3a9e0、1cb41579、d5658d5f 展示从训练主链路到保存兼容性，再到严格契约、候选冻结和文档化的演进。</desc>
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}.card{stroke-width:2;rx:18}.c1{fill:#eff6ff;stroke:#2563eb}.c2{fill:#f5f3ff;stroke:#7c3aed}.c3{fill:#ecfdf5;stroke:#059669}.bar{fill:#0f172a;rx:12}
+      .title{font:700 28px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#0f172a}.hash{font:700 21px ui-monospace,SFMono-Regular,Consolas,monospace;fill:#fff}.h{font:700 19px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#1e293b}.t{font:15px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#334155}.s{font:13px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#64748b}.arrow{stroke:#475569;stroke-width:4;fill:none;marker-end:url(#a)}
+    </style>
+    <marker id="a" markerWidth="12" markerHeight="12" refX="11" refY="4" orient="auto"><path d="M0,0 L12,4 L0,8 Z" fill="#475569"/></marker>
+  </defs>
+  <rect class="bg" width="1600" height="900"/>
+  <text class="title" x="50" y="52">最近三个 commit：DSpark 功能从闭环到可部署、可审计</text>
+
+  <rect class="card c1" x="50" y="105" width="440" height="610"/>
+  <rect class="bar" x="75" y="130" width="390" height="58"/>
+  <text class="hash" x="98" y="167">9bc3a9e0</text>
+  <text class="h" x="75" y="225">feat: add dspark draft training</text>
+  <text class="t" x="75" y="265">训练主闭环</text>
+  <text class="t" x="92" y="299">• DSpark backend 与 Speculators factory</text>
+  <text class="t" x="92" y="331">• aux/final hidden 数据契约</text>
+  <text class="t" x="92" y="363">• DSpark collator、native loss、双 LM Head</text>
+  <text class="t" x="92" y="395">• Actor rank 0 独立 Draft optimizer</text>
+  <text class="t" x="92" y="427">• Target + Draft / single-packed 传输</text>
+  <text class="t" x="92" y="459">• vLLM Draft update metadata</text>
+  <text class="t" x="92" y="491">• CLI / config / NPU 基础适配</text>
+  <text class="s" x="75" y="548">阶段结果：能够在 RL 生命周期内持续蒸馏</text>
+  <text class="s" x="75" y="574">并把新 Draft 权重发送到 rollout engine。</text>
+
+  <rect class="card c2" x="580" y="105" width="440" height="610"/>
+  <rect class="bar" x="605" y="130" width="390" height="58"/>
+  <text class="hash" x="628" y="167">1cb41579</text>
+  <text class="h" x="605" y="225">feat: add draft model save</text>
+  <text class="t" x="605" y="265">保存与兼容性强化</text>
+  <text class="t" x="622" y="299">• HF/Speculators 两文件导出</text>
+  <text class="t" x="622" y="331">• staging、目录 swap、异常回滚</text>
+  <text class="t" x="622" y="363">• legacy/hybrid config 兼容与 preflight</text>
+  <text class="t" x="622" y="395">• HCCL optional import / NPU loss adapter</text>
+  <text class="t" x="622" y="427">• Ascend worker Draft target compatibility</text>
+  <text class="t" x="622" y="459">• 保存/导出 cadence 与最终导出</text>
+  <text class="t" x="622" y="491">• 更多参数和错误边界</text>
+  <text class="s" x="605" y="548">阶段结果：Draft 可恢复、可部署，并能在</text>
+  <text class="s" x="605" y="574">Ascend serving 进程内切换权重更新目标。</text>
+
+  <rect class="card c3" x="1110" y="105" width="440" height="610"/>
+  <rect class="bar" x="1135" y="130" width="390" height="58"/>
+  <text class="hash" x="1158" y="167">d5658d5f</text>
+  <text class="h" x="1135" y="225">test（DSpark 收敛与审计）</text>
+  <text class="t" x="1135" y="265">严格契约与状态修复</text>
+  <text class="t" x="1152" y="299">• Speculators 固定到 af3f179...</text>
+  <text class="t" x="1152" y="331">• 删除运行时 shape guessing</text>
+  <text class="t" x="1152" y="363">• strict config/weights/vocab mapping</text>
+  <text class="t" x="1152" y="395">• immutable candidate LM Head/version</text>
+  <text class="t" x="1152" y="427">• DSpark-only guard，EAGLE3 不变</text>
+  <text class="t" x="1152" y="459">• MRV1/MRV2 Draft model lookup</text>
+  <text class="t" x="1152" y="491">• 精简测试与实现文档重写</text>
+  <text class="s" x="1135" y="548">阶段结果：训练、保存和发布共享同一个</text>
+  <text class="s" x="1135" y="574">可审计 candidate，损坏 artifact 更早失败。</text>
+
+  <path class="arrow" d="M490 405 L580 405"/><path class="arrow" d="M1020 405 L1110 405"/>
+
+  <rect class="bar" x="160" y="770" width="1280" height="82"/>
+  <text class="hash" x="212" y="805">最终路径：</text>
+  <text class="hash" x="390" y="805">rollout feature → versioned queue → DSpark optimizer → immutable candidate</text>
+  <text class="hash" x="390" y="835">→ checkpoint/HF → Target + Draft sequential hot update → verified rollout</text>
+</svg>

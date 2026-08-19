@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="930" viewBox="0 0 1600 930" role="img" aria-labelledby="title desc">
+  <title id="title">DSpark 单个稳态 speculative round 的数据流</title>
+  <desc id="desc">Target 验证上一轮 Draft、rejection sampler 输出 token，并用本轮 Target 辅助隐藏状态驱动 DSpark 一次并行 backbone 与顺序 Markov head 产生下一轮 Draft。</desc>
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}.box{stroke:#334155;stroke-width:1.7;rx:13}.blue{fill:#eff6ff}.violet{fill:#f5f3ff}.green{fill:#ecfdf5}.amber{fill:#fffbeb}.rose{fill:#fff1f2}
+      .title{font:700 28px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#0f172a}.h{font:700 18px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#1e293b}.t{font:15px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#334155}.s{font:13px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#64748b}
+      .a{fill:none;stroke:#2563eb;stroke-width:3;marker-end:url(#arrow)}.d{fill:none;stroke:#7c3aed;stroke-width:3;marker-end:url(#data)}.loop{fill:none;stroke:#059669;stroke-width:3;marker-end:url(#green)}.dash{stroke-dasharray:8 6}
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#2563eb"/></marker>
+    <marker id="data" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#7c3aed"/></marker>
+    <marker id="green" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#059669"/></marker>
+  </defs>
+  <rect class="bg" width="1600" height="930"/>
+  <text class="title" x="50" y="48">DSpark 稳态推理：验证上轮 proposal，生成下轮 proposal</text>
+
+  <rect class="box blue" x="50" y="105" width="270" height="115"/>
+  <text class="h" x="75" y="140">Scheduler 输入</text>
+  <text class="t" x="75" y="170">context + 上轮 draft[1..K]</text>
+  <text class="s" x="75" y="198">每请求 query token 数扩成 1+K</text>
+
+  <rect class="box rose" x="390" y="90" width="335" height="145"/>
+  <text class="h" x="415" y="127">Target verify forward</text>
+  <text class="t" x="415" y="158">K 个 verifier logits</text>
+  <text class="t" x="415" y="184">+ 1 个 correction/bonus logit</text>
+  <text class="s" x="415" y="211">同时导出本轮 selected aux hidden</text>
+
+  <rect class="box amber" x="795" y="90" width="345" height="145"/>
+  <text class="h" x="820" y="127">Standard rejection sampler</text>
+  <text class="t" x="820" y="158">从左到右接受最长连续前缀</text>
+  <text class="t" x="820" y="184">首拒绝：residual correction</text>
+  <text class="t" x="820" y="210">全接受：Target bonus</text>
+
+  <rect class="box blue" x="1210" y="105" width="330" height="115"/>
+  <text class="h" x="1235" y="140">本轮输出</text>
+  <text class="t" x="1235" y="170">accepted prefix + correction/bonus</text>
+  <text class="s" x="1235" y="198">算法正确时恢复 Target 分布</text>
+
+  <path class="a" d="M320 162 L390 162"/><path class="a" d="M725 162 L795 162"/><path class="a" d="M1140 162 L1210 162"/>
+
+  <text class="h" x="50" y="300">同一次 Target forward 的 hidden 驱动下一轮 DSpark</text>
+  <path class="d dash" d="M558 235 C558 285 235 280 235 350"/>
+
+  <rect class="box violet" x="50" y="350" width="370" height="150"/>
+  <text class="h" x="75" y="386">Target 多层 hidden</text>
+  <text class="t" x="75" y="418">concat H^(l₁)...H^(lₘ)</text>
+  <text class="t" x="75" y="445">FC projection + RMSNorm</text>
+  <text class="s" x="75" y="474">为所有 Draft layer 预计算 context K/V</text>
+
+  <rect class="box violet" x="480" y="350" width="330" height="150"/>
+  <text class="h" x="505" y="386">Query block</text>
+  <text class="t" x="505" y="418">anchor + mask/noise tokens</text>
+  <text class="t" x="505" y="445">按 sample_from_anchor 对齐</text>
+  <text class="s" x="505" y="474">运行时 K 不会自动扩成 checkpoint block</text>
+
+  <rect class="box green" x="880" y="350" width="330" height="150"/>
+  <text class="h" x="905" y="386">DFlash-style backbone</text>
+  <text class="t" x="905" y="418">一次 Transformer forward</text>
+  <text class="t" x="905" y="445">并行产生 base logits U₁...Uₖ</text>
+  <text class="s" x="905" y="474">重型计算不按 token 自回归重复</text>
+
+  <path class="d" d="M420 425 L480 425"/><path class="d" d="M810 425 L880 425"/>
+
+  <rect class="box green" x="470" y="585" width="670" height="205"/>
+  <text class="h" x="495" y="622">轻量 Markov 顺序头（i = 1..K）</text>
+  <text class="t" x="495" y="658">biasᵢ = W₂(W₁(previous_token))</text>
+  <text class="t" x="495" y="690">logitsᵢ = Uᵢ + biasᵢ</text>
+  <text class="t" x="495" y="722">draftᵢ = argmax(logitsᵢ) 或已验收的概率采样</text>
+  <text class="s" x="495" y="758">只有 embedding lookup、低秩投影、vocab 加法和 sampling 串行</text>
+  <path class="loop" d="M1035 740 C1190 740 1190 630 1060 630"/>
+
+  <rect class="box amber" x="1210" y="610" width="330" height="155"/>
+  <text class="h" x="1235" y="646">下一轮 draft[1..K]</text>
+  <text class="t" x="1235" y="678">缓存 Draft ids / 可选 logits</text>
+  <text class="t" x="1235" y="706">下一 Target step 再统一验证</text>
+  <text class="s" x="1235" y="738">confidence 动态 K 只截 verify，不省本轮完整 Draft</text>
+  <path class="loop" d="M1045 500 C1045 540 805 535 805 585"/><path class="loop" d="M1140 687 L1210 687"/>
+
+  <rect class="box rose" x="50" y="585" width="340" height="205"/>
+  <text class="h" x="75" y="622">正确性边界</text>
+  <text class="t" x="75" y="654">• standard rejection 是必要条件</text>
+  <text class="t" x="75" y="682">• 仍需验证具体 runner/kernel</text>
+  <text class="t" x="75" y="710">• MRV2 probabilistic 路径当前未验收</text>
+  <text class="t" x="75" y="738">• MRV1 greedy Draft ≠ Target 只能 greedy</text>
+  <text class="s" x="75" y="768">RL rollout 建议做 spec on/off 分布一致性测试</text>
+
+  <text class="s" x="50" y="870">性能关键：一次 spec round 的产出提高，必须覆盖 Draft backbone、2-token/K+1 Target verify、sampler、hidden 输出和通信的总额外成本。</text>
+</svg>

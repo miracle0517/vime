@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1900" height="1980" viewBox="0 0 1900 1980" role="img" aria-labelledby="title desc">
+  <title id="title">VIME DSpark 调用链：9bc3a9e0 与 1cb41579</title>
+  <desc id="desc">从参数校验、Speculators checkpoint 构建、Actor 更新前特征采集、Actor rank zero 上的 Draft 训练，到 checkpoint、HuggingFace 导出、serving snapshot、分布式权重传输、vLLM HTTP Draft session 与 NPUWorker 恢复 Target 的完整调用链。图中特别指出这两个提交没有冻结的 immutable candidate。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrowDash" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#B45309"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0F172A" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .title { font: 700 34px Inter, 'Noto Sans SC', 'Microsoft YaHei', sans-serif; fill: #0F172A; }
+      .subtitle { font: 500 18px Inter, 'Noto Sans SC', 'Microsoft YaHei', sans-serif; fill: #475569; }
+      .node-title { font: 700 22px Inter, 'Noto Sans SC', 'Microsoft YaHei', sans-serif; fill: #0F172A; }
+      .body { font: 500 17px Inter, 'Noto Sans SC', 'Microsoft YaHei', sans-serif; fill: #1E293B; }
+      .code { font: 500 15px ui-monospace, Consolas, monospace; fill: #334155; }
+      .small { font: 500 15px Inter, 'Noto Sans SC', 'Microsoft YaHei', sans-serif; fill: #475569; }
+      .warn { font: 600 16px Inter, 'Noto Sans SC', 'Microsoft YaHei', sans-serif; fill: #991B1B; }
+      .box { stroke-width: 2.4; rx: 14; filter: url(#shadow); }
+      .flow { fill: none; stroke: #334155; stroke-width: 3; marker-end: url(#arrow); }
+      .meta { fill: none; stroke: #B45309; stroke-width: 2.5; stroke-dasharray: 9 7; marker-end: url(#arrowDash); }
+    </style>
+  </defs>
+
+  <rect width="1900" height="1980" fill="#F8FAFC"/>
+  <text x="950" y="58" text-anchor="middle" class="title">VIME DSpark 在线训练与热发布调用链</text>
+  <text x="950" y="92" text-anchor="middle" class="subtitle">仅覆盖 9bc3a9e0 与 1cb41579；最终运行时代码以 1cb41579 为准</text>
+
+  <rect x="245" y="125" width="1410" height="80" class="box" fill="#F1F5F9" stroke="#64748B"/>
+  <text x="280" y="157" class="node-title">范围</text>
+  <text x="280" y="184" class="body">9bc：在线采集、训练、版本队列、serving snapshot、single-packed Draft 热更新</text>
+  <text x="1010" y="184" class="body">1cb：HF 导出、配置恢复/预检、NPU Draft session 兼容</text>
+
+  <rect x="225" y="245" width="1450" height="115" class="box" fill="#FEF3C7" stroke="#B45309"/>
+  <text x="265" y="280" class="node-title">1 · arguments / config validation</text>
+  <text x="265" y="310" class="code">arguments.py::parse_args → config.py::validate_external_draft_args</text>
+  <text x="265" y="338" class="body">规范化 layer IDs / block size / save path；校验拓扑、vLLM method、checkpoint；draft_save_hf 可隐式开启 DSpark 训练</text>
+
+  <path d="M950 360 L950 400" class="flow"/>
+  <rect x="225" y="400" width="1450" height="125" class="box" fill="#EDE9FE" stroke="#7C3AED"/>
+  <text x="265" y="437" class="node-title">2 · Speculators checkpoint preflight + build_model</text>
+  <text x="265" y="467" class="code">preflight_dspark_checkpoint → _build_config → _validate_dspark_config</text>
+  <text x="265" y="495" class="code">Actor rank 0: build_model → DSparkDraftModel.from_pretrained</text>
+  <text x="1080" y="495" class="body">NPU eager attention · 双 LM Head 冻结 · verifier_norm=Identity</text>
+
+  <path d="M950 525 L950 565" class="flow"/>
+  <rect x="225" y="565" width="1450" height="135" class="box" fill="#DBEAFE" stroke="#2563EB"/>
+  <text x="265" y="602" class="node-title">3 · Actor optimizer 前捕获 Target Tₙ</text>
+  <text x="265" y="632" class="code">actor.py::train_actor / compute_log_prob → DraftFeatureCollector</text>
+  <text x="265" y="661" class="body">aux hidden + final-normalized hidden + ids/mask/positions → CPU BF16 payload；TP gather 后导出 Target LM Head(Tₙ)</text>
+  <text x="265" y="687" class="small">随后 Actor optimizer 才把训练副本从 Tₙ 更新为 Tₙ₊₁</text>
+
+  <path d="M950 700 L950 740" class="flow"/>
+  <rect x="225" y="740" width="1450" height="120" class="box" fill="#CCFBF1" stroke="#0F766E"/>
+  <text x="265" y="777" class="node-title">4 · ExternalDraftTrainGroup（Driver facade）</text>
+  <text x="265" y="807" class="code">collect_actor_results → Actor rank-0 RPC → train_draft / prepare_publish_snapshot / save_draft</text>
+  <text x="265" y="835" class="body">聚合各 Actor manifest，要求 teacher version 唯一；不创建独立 Ray Actor 或 placement group</text>
+
+  <path d="M950 860 L950 900" class="flow"/>
+  <rect x="225" y="900" width="1450" height="135" class="box" fill="#EDE9FE" stroke="#7C3AED"/>
+  <text x="265" y="937" class="node-title">5 · ExternalDraftTrainer.collect / train（Actor rank 0 串行）</text>
+  <text x="265" y="967" class="code">sync_target_lm_head → VersionedFeatureQueue.clear_except/add → collate_dspark_samples</text>
+  <text x="265" y="996" class="code">compute_dspark_loss → backward → clip_grad_norm → AdamW.step → scheduler.step → draft_version++</text>
+  <text x="265" y="1022" class="small">Draft 使用独立 optimizer，但与 Actor 共卡且发生在 Actor phase 之后，不是并行训练</text>
+
+  <path d="M950 1035 L950 1075" class="flow"/>
+  <rect x="225" y="1075" width="1450" height="135" class="box" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="265" y="1112" class="node-title">6 · 逻辑发布候选：last_train_result + live model</text>
+  <text x="265" y="1142" class="body">成功 step 递增 draft_version；Group 用 last_train_result 与 last_published_draft_version 做门控</text>
+  <text x="265" y="1171" class="warn">注意：这两个提交没有 immutable candidate；snapshot / checkpoint / HF export 都在调用时读取可变 live model</text>
+  <text x="265" y="1197" class="small">后续 collect 可先改写双 LM Head 与 target_weight_version，因此错峰 save/publish 存在旧 backbone + 新 head 风险</text>
+
+  <path d="M950 1210 L950 1250" class="flow"/>
+  <path d="M950 1250 L465 1250 L465 1280" class="flow"/>
+  <path d="M950 1250 L950 1280" class="flow"/>
+  <path d="M950 1250 L1435 1250 L1435 1280" class="flow"/>
+
+  <rect x="175" y="1280" width="580" height="130" class="box" fill="#F1F5F9" stroke="#475569"/>
+  <text x="215" y="1317" class="node-title">draft_latest.pt</text>
+  <text x="215" y="1347" class="code">save_checkpoint()</text>
+  <text x="215" y="1375" class="body">model + optimizer + scheduler + versions</text>
+  <text x="215" y="1398" class="small">训练恢复产物；temp file + os.replace</text>
+
+  <rect x="660" y="1280" width="580" height="130" class="box" fill="#F1F5F9" stroke="#475569"/>
+  <text x="700" y="1317" class="node-title">HF / Speculators 目录</text>
+  <text x="700" y="1347" class="code">export_hf_model()</text>
+  <text x="700" y="1375" class="body">config.json + model.safetensors</text>
+  <text x="700" y="1398" class="small">serving / 再加载；staging + backup swap</text>
+
+  <rect x="1145" y="1280" width="580" height="130" class="box" fill="#DCFCE7" stroke="#15803D"/>
+  <text x="1185" y="1317" class="node-title">serving snapshot</text>
+  <text x="1185" y="1347" class="code">prepare_publish_snapshot()</text>
+  <text x="1185" y="1375" class="body">named_tensors + draft/teacher version + fingerprint</text>
+  <text x="1185" y="1398" class="small">CPU；confidence FP32；过滤训练专用 tensors</text>
+
+  <path d="M1435 1410 L1435 1450 L950 1450 L950 1480" class="flow"/>
+  <path d="M465 1410 L465 1440" class="meta"/>
+  <path d="M950 1410 L950 1440" class="meta"/>
+
+  <rect x="225" y="1480" width="1450" height="120" class="box" fill="#DBEAFE" stroke="#2563EB"/>
+  <text x="265" y="1517" class="node-title">7 · UpdateWeightFromDistributed</text>
+  <text x="265" y="1547" class="code">set_external_draft_weights → update_weights → _send_external_draft_weights_to_rollout_engines</text>
+  <text x="265" y="1575" class="body">pause + flush；先 Target session，再 Draft session；DSpark 整份 snapshot 使用一个 packed buffer / 一次 load</text>
+
+  <path d="M950 1600 L950 1640" class="flow"/>
+  <rect x="225" y="1640" width="1450" height="115" class="box" fill="#FEF3C7" stroke="#B45309"/>
+  <text x="265" y="1677" class="node-title">8 · vLLM HTTP Draft session</text>
+  <text x="265" y="1707" class="code">/start_draft_weight_update → /update_weights → /finish_weight_update</text>
+  <text x="265" y="1735" class="body">HTTP/Ray 传 metadata；NCCL/HCCL group 传真正 tensor；完成后才允许 continue_generation</text>
+
+  <path d="M950 1755 L950 1795" class="flow"/>
+  <rect x="225" y="1795" width="1450" height="125" class="box" fill="#FEE2E2" stroke="#B91C1C"/>
+  <text x="265" y="1832" class="node-title">9 · NPUWorker / TransferEngine</text>
+  <text x="265" y="1862" class="code">compat start_draft_weight_update → set_weight_update_target(Draft) → load_weights</text>
+  <text x="265" y="1890" class="code">finish / exception finally → reset_weight_update_target() → Target</text>
+  <text x="1140" y="1890" class="small">1cb 仅按 model_runner.drafter 寻址</text>
+
+  <text x="950" y="1960" text-anchor="middle" class="subtitle">VIME implementation schematic · code baseline 1cb41579 · later candidate-freezing changes intentionally excluded</text>
+</svg>

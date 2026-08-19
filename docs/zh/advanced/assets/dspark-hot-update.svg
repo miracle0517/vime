@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="960" viewBox="0 0 1600 960" role="img" aria-labelledby="title desc">
+  <title id="title">VIME Target 与 DSpark Draft 热更新协议</title>
+  <desc id="desc">展示 generation pause 内先更新 Target、再将 WeightTransferEngine 重定向到 serving Draft 并一次加载完整 packed snapshot、最终恢复 Target 并继续生成的协议和失败边界。</desc>
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}.step{stroke:#334155;stroke-width:1.7;rx:14}.blue{fill:#eff6ff}.green{fill:#ecfdf5}.rose{fill:#fff1f2}.amber{fill:#fffbeb}.violet{fill:#f5f3ff}
+      .title{font:700 28px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#0f172a}.h{font:700 18px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#1e293b}.t{font:15px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#334155}.s{font:13px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#64748b}
+      .arrow{fill:none;stroke:#2563eb;stroke-width:3;marker-end:url(#a)}.weight{fill:none;stroke:#dc2626;stroke-width:4;marker-end:url(#w)}.fail{fill:none;stroke:#e11d48;stroke-width:2.5;stroke-dasharray:8 6;marker-end:url(#f)}
+    </style>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#2563eb"/></marker>
+    <marker id="w" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#dc2626"/></marker>
+    <marker id="f" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#e11d48"/></marker>
+  </defs>
+  <rect class="bg" width="1600" height="960"/>
+  <text class="title" x="50" y="48">Target + DSpark：同一 pause 内顺序更新，非原子 pair transaction</text>
+
+  <rect class="step blue" x="50" y="110" width="210" height="105"/>
+  <text class="h" x="75" y="145">1. Stage</text><text class="t" x="75" y="175">CPU candidate snapshot</text><text class="s" x="75" y="198">version + fingerprint</text>
+  <rect class="step amber" x="310" y="110" width="210" height="105"/>
+  <text class="h" x="335" y="145">2. Pause</text><text class="t" x="335" y="175">pause_generation</text><text class="s" x="335" y="198">flush prefix/KV cache</text>
+  <rect class="step rose" x="570" y="95" width="280" height="135"/>
+  <text class="h" x="595" y="132">3. Target session</text><text class="t" x="595" y="162">start_weight_update</text><text class="t" x="595" y="188">send Target buckets</text><text class="s" x="595" y="212">finish_weight_update</text>
+  <rect class="step violet" x="900" y="95" width="300" height="135"/>
+  <text class="h" x="925" y="132">4. Retarget transfer</text><text class="t" x="925" y="162">start_draft_weight_update</text><text class="t" x="925" y="188">set target = serving Draft</text><text class="s" x="925" y="212">MRV1 drafter / MRV2 speculator</text>
+  <rect class="step green" x="1250" y="80" width="300" height="165"/>
+  <text class="h" x="1275" y="117">5. Draft session</text><text class="t" x="1275" y="147">一个完整 packed snapshot</text><text class="t" x="1275" y="173">一次 model.load_weights()</text><text class="t" x="1275" y="199">finish + reset target</text><text class="s" x="1275" y="225">confidence FP32；其余 publish dtype</text>
+
+  <path class="arrow" d="M260 162 L310 162"/><path class="arrow" d="M520 162 L570 162"/><path class="weight" d="M850 162 L900 162"/><path class="weight" d="M1200 162 L1250 162"/>
+
+  <rect class="step blue" x="610" y="315" width="380" height="120"/>
+  <text class="h" x="635" y="352">6. Resume</text>
+  <text class="t" x="635" y="382">reset transfer target → Target</text>
+  <text class="t" x="635" y="408">continue_generation；Driver mark_published</text>
+  <path class="arrow" d="M1400 245 C1400 285 800 270 800 315"/>
+
+  <rect class="step amber" x="50" y="520" width="455" height="315"/>
+  <text class="h" x="78" y="557">为什么 DSpark 使用单次 packed load</text>
+  <text class="t" x="78" y="590">• 每个 candidate 所有 serving tensors 一起加载</text>
+  <text class="t" x="78" y="622">• 避免部分 bucket 缺 confidence 导致 loader 关闭 head</text>
+  <text class="t" x="78" y="654">• load 完成后一次重建 fused buffers</text>
+  <text class="t" x="78" y="686">• 训练专用 verifier head/norm 不发布</text>
+  <text class="t" x="78" y="718">• reduced-vocab mapping 保持整型 dtype</text>
+  <text class="s" x="78" y="758">代价：CPU snapshot + 设备逐 tensor + packed buffer</text>
+  <text class="s" x="78" y="782">可能同时驻留，峰值内存需按大约额外两份 Draft 评估。</text>
+
+  <rect class="step rose" x="570" y="520" width="480" height="315"/>
+  <text class="h" x="598" y="557">失败语义</text>
+  <text class="t" x="598" y="590">• start/update/finish 尽量 reset transfer target</text>
+  <text class="t" x="598" y="622">• load_weights 已写参数不会自动 rollback</text>
+  <text class="t" x="598" y="654">• Target 成功、Draft 失败时不会恢复旧 Target</text>
+  <text class="t" x="598" y="686">• 外层异常不保证 continue_generation</text>
+  <text class="t" x="598" y="718">• engine 可能保持 paused，需要恢复或重启</text>
+  <text class="s" x="598" y="758">因此“同一 pause”只消除并发生成窗口，不等于原子提交。</text>
+
+  <rect class="step violet" x="1115" y="520" width="435" height="315"/>
+  <text class="h" x="1143" y="557">Worker 模型寻址</text>
+  <text class="t" x="1143" y="590">GPU：原生 get_draft_model()</text>
+  <text class="t" x="1143" y="622">Ascend MRV1：model_runner.drafter</text>
+  <text class="t" x="1143" y="654">Ascend MRV2：get_draft_model()</text>
+  <text class="t" x="1143" y="686">最后 fallback：model_runner.speculator.model</text>
+  <text class="t" x="1143" y="718">只给 method=dspark 安装 compatibility hook</text>
+  <text class="s" x="1143" y="758">EAGLE3 旧 API 和缺省行为保持不变。</text>
+
+  <path class="fail" d="M710 230 C710 465 430 470 430 520"/>
+  <path class="fail" d="M1400 245 C1400 440 930 455 930 520"/>
+  <text class="s" x="50" y="900">生产增强方向：pair ID、manifest/checksum、prepare/commit/abort、启动恢复、target-version-gap gate 与可回滚旧权重。</text>
+</svg>

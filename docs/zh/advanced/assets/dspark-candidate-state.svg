@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1020" viewBox="0 0 1600 1020" role="img" aria-labelledby="title desc">
+  <title id="title">DSpark live trainer 与 immutable candidate 状态机</title>
+  <desc id="desc">区分随新 Target LM Head 改变的 live trainer 状态与仅在成功 Draft optimizer step 后冻结的候选状态，并展示保存、导出和发布门控。</desc>
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}.node{stroke:#334155;stroke-width:1.7;rx:14}.live{fill:#eff6ff}.candidate{fill:#ecfdf5}.artifact{fill:#f5f3ff}.gate{fill:#fffbeb}.bad{fill:#fff1f2}.lane{fill:none;stroke:#94a3b8;stroke-width:1.5;stroke-dasharray:8 6;rx:18}
+      .title{font:700 28px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#0f172a}.h{font:700 18px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#1e293b}.t{font:15px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#334155}.s{font:13px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#64748b}.arrow{fill:none;stroke:#2563eb;stroke-width:3;marker-end:url(#a)}.ok{fill:none;stroke:#059669;stroke-width:3;marker-end:url(#g)}.fail{fill:none;stroke:#e11d48;stroke-width:2.5;stroke-dasharray:7 5;marker-end:url(#r)}.protect{fill:none;stroke:#7c3aed;stroke-width:3;stroke-dasharray:10 5}
+    </style>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#2563eb"/></marker>
+    <marker id="g" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#059669"/></marker>
+    <marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#e11d48"/></marker>
+  </defs>
+  <rect class="bg" width="1600" height="1020"/>
+  <text class="title" x="50" y="48">DSpark Candidate：把“最新 teacher”与“最后成功可发布模型”分开</text>
+
+  <rect class="lane" x="40" y="85" width="1520" height="310"/>
+  <text class="h" x="70" y="120">Mutable live trainer state</text>
+  <rect class="node live" x="70" y="155" width="250" height="135"/>
+  <text class="h" x="95" y="190">Boot / Resume</text>
+  <text class="t" x="95" y="221">加载 Draft / optimizer</text>
+  <text class="s" x="95" y="252">queue 与 runtime head cache 不恢复</text>
+  <rect class="node live" x="390" y="145" width="310" height="155"/>
+  <text class="h" x="415" y="180">sync_target_lm_head(Tₙ)</text>
+  <text class="t" x="415" y="211">live lm_head = verifier_lm_head = Tₙ</text>
+  <text class="t" x="415" y="238">queue.clear_except(Tₙ)</text>
+  <text class="s" x="415" y="270">供下一次监督，不等于新 candidate</text>
+  <rect class="node live" x="770" y="155" width="250" height="135"/>
+  <text class="h" x="795" y="190">Collect Tₙ</text>
+  <text class="t" x="795" y="221">校验 schema/version</text>
+  <text class="s" x="795" y="252">有限 FIFO queue</text>
+  <rect class="node gate" x="1090" y="145" width="400" height="155"/>
+  <text class="h" x="1115" y="180">Train trigger</text>
+  <text class="t" x="1115" y="211">CE + TV + confidence → backward</text>
+  <text class="t" x="1115" y="238">loss/grad finite → AdamW/scheduler</text>
+  <text class="s" x="1115" y="270">0 step：保留原 candidate；≥1 step：版本 +1</text>
+  <path class="arrow" d="M320 222 L390 222"/><path class="arrow" d="M700 222 L770 222"/><path class="arrow" d="M1020 222 L1090 222"/>
+
+  <rect class="lane" x="40" y="430" width="1520" height="465"/>
+  <text class="h" x="70" y="465">Logical immutable candidate state</text>
+  <rect class="node candidate" x="70" y="505" width="420" height="180"/>
+  <text class="h" x="95" y="540">Cₖ = (Dₖ, teacher Tₙ, fingerprint)</text>
+  <text class="t" x="95" y="572">candidate_draft_version = k</text>
+  <text class="t" x="95" y="600">candidate_target_weight_version = Tₙ</text>
+  <text class="t" x="95" y="628">_candidate_lm_head_weight = CPU clone</text>
+  <text class="s" x="95" y="657">新 collect 只改 live heads，不能污染 Cₖ</text>
+  <path class="ok" d="M1290 300 C1290 420 280 390 280 505"/>
+  <path class="protect" d="M505 415 L505 705"/>
+  <text class="s" x="518" y="710">candidate 防火墙</text>
+
+  <rect class="node artifact" x="570" y="505" width="260" height="150"/>
+  <text class="h" x="595" y="540">Native checkpoint</text>
+  <text class="t" x="595" y="571">model + optimizer + scheduler</text>
+  <text class="t" x="595" y="598">versions + rollout + fingerprint</text>
+  <text class="s" x="595" y="628">恢复训练；不自动发布</text>
+  <rect class="node artifact" x="570" y="700" width="260" height="145"/>
+  <text class="h" x="595" y="735">HF export</text>
+  <text class="t" x="595" y="766">config.json</text>
+  <text class="t" x="595" y="793">model.safetensors</text>
+  <text class="s" x="595" y="820">staging + 可回滚目录交换</text>
+
+  <rect class="node gate" x="920" y="505" width="300" height="180"/>
+  <text class="h" x="945" y="540">Publish snapshot gate</text>
+  <text class="t" x="945" y="572">version &gt; last_published</text>
+  <text class="t" x="945" y="600">teacher metadata 与 train result 相等</text>
+  <text class="t" x="945" y="628">过滤 training-only tensors</text>
+  <text class="s" x="945" y="657">物化时用 frozen head 覆盖 live head</text>
+  <rect class="node candidate" x="1300" y="505" width="240" height="180"/>
+  <text class="h" x="1325" y="540">Published Cₖ</text>
+  <text class="t" x="1325" y="572">所有 engine RPC = True</text>
+  <text class="t" x="1325" y="600">mark_published(k)</text>
+  <text class="s" x="1325" y="628">serving Draft 已切换</text>
+
+  <path class="arrow" d="M490 565 L570 565"/><path class="arrow" d="M490 625 C525 690 535 770 570 770"/><path class="arrow" d="M490 590 L920 590"/><path class="ok" d="M1220 590 L1300 590"/>
+
+  <rect class="node bad" x="920" y="735" width="620" height="110"/>
+  <text class="h" x="945" y="770">Invalid / fail closed</text>
+  <text class="t" x="945" y="800">metadata drift、missing candidate LM Head、empty/duplicate tensors、version regression</text>
+  <text class="s" x="945" y="826">拒绝 staging 或发布；不会把混合 head/backbone 状态静默推到 serving。</text>
+  <path class="fail" d="M1070 685 L1070 735"/>
+
+  <rect class="node bad" x="70" y="925" width="1470" height="55"/>
+  <text class="s" x="95" y="958">恢复限制：checkpoint 可恢复 candidate，但 Driver 的 last_train_result / last_published 不持久化；当前必须再有一次成功 Draft train 才会重建发布授权。</text>
+</svg>

@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
+  <title id="title">VIME 中 DSpark 在线训练与推理总体架构</title>
+  <desc id="desc">展示 Driver、Megatron Actor、Actor rank zero Draft Trainer、Ray Object Store、vLLM rollout engine 与 HCCL 权重热更新之间的数据、控制和权重流。</desc>
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}.zone{fill:#fff;stroke-width:2}.driver{stroke:#2563eb}.actor{stroke:#7c3aed}.rollout{stroke:#059669}
+      .box{fill:#fff;stroke:#334155;stroke-width:1.5;rx:12}.soft-blue{fill:#eff6ff}.soft-violet{fill:#f5f3ff}.soft-green{fill:#ecfdf5}.soft-amber{fill:#fffbeb}.soft-rose{fill:#fff1f2}
+      .title{font:700 28px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#0f172a}.zone-title{font:700 21px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#0f172a}
+      .label{font:600 16px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#1e293b}.small{font:14px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#475569}.tiny{font:12px "Noto Sans SC","Microsoft YaHei",sans-serif;fill:#64748b}
+      .control{fill:none;stroke:#2563eb;stroke-width:3;marker-end:url(#arrowControl)}.data{fill:none;stroke:#7c3aed;stroke-width:3;marker-end:url(#arrowData)}.weight{fill:none;stroke:#dc2626;stroke-width:4;marker-end:url(#arrowWeight)}
+      .dash{stroke-dasharray:8 6}.boundary{fill:none;stroke:#94a3b8;stroke-width:1.5;stroke-dasharray:6 5}
+    </style>
+    <marker id="arrowControl" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#2563eb"/></marker>
+    <marker id="arrowData" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#7c3aed"/></marker>
+    <marker id="arrowWeight" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#dc2626"/></marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1600" height="980"/>
+  <text class="title" x="50" y="48">VIME × DSpark：在线持续蒸馏、候选冻结与推理热更新</text>
+  <text class="small" x="50" y="76">Actor 与 Draft 使用不同优化器；当前 Draft Trainer 与 Actor global rank 0 同进程、同设备、串行执行。</text>
+
+  <rect class="zone driver" x="40" y="105" width="325" height="785" rx="20"/>
+  <text class="zone-title" x="65" y="140">Driver / 控制面</text>
+  <rect class="box soft-blue" x="65" y="170" width="275" height="110"/>
+  <text class="label" x="88" y="202">train.py</text>
+  <text class="small" x="88" y="230">rollout → Actor train → Draft</text>
+  <text class="small" x="88" y="253">collect/train/save/publish 调度</text>
+  <rect class="box soft-blue" x="65" y="315" width="275" height="145"/>
+  <text class="label" x="88" y="347">ExternalDraftTrainGroup</text>
+  <text class="small" x="88" y="375">Actor rank 0 RPC facade</text>
+  <text class="small" x="88" y="398">last successful candidate</text>
+  <text class="small" x="88" y="421">publish version gate</text>
+  <rect class="box soft-violet" x="65" y="500" width="275" height="170"/>
+  <text class="label" x="88" y="532">Ray Object Store</text>
+  <text class="small" x="88" y="562">• CPU BF16 feature payload</text>
+  <text class="small" x="88" y="588">• Target LM Head snapshot</text>
+  <text class="small" x="88" y="614">• CPU serving snapshot</text>
+  <text class="tiny" x="88" y="644">控制引用跨进程；大 tensor 不经 Driver 拷贝</text>
+  <rect class="box soft-amber" x="65" y="710" width="275" height="135"/>
+  <text class="label" x="88" y="742">持久化</text>
+  <text class="small" x="88" y="770">draft_latest.pt：恢复训练</text>
+  <text class="small" x="88" y="796">HF 两文件目录：serving</text>
+  <text class="tiny" x="88" y="821">保存 candidate ≠ 已发布</text>
+
+  <rect class="zone actor" x="400" y="105" width="500" height="785" rx="20"/>
+  <text class="zone-title" x="425" y="140">Megatron Actor RayTrainGroup</text>
+  <rect class="box soft-violet" x="425" y="170" width="450" height="120"/>
+  <text class="label" x="448" y="202">Actor ranks：Target / policy Tₙ</text>
+  <text class="small" x="448" y="230">RL forward、loss、backward、optimizer</text>
+  <text class="small" x="448" y="254">pre-update 捕获，随后 Actor 变为 Tₙ₊₁</text>
+  <rect class="box soft-violet" x="425" y="325" width="210" height="155"/>
+  <text class="label" x="448" y="357">Feature hooks</text>
+  <text class="small" x="448" y="386">指定 aux layers</text>
+  <text class="small" x="448" y="411">final hidden pre-hook</text>
+  <text class="small" x="448" y="436">SP all-gather</text>
+  <text class="tiny" x="448" y="460">每 DP 的 TP rank 0 导出</text>
+  <rect class="box soft-rose" x="665" y="325" width="210" height="155"/>
+  <text class="label" x="688" y="357">Target LM Head</text>
+  <text class="small" x="688" y="386">global rank 0 导出</text>
+  <text class="small" x="688" y="411">teacher logits</text>
+  <text class="small" x="688" y="436">同步双冻结 head</text>
+  <rect class="box soft-green" x="425" y="520" width="450" height="235"/>
+  <text class="label" x="448" y="552">ExternalDraftTrainer（仅 Actor global rank 0）</text>
+  <text class="small" x="448" y="582">VersionedFeatureQueue：只取 teacher version 一致数据</text>
+  <text class="small" x="448" y="608">DSpark model + 独立 AdamW / scheduler</text>
+  <text class="small" x="448" y="634">CE + TV + confidence，finite step 才递增 Draft version</text>
+  <rect class="box soft-amber" x="470" y="660" width="360" height="70"/>
+  <text class="label" x="495" y="690">Immutable candidate Dₖ(Tₙ)</text>
+  <text class="small" x="495" y="713">冻结 teacher version + CPU LM Head</text>
+  <rect class="box soft-rose" x="425" y="790" width="450" height="65"/>
+  <text class="label" x="448" y="820">UpdateWeightFromDistributed：Target 后顺序 Draft</text>
+  <text class="tiny" x="448" y="842">DP0/TP0/PP0 source；DSpark 一个 packed snapshot</text>
+
+  <rect class="zone rollout" x="940" y="105" width="620" height="785" rx="20"/>
+  <text class="zone-title" x="965" y="140">vLLM / vLLM-Ascend Rollout Engines</text>
+  <rect class="box soft-blue" x="965" y="170" width="250" height="120"/>
+  <text class="label" x="988" y="202">VLLMEngine HTTP bridge</text>
+  <text class="small" x="988" y="230">pause / start / update</text>
+  <text class="small" x="988" y="254">finish / resume</text>
+  <rect class="box soft-blue" x="1260" y="170" width="270" height="120"/>
+  <text class="label" x="1283" y="202">Worker control plane</text>
+  <text class="small" x="1283" y="230">GPU native API</text>
+  <text class="small" x="1283" y="254">Ascend DSpark-only compat</text>
+  <rect class="box soft-rose" x="965" y="340" width="250" height="150"/>
+  <text class="label" x="988" y="372">Serving Target Tₙ₊₁</text>
+  <text class="small" x="988" y="402">验证上轮 Draft</text>
+  <text class="small" x="988" y="428">输出 verifier + bonus logits</text>
+  <text class="small" x="988" y="454">输出当前 aux hidden</text>
+  <rect class="box soft-green" x="1260" y="340" width="270" height="150"/>
+  <text class="label" x="1283" y="372">Serving DSpark Dₖ(Tₙ)</text>
+  <text class="small" x="1283" y="402">context KV + 并行 backbone</text>
+  <text class="small" x="1283" y="428">Markov 顺序采样</text>
+  <text class="small" x="1283" y="454">产生下一轮 proposal</text>
+  <rect class="box soft-amber" x="965" y="540" width="565" height="130"/>
+  <text class="label" x="988" y="572">Standard rejection sampler + Scheduler</text>
+  <text class="small" x="988" y="600">接受最长连续前缀；首拒绝处 correction；全接受时 bonus</text>
+  <text class="small" x="988" y="626">MRV1 可按 confidence 截短 verify，仍先生成完整 K 个 Draft</text>
+  <rect class="box soft-rose" x="965" y="720" width="565" height="125"/>
+  <text class="label" x="988" y="752">NCCL / HCCL WeightTransferEngine</text>
+  <text class="small" x="988" y="780">set target(Target/Draft) → load_weights → reset Target</text>
+  <text class="tiny" x="988" y="810">Target + Draft 同一 pause 内顺序更新，但不是 pair transaction</text>
+
+  <path class="control" d="M340 225 C380 225 390 215 425 215"/>
+  <path class="data" d="M530 480 C530 495 420 500 340 555"/>
+  <path class="data" d="M770 480 C770 500 520 505 340 595"/>
+  <path class="data" d="M340 610 C385 610 390 600 425 600"/>
+  <path class="data" d="M650 730 C560 770 430 775 340 625"/>
+  <path class="control dash" d="M340 385 C385 385 390 550 425 550"/>
+  <path class="control" d="M1215 225 C1230 225 1240 225 1260 225"/>
+  <path class="data" d="M1215 415 C1230 415 1240 415 1260 415"/>
+  <path class="data dash" d="M1395 490 C1395 525 1320 540 1245 540"/>
+  <path class="weight" d="M875 820 C910 820 925 780 965 780"/>
+  <path class="control" d="M340 250 C700 70 1150 90 1090 170"/>
+
+  <rect x="420" y="910" width="18" height="5" fill="#2563eb"/><text class="tiny" x="446" y="918">控制流</text>
+  <rect x="530" y="910" width="18" height="5" fill="#7c3aed"/><text class="tiny" x="556" y="918">特征/采样数据流</text>
+  <rect x="700" y="909" width="18" height="7" fill="#dc2626"/><text class="tiny" x="726" y="918">权重流</text>
+  <text class="tiny" x="910" y="918">当前实现：Draft 无独立 Ray worker / placement bundle / DDP</text>
+</svg>

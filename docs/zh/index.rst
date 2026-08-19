@@ -39,6 +39,7 @@ vime 构建于 `slime <https://github.com/THUDM/slime>`_ 之上，slime 正是 G
 
    advanced/speculative-decoding.md
    advanced/external-draft-training-design.md
+   advanced/dspark-implementation-call-chain.md
    advanced/rfc-external-eagle3-online-training.md
    advanced/reproducibility.md
    advanced/fault-tolerance.md
