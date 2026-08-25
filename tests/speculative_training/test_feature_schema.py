@@ -10,8 +10,7 @@ def _sample(version: str = "7", sample_id: str = "sample-0", rows: int = 6) -> D
     return DraftFeatureSample(
         input_ids=torch.arange(rows),
         loss_mask=torch.tensor([0, 0, 1, 1, 1, 1], dtype=torch.float32)[:rows],
-        position_ids=torch.arange(rows),
-        hidden_positions=torch.arange(4, 4 + rows),
+        position_ids=torch.arange(4, 4 + rows),
         aux_hidden_states=torch.randn(rows, 12),
         final_hidden_states=torch.randn(rows, 4),
         rollout_id=3,
@@ -27,7 +26,9 @@ def _sample(version: str = "7", sample_id: str = "sample-0", rows: int = 6) -> D
 
 @pytest.mark.unit
 def test_feature_round_trip_normalizes_cpu_dtypes():
-    payload = _sample().to_payload()
+    sample = _sample()
+    sample.algorithm = "dspark"
+    payload = sample.to_payload()
     restored = DraftFeatureSample.from_payload(payload)
 
     assert restored.input_ids.dtype == torch.long
@@ -35,12 +36,13 @@ def test_feature_round_trip_normalizes_cpu_dtypes():
     assert restored.aux_hidden_states.dtype == torch.bfloat16
     assert restored.final_hidden_states.dtype == torch.bfloat16
     assert restored.target_weight_version == "7"
+    assert restored.algorithm == "dspark"
 
 
 @pytest.mark.unit
 def test_feature_rejects_non_contiguous_positions():
     sample = _sample()
-    sample.hidden_positions[-1] += 1
+    sample.position_ids[-1] += 1
 
     with pytest.raises(ValueError, match="contiguous"):
         sample.validate(strict=True)

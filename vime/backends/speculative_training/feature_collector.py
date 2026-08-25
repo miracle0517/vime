@@ -125,7 +125,9 @@ class DraftFeatureCollector:
         self.args = args
         self.rollout_id = int(rollout_id)
         self.target_weight_version = str(target_weight_version)
+        self.algorithm = str(getattr(args, "draft_algorithm", "eagle3")).lower()
         self.layer_ids = tuple(resolve_feature_layer_ids(args))
+        self.block_size = int(getattr(args, "draft_dspark_block_size", 0) or 0)
         self.sample_rate = float(getattr(args, "draft_collection_sample_rate", 1.0))
         self.max_samples = int(getattr(args, "draft_max_samples_per_rollout_per_dp", 16))
         self.max_tokens = int(getattr(args, "draft_max_tokens_per_rollout_per_dp", 16384))
@@ -260,7 +262,9 @@ class DraftFeatureCollector:
         if len(self._payloads) >= self.max_samples or self._collected_tokens >= self.max_tokens:
             return
         prompt_length = total_length - response_length
-        if response_length < 2 or total_length < 3:
+        min_rows = self.block_size + 2 if self.algorithm == "dspark" else 3
+        min_response = self.block_size + 1 if self.algorithm == "dspark" else 2
+        if response_length < min_response or total_length < min_rows:
             return
         sample_id = f"dp{self._dp_rank()}-sample{original_index}"
         key = f"{self.seed}:{self.rollout_id}:{sample_id}"
@@ -269,7 +273,7 @@ class DraftFeatureCollector:
         feature_start = max(prompt_length - 1, 0)
         available = total_length - feature_start
         window_rows = min(self.window_tokens, available, self.max_tokens - self._collected_tokens)
-        if window_rows < 3:
+        if window_rows < min_rows:
             return
         max_offset = max(available - window_rows, 0)
         window_offset = _hash_offset(key, max_offset) if self.window_mode == "random" else 0
@@ -284,7 +288,6 @@ class DraftFeatureCollector:
             input_ids=tokens.reshape(-1)[start:end],
             loss_mask=token_loss_mask[start:end],
             position_ids=positions,
-            hidden_positions=positions,
             aux_hidden_states=aux_hidden[start:end],
             final_hidden_states=final_hidden[start:end],
             rollout_id=self.rollout_id,
@@ -295,6 +298,7 @@ class DraftFeatureCollector:
             window_start=start,
             window_end=end,
             aux_layer_ids=self.layer_ids,
+            algorithm=self.algorithm,
         )
         self._payloads.append(sample.to_payload())
         self._collected_tokens += window_rows

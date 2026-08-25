@@ -132,7 +132,20 @@ RUN git clone --depth 1 --branch 2026.6.0 \
     cd /root && \
     rm -rf /root/sgl-kernel-npu
 
-# Minimal import check.
+# Install Speculators last so a base-image or transitive package cannot leave an
+# older DSpark loss resolver in site-packages. The pinned revision supports
+# selecting eager losses explicitly, which is required on Ascend.
+RUN git clone https://github.com/vllm-project/speculators.git /root/speculators && \
+    git -C /root/speculators checkout "${SPECULATORS_REF}" && \
+    test "$(git -C /root/speculators rev-parse HEAD)" = "${SPECULATORS_REF}" && \
+    pip install --force-reinstall --no-deps --no-build-isolation \
+      /root/speculators/hs_connectors && \
+    pip install --force-reinstall --no-deps --no-build-isolation \
+      /root/speculators
+
+# Import the training stack and verify the DSpark API semantically. Older
+# Speculators versions accept loss_implementation via **kwargs but ignore it,
+# which would silently select a Triton fused loss on Ascend.
 RUN source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     python3 -c 'import megatron, mindspeed, megatron_adaptor, transformer_engine, torch_memory_saver, vime, vllm, vllm_ascend;'
 

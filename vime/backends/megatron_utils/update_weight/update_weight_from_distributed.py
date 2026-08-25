@@ -89,7 +89,7 @@ class UpdateWeightFromDistributed:
         out, self.update_weight_metrics = self.update_weight_metrics, {}
         return out
 
-    def set_external_draft_weights(self, payload, draft_version: str | None) -> None:
+    def set_external_draft_weights(self, payload: dict[str, Any] | None, draft_version: str | None) -> None:
         """Stage a CPU Draft state for publication in the next Target update pause."""
         self._external_draft_named_tensors = payload
         self._external_draft_version = None if draft_version is None else str(draft_version)
@@ -99,9 +99,9 @@ class UpdateWeightFromDistributed:
         assert self._trainer is not None
         self.weight_version += 1
         external_draft_pending = self._external_draft_version is not None
-        smoke_draft_only = external_draft_pending and os.environ.get(
-            "VIME_EXTERNAL_DRAFT_SMOKE_SKIP_ACTOR_UPDATE", "0"
-        ) == "1"
+        smoke_draft_only = (
+            external_draft_pending and os.environ.get("VIME_EXTERNAL_DRAFT_SMOKE_SKIP_ACTOR_UPDATE", "0") == "1"
+        )
 
         if dist.get_rank() == 0:
             ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])

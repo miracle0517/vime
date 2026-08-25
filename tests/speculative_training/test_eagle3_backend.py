@@ -19,7 +19,6 @@ def _sample() -> DraftFeatureSample:
         input_ids=torch.tensor([10, 11, 12, 13, 14, 15]),
         loss_mask=torch.tensor([0, 0, 1, 1, 1, 1], dtype=torch.float32),
         position_ids=torch.arange(20, 20 + rows),
-        hidden_positions=torch.arange(rows),
         aux_hidden_states=aux,
         final_hidden_states=final,
         rollout_id=0,

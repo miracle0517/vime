@@ -28,6 +28,13 @@ def train(args):
 
     actor_model, critic_model = create_training_models(args, pgs, rollout_manager)
     draft_model = create_draft_model(args, actor_model)
+    if args.draft_save_hf:
+        logger.info(
+            "External DSpark export enabled: template=%s, interval=%s. Artifacts are written on "
+            "Actor rank zero; use a shared path when Ray workers run on multiple hosts.",
+            args.draft_save_hf,
+            args.draft_save_interval,
+        )
 
     if args.offload_rollout and not release_train:
         ray.get(rollout_manager.onload_weights.remote())
