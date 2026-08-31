@@ -10,6 +10,7 @@ WORKDIR /root
 ARG MEGATRON_COMMIT=1dcf0dafa884ad52ffb243625717a3471643e087
 ARG MEGATRON_BRIDGE_COMMIT=3fd3768045422d0aa5c97e90a4e6c659aea9acb9
 ARG MBRIDGE_COMMIT=89eb10887887bc74853f89a4de258c0702932a1c
+ARG SPECULATORS_REF=c05b95b303f7d4f21e8d7624e0ffa1c2d9b4d73b
 ARG SOC_VERSION="ascend910_9391"
 ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 ARG APTMIRROR=""
@@ -123,9 +124,23 @@ RUN git clone --depth 1 --branch 2026.6.0 \
     cd /root && \
     rm -rf /root/sgl-kernel-npu
 
-# Minimal import check.
+# Install Speculators last so a base-image or transitive package cannot leave an
+# older DSpark loss resolver in site-packages. The pinned revision supports
+# selecting eager losses explicitly, which is required on Ascend.
+RUN git clone https://github.com/vllm-project/speculators.git /root/speculators && \
+    git -C /root/speculators checkout "${SPECULATORS_REF}" && \
+    test "$(git -C /root/speculators rev-parse HEAD)" = "${SPECULATORS_REF}" && \
+    pip install --force-reinstall --no-deps --no-build-isolation \
+      /root/speculators/hs_connectors && \
+    pip install --force-reinstall --no-deps --no-build-isolation \
+      /root/speculators
+
+# Import the training stack and verify the DSpark API semantically. Older
+# Speculators versions accept loss_implementation via **kwargs but ignore it,
+# which would silently select a Triton fused loss on Ascend.
 RUN source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
-    python3 -c 'import megatron, megatron_adaptor, transformer_engine, torch_memory_saver, vime, vllm, vllm_ascend;'
+    test "$(git -C /root/speculators rev-parse HEAD)" = "${SPECULATORS_REF}" && \
+    python3 -c 'import hs_connectors, megatron, mindspeed, torch_memory_saver, vime, vllm, vllm_ascend;'
 
 WORKDIR /root/vime
 ENTRYPOINT []
