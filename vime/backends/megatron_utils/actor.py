@@ -507,10 +507,7 @@ class MegatronTrainRayActor(TrainRayActor):
         data_iterator = get_data_iterator(rollout_data)
         num_microbatches = rollout_data["num_microbatches"]
         global_batch_sizes = rollout_data["global_batch_sizes"]
-        from vime.backends.speculative_training.config import (
-            external_draft_enabled,
-            should_run_draft_interval,
-        )
+        from vime.backends.speculative_training.config import external_draft_enabled, should_run_draft_interval
 
         collect_draft_features = external_draft_enabled(self.args) and should_run_draft_interval(
             rollout_id,
@@ -754,9 +751,7 @@ class MegatronTrainRayActor(TrainRayActor):
         """Move all Actor feature manifests into the local rank-zero Draft queue."""
         trainer = self._require_external_draft_trainer()
         target_lm_head = (
-            ray.get(target_lm_head_ref)
-            if isinstance(target_lm_head_ref, ray.ObjectRef)
-            else target_lm_head_ref
+            ray.get(target_lm_head_ref) if isinstance(target_lm_head_ref, ray.ObjectRef) else target_lm_head_ref
         )
         if target_lm_head is not None:
             trainer.sync_target_lm_head(target_lm_head, target_version)
@@ -785,6 +780,10 @@ class MegatronTrainRayActor(TrainRayActor):
     def save_external_draft(self, rollout_id: int):
         """Checkpoint the Draft state owned by Actor rank zero."""
         return self._require_external_draft_trainer().save_checkpoint(rollout_id)
+
+    def export_external_draft(self, rollout_id: int) -> str | None:
+        """Export the Draft as a reloadable HuggingFace model directory."""
+        return self._require_external_draft_trainer().export_hf_model(rollout_id)
 
     def get_weight_version(self) -> int:
         return int(self.weight_updater.weight_version)

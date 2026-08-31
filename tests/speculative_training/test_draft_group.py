@@ -21,6 +21,7 @@ class _Actor:
         self.train_external_draft = _RemoteMethod(self._train)
         self.prepare_external_draft_publish_snapshot = _RemoteMethod(self._snapshot)
         self.save_external_draft = _RemoteMethod(lambda rollout_id: f"draft-{rollout_id}.pt")
+        self.export_external_draft = _RemoteMethod(lambda rollout_id: f"draft-hf-{rollout_id}")
 
     def _collect(self, feature_refs, target_head, target_version):
         self.calls.append((feature_refs, target_head, target_version))
@@ -66,3 +67,4 @@ def test_draft_group_delegates_to_actor_rank_zero(monkeypatch):
     assert snapshot_ref[0] == "object-ref"
     assert version == "1"
     assert group.save_draft(3) == ["draft-3.pt"]
+    assert group.save_draft(4, export_hf=True) == ["draft-4.pt", "draft-hf-4"]

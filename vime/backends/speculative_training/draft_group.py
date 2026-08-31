@@ -12,13 +12,10 @@ class ExternalDraftTrainGroup:
     and another placement group.
     """
 
-    def __init__(self, args, actor_group) -> None:
-        self.args = args
-        self.actor_group = actor_group
+    def __init__(self, _args, actor_group) -> None:
         if not actor_group._actor_handlers:
             raise RuntimeError("Actor-colocated Draft training requires an initialized Actor group")
         self._draft_actor = actor_group._actor_handlers[0]
-        self.base_args = args
         self.last_train_result = None
         self.last_published_draft_version = -1
 
@@ -38,8 +35,12 @@ class ExternalDraftTrainGroup:
         if len(versions) != 1:
             raise RuntimeError(f"Actor Draft feature versions diverged: {sorted(versions)}")
         target_version = versions.pop()
-        feature_refs = [value["draft_features_ref"] for value in results if value.get("draft_features_ref") is not None]
-        head_refs = [value["draft_target_lm_head_ref"] for value in results if value.get("draft_target_lm_head_ref") is not None]
+        feature_refs = [
+            value["draft_features_ref"] for value in results if value.get("draft_features_ref") is not None
+        ]
+        head_refs = [
+            value["draft_target_lm_head_ref"] for value in results if value.get("draft_target_lm_head_ref") is not None
+        ]
         if not head_refs:
             raise RuntimeError("No Actor rank exported the Target LM Head for Draft supervision")
         worker_result = ray.get(
@@ -82,6 +83,8 @@ class ExternalDraftTrainGroup:
             )
         self.last_published_draft_version = draft_version
 
-    def save_draft(self, rollout_id: int, force_sync: bool = False):
-        del force_sync
-        return [ray.get(self._draft_actor.save_external_draft.remote(rollout_id))]
+    def save_draft(self, rollout_id: int, export_hf: bool = False) -> list[str]:
+        saved_paths = [ray.get(self._draft_actor.save_external_draft.remote(rollout_id))]
+        if export_hf:
+            saved_paths.append(ray.get(self._draft_actor.export_external_draft.remote(rollout_id)))
+        return [result for result in saved_paths if result is not None]

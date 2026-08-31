@@ -1373,9 +1373,9 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
                 "--enable-external-draft-training",
                 action="store_true",
                 default=False,
-                help="Train an external EAGLE3 speculative Draft model during RL.",
+                help="Train an external EAGLE3 or Qwen DSpark speculative Draft model during RL.",
             )
-            group.add_argument("--draft-algorithm", choices=["eagle3"], default="eagle3")
+            group.add_argument("--draft-algorithm", choices=["eagle3", "dspark"], default="eagle3")
             group.add_argument("--draft-model-path", type=str, default=None)
             group.add_argument(
                 "--draft-target-embedding-path",
@@ -1394,7 +1394,8 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Optional import path to a Draft model factory. The callable receives "
-                    "(args, device) and must return a trainable EAGLE3-compatible module."
+                    "(args, device) and must return a compatible trainable Draft module. "
+                    "Qwen DSpark uses VIME's Speculators factory by default."
                 ),
             )
             # Kept so older launch scripts continue to parse. Actor-colocated
@@ -1439,10 +1440,38 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
             group.add_argument("--draft-max-grad-norm", type=float, default=1.0)
             group.add_argument("--draft-temporal-decay", type=float, default=0.8)
             group.add_argument("--draft-ttt-length", type=int, default=1)
+            group.add_argument(
+                "--draft-dspark-block-size",
+                type=int,
+                default=None,
+                help="DSpark block size; inferred from the checkpoint config when omitted.",
+            )
+            group.add_argument("--draft-dspark-max-anchors", type=int, default=64)
+            group.add_argument("--draft-dspark-loss-fn", type=str, default='{"ce": 0.1, "tv": 0.9}')
+            group.add_argument("--draft-dspark-decay-gamma", type=float, default=4.0)
+            group.add_argument("--draft-dspark-confidence-head-alpha", type=float, default=1.0)
+            group.add_argument(
+                "--draft-dspark-per-position-loss-weight",
+                choices=["fixed-exp-decay", "dpace"],
+                default="fixed-exp-decay",
+            )
+            group.add_argument("--draft-dspark-dpace-alpha", type=float, default=0.5)
             group.add_argument("--draft-publish-interval", type=int, default=1)
             group.add_argument("--draft-publish-dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
             group.add_argument("--draft-checkpoint-path", type=str, default=None)
             group.add_argument("--draft-save-interval", type=int, default=None)
+            group.add_argument(
+                "--draft-save-hf",
+                type=str,
+                default=None,
+                help=(
+                    "Path template used to export a trained DSpark model in HuggingFace/Speculators format "
+                    "with Draft checkpoint saves and at the final rollout. Supports {rollout_id} formatting "
+                    "and must not resolve to "
+                    "--draft-model-path. With vLLM method=dspark, this option also enables the external "
+                    "Draft training replica and infers --draft-model-path from the speculative model."
+                ),
+            )
             group.add_argument("--draft-queue-max-samples", type=int, default=2048)
             group.add_argument("--draft-vocab-mapping-path", type=str, default=None)
             group.add_argument("--draft-random-seed", type=int, default=1234)

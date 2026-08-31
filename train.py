@@ -3,7 +3,6 @@ import os
 
 import ray
 
-from vime.utils import logging_utils
 from vime.backends.speculative_training.config import should_run_draft_interval
 from vime.ray.placement_group import (
     create_draft_model,
@@ -11,6 +10,7 @@ from vime.ray.placement_group import (
     create_rollout_manager,
     create_training_models,
 )
+from vime.utils import logging_utils
 from vime.utils.arguments import parse_args
 from vime.utils.common import is_npu
 from vime.utils.logging_utils import configure_logger, finish_tracking, init_tracking, update_tracking_open_metrics
@@ -54,6 +54,13 @@ def train(args):
     # create the actor and critic models
     actor_model, critic_model = create_training_models(args, pgs, rollout_manager)
     draft_model = create_draft_model(args, actor_model)
+    if args.draft_save_hf:
+        logger.info(
+            "External DSpark export enabled: template=%s, interval=%s. Artifacts are written on "
+            "Actor rank zero; use a shared path when Ray workers run on multiple hosts.",
+            args.draft_save_hf,
+            args.draft_save_interval,
+        )
 
     if args.offload_rollout:
         ray.get(rollout_manager.onload_weights.remote())
@@ -145,13 +152,17 @@ def train(args):
         if actor_save_due:
             save(rollout_id)
 
-        draft_save_due = draft_model is not None and (
+        draft_checkpoint_due = draft_model is not None and (
             (args.draft_save_interval is None and actor_save_due)
             or should_run_draft_interval(rollout_id, args.draft_save_interval)
             or rollout_id == args.num_rollout - 1
         )
-        if draft_save_due:
-            draft_model.save_draft(rollout_id, force_sync=rollout_id == args.num_rollout - 1)
+        if draft_checkpoint_due:
+            draft_save_results = draft_model.save_draft(
+                rollout_id,
+                export_hf=bool(args.draft_save_hf),
+            )
+            logger.info("External Draft save completed: %s", draft_save_results)
 
         offload_train(actor_trains_this_step)
         if args.offload_rollout:
