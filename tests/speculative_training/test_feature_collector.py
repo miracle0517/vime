@@ -86,6 +86,43 @@ def test_collector_reconstructs_sample_window_and_aux_layers(monkeypatch):
     assert payload["loss_mask"].tolist() == [0.0, 1.0, 1.0, 1.0]
     assert tuple(payload["aux_hidden_states"].shape) == (4, 12)
     assert tuple(payload["final_hidden_states"].shape) == (4, 4)
-    assert payload["hidden_positions"].tolist() == [2, 3, 4, 5]
+    assert payload["position_ids"].tolist() == [2, 3, 4, 5]
     assert payload["original_sample_id"] == "dp3-sample7"
     assert payload["target_weight_version"] == "11"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("response_length", "expected_payloads"), [(3, 0), (4, 1)])
+def test_dspark_collector_requires_one_complete_future_block(
+    monkeypatch,
+    response_length,
+    expected_payloads,
+):
+    target = _Target()
+    collector = DraftFeatureCollector(
+        _args(draft_algorithm="dspark", draft_dspark_block_size=3, draft_hidden_window_tokens=8),
+        [target],
+        rollout_id=2,
+        target_weight_version="11",
+    )
+    monkeypatch.setattr(collector, "_gather_sequence_parallel", lambda tensor: tensor)
+    monkeypatch.setattr(collector, "_is_export_rank", lambda: True)
+    tokens = torch.arange(8)
+    batch = {
+        "unconcat_tokens": [tokens],
+        "total_lengths": [8],
+        "response_lengths": [response_length],
+        "loss_masks": [torch.ones(response_length)],
+    }
+
+    try:
+        collector.begin_microbatch(batch, [0])
+        target(torch.zeros(8, 1, 4))
+        collector.end_microbatch()
+        payloads = collector.pop_payloads()
+    finally:
+        collector.close()
+
+    assert len(payloads) == expected_payloads
+    if payloads:
+        assert payloads[0]["algorithm"] == "dspark"

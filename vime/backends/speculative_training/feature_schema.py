@@ -9,6 +9,7 @@ import torch
 
 
 FEATURE_SCHEMA_VERSION = 1
+_ALGORITHMS = {"eagle3", "dspark"}
 
 
 def _cpu_contiguous(tensor: torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.Tensor:
@@ -23,7 +24,6 @@ class DraftFeatureSample:
     input_ids: torch.Tensor
     loss_mask: torch.Tensor
     position_ids: torch.Tensor
-    hidden_positions: torch.Tensor
     aux_hidden_states: torch.Tensor
     final_hidden_states: torch.Tensor
     rollout_id: int
@@ -35,18 +35,17 @@ class DraftFeatureSample:
     window_end: int
     aux_layer_ids: tuple[int, ...]
     algorithm: str = "eagle3"
-    hidden_layout: str = "eagle3_aux_plus_last"
     schema_version: int = FEATURE_SCHEMA_VERSION
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any], *, strict: bool = True) -> DraftFeatureSample:
+        algorithm = str(payload.get("algorithm", "eagle3")).lower()
         sample = cls(
             schema_version=int(payload.get("schema_version", FEATURE_SCHEMA_VERSION)),
-            algorithm=str(payload.get("algorithm", "eagle3")),
+            algorithm=algorithm,
             input_ids=payload["input_ids"],
             loss_mask=payload["loss_mask"],
             position_ids=payload["position_ids"],
-            hidden_positions=payload["hidden_positions"],
             aux_hidden_states=payload["aux_hidden_states"],
             final_hidden_states=payload["final_hidden_states"],
             rollout_id=int(payload["rollout_id"]),
@@ -57,7 +56,6 @@ class DraftFeatureSample:
             window_start=int(payload["window_start"]),
             window_end=int(payload["window_end"]),
             aux_layer_ids=tuple(int(item) for item in payload["aux_layer_ids"]),
-            hidden_layout=str(payload.get("hidden_layout", "eagle3_aux_plus_last")),
         )
         sample.validate(strict=strict)
         return sample
@@ -65,20 +63,20 @@ class DraftFeatureSample:
     def validate(self, *, strict: bool = True) -> None:
         if self.schema_version != FEATURE_SCHEMA_VERSION and strict:
             raise ValueError(f"Unsupported Draft feature schema version {self.schema_version}")
-        if self.algorithm.lower() != "eagle3":
+        algorithm = self.algorithm.lower()
+        if algorithm not in _ALGORITHMS:
             raise ValueError(f"Unsupported Draft feature algorithm {self.algorithm!r}")
         tensor_fields = (
             "input_ids",
             "loss_mask",
             "position_ids",
-            "hidden_positions",
             "aux_hidden_states",
             "final_hidden_states",
         )
         for name in tensor_fields:
             if not torch.is_tensor(getattr(self, name)):
                 raise TypeError(f"DraftFeatureSample.{name} must be a torch.Tensor")
-        for name in ("input_ids", "loss_mask", "position_ids", "hidden_positions"):
+        for name in ("input_ids", "loss_mask", "position_ids"):
             value = getattr(self, name)
             if value.dim() != 1:
                 raise ValueError(f"DraftFeatureSample.{name} must be one-dimensional, got {tuple(value.shape)}")
@@ -88,7 +86,6 @@ class DraftFeatureSample:
         actual_rows = {
             "loss_mask": int(self.loss_mask.numel()),
             "position_ids": int(self.position_ids.numel()),
-            "hidden_positions": int(self.hidden_positions.numel()),
             "aux_hidden_states": int(self.aux_hidden_states.size(0)),
             "final_hidden_states": int(self.final_hidden_states.size(0)),
         }
@@ -96,19 +93,13 @@ class DraftFeatureSample:
         if mismatches:
             raise ValueError(f"Draft feature row mismatch: input_ids={rows}, others={mismatches}")
         if rows < 3:
-            raise ValueError("EAGLE3 feature windows require at least three token rows")
+            raise ValueError("Draft feature windows require at least three token rows")
         if self.window_start < 0 or self.window_end <= self.window_start:
             raise ValueError(f"Invalid Draft feature window [{self.window_start}, {self.window_end})")
         if self.window_end - self.window_start != rows:
             raise ValueError("Draft feature window length does not match tensor rows")
-        expected_positions = torch.arange(
-            self.window_start,
-            self.window_end,
-            device=self.hidden_positions.device,
-            dtype=self.hidden_positions.dtype,
-        )
-        if strict and not torch.equal(self.hidden_positions, expected_positions):
-            raise ValueError("Draft hidden positions must be contiguous and match the declared window")
+        if strict and rows > 1 and not torch.all(self.position_ids[1:] == self.position_ids[:-1] + 1):
+            raise ValueError("Draft position ids must be contiguous")
         if self.prompt_length < 0 or self.response_length < 0:
             raise ValueError("Prompt and response lengths must be non-negative")
         if not self.target_weight_version:
@@ -121,11 +112,9 @@ class DraftFeatureSample:
         return {
             "schema_version": self.schema_version,
             "algorithm": self.algorithm,
-            "hidden_layout": self.hidden_layout,
             "input_ids": _cpu_contiguous(self.input_ids, dtype=torch.long),
             "loss_mask": _cpu_contiguous(self.loss_mask, dtype=torch.float32),
             "position_ids": _cpu_contiguous(self.position_ids, dtype=torch.long),
-            "hidden_positions": _cpu_contiguous(self.hidden_positions, dtype=torch.long),
             "aux_hidden_states": _cpu_contiguous(self.aux_hidden_states, dtype=torch.bfloat16),
             "final_hidden_states": _cpu_contiguous(self.final_hidden_states, dtype=torch.bfloat16),
             "rollout_id": int(self.rollout_id),
