@@ -268,6 +268,8 @@ class _VLLMHijack:
     - Patches NPUWorker.load_model and NPUWorker.start_weight_update to fix
       MoE weight_loader missing on EP (a vLLM bug where w13_weight/w2_weight
       params lack weight_loader attr when EP is enabled).
+    - Adds Draft weight-update target/session methods when the NPU worker does
+      not provide them, while preserving native implementations.
     - Patches ApplyRotaryEmb.__init__ to skip flash_attn import
       (Megatron/NPU backends introduce flash_attn as a dummy module,
       but vllm_ascend does not use it).
@@ -289,7 +291,11 @@ class _VLLMHijack:
 
         _orig_load_model = worker_cls.load_model
         _orig_start_weight_update = worker_cls.start_weight_update
+        _orig_start_draft_weight_update = getattr(worker_cls, "start_draft_weight_update", None)
+        _orig_update_weights = worker_cls.update_weights
+        _orig_finish_weight_update = worker_cls.finish_weight_update
         _orig_wake_up = worker_cls.wake_up
+        needs_draft_update_compat = not callable(_orig_start_draft_weight_update)
         has_dummy_kw = "load_dummy_weights" in inspect.signature(_orig_load_model).parameters
 
         if has_dummy_kw:
@@ -304,11 +310,68 @@ class _VLLMHijack:
                 _orig(self)
                 _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
 
-        def _patched_start_weight_update(
-            self, is_checkpoint_format: bool = True, _orig=_orig_start_weight_update
-        ) -> None:
+        def _patched_start_weight_update(self, _orig=_orig_start_weight_update) -> None:
             _VLLMHijack.patch_moe_weight_loader(self.model_runner.model)
-            _orig(self, is_checkpoint_format=is_checkpoint_format)
+            result = _orig(self)
+            if needs_draft_update_compat:
+                self._weight_update_is_draft = False
+            return result
+
+        def _patched_start_draft_weight_update(self) -> None:
+            self._check_weight_transfer_engine()
+            if self._weight_update_active:
+                raise RuntimeError(
+                    "start_draft_weight_update called while a weight update is already active. "
+                    "Call finish_weight_update first."
+                )
+
+            self._check_nz_disabled()
+            engine = self.weight_transfer_engine
+            draft_model = self.model_runner.drafter.get_model()
+            draft_model_config = self.speculative_config.draft_model_config
+            try:
+                engine.set_weight_update_target(draft_model, draft_model_config)
+                engine.start_weight_update()
+            except BaseException:
+                try:
+                    engine.reset_weight_update_target()
+                except BaseException:
+                    # Preserve the operation failure; target reset is best-effort
+                    # once the transfer engine itself is already failing.
+                    pass
+                raise
+            self._weight_update_active = True
+            self._weight_update_is_draft = True
+
+        def _reset_draft_target(self, *, suppress_errors: bool) -> None:
+            try:
+                self.weight_transfer_engine.reset_weight_update_target()
+            except BaseException:
+                if not suppress_errors:
+                    raise
+            finally:
+                self._weight_update_active = False
+                self._weight_update_is_draft = False
+
+        def _patched_update_weights(self, update_info, _orig=_orig_update_weights):
+            try:
+                return _orig(self, update_info)
+            except BaseException:
+                if self._weight_update_is_draft:
+                    _reset_draft_target(self, suppress_errors=True)
+                raise
+
+        def _patched_finish_weight_update(self, _orig=_orig_finish_weight_update):
+            is_draft = self._weight_update_is_draft
+            try:
+                result = _orig(self)
+            except BaseException:
+                if is_draft:
+                    _reset_draft_target(self, suppress_errors=True)
+                raise
+            if is_draft:
+                _reset_draft_target(self, suppress_errors=False)
+            return result
 
         def _patched_wake_up(self, tags=None, _orig=_orig_wake_up) -> None:
             quant_config = self.vllm_config.quant_config
@@ -327,6 +390,10 @@ class _VLLMHijack:
 
         worker_cls.load_model = _patched_load_model  # type: ignore[attr-defined]
         worker_cls.start_weight_update = _patched_start_weight_update  # type: ignore[attr-defined]
+        if needs_draft_update_compat:
+            worker_cls.start_draft_weight_update = _patched_start_draft_weight_update  # type: ignore[attr-defined]
+            worker_cls.update_weights = _patched_update_weights  # type: ignore[attr-defined]
+            worker_cls.finish_weight_update = _patched_finish_weight_update  # type: ignore[attr-defined]
         worker_cls.wake_up = _patched_wake_up  # type: ignore[attr-defined]
 
     @staticmethod

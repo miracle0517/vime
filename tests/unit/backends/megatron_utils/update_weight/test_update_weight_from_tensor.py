@@ -331,13 +331,9 @@ def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm):
             if self.vllm_config.quant_config is None and (tags is None or "weights" in tags):
                 self.moe_transposed = True
 
-    native_update_weights = FakeWorker.update_weights
-    native_finish_weight_update = FakeWorker.finish_weight_update
     native_wake_up = FakeWorker.wake_up
     upw_vllm._VLLMHijack._patch_one_worker(FakeWorker)
 
-    assert FakeWorker.update_weights is native_update_weights
-    assert FakeWorker.finish_weight_update is native_finish_weight_update
     assert FakeWorker.wake_up is not native_wake_up
 
     worker = FakeWorker()

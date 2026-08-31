@@ -16,7 +16,6 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 from tqdm import tqdm
 from vllm.distributed.weight_transfer.nccl_engine import NCCLTrainerSendWeightsArgs, NCCLWeightTransferEngine
-from vllm_ascend.distributed.weight_transfer.hccl_engine import HCCLTrainerSendWeightsArgs, HCCLWeightTransferEngine
 
 from vime.utils.common import is_npu
 from vime.utils.distributed_utils import get_gloo_group
@@ -132,7 +131,7 @@ class UpdateWeightFromDistributed:
         out, self.update_weight_metrics = self.update_weight_metrics, {}
         return out
 
-    def set_external_draft_weights(self, payload, draft_version: str | None) -> None:
+    def set_external_draft_weights(self, payload: dict[str, Any] | None, draft_version: str | None) -> None:
         """Stage a CPU Draft state for publication in the next Target update pause."""
         self._external_draft_named_tensors = payload
         self._external_draft_version = None if draft_version is None else str(draft_version)
@@ -144,9 +143,9 @@ class UpdateWeightFromDistributed:
         """
         self.weight_version += 1
         external_draft_pending = self._external_draft_version is not None
-        smoke_draft_only = external_draft_pending and os.environ.get(
-            "VIME_EXTERNAL_DRAFT_SMOKE_SKIP_ACTOR_UPDATE", "0"
-        ) == "1"
+        smoke_draft_only = (
+            external_draft_pending and os.environ.get("VIME_EXTERNAL_DRAFT_SMOKE_SKIP_ACTOR_UPDATE", "0") == "1"
+        )
 
         if dist.get_rank() == 0:
             ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
@@ -203,21 +202,27 @@ class UpdateWeightFromDistributed:
         if not self._is_pp_src_rank:
             return
         payload = self._external_draft_named_tensors
-        if isinstance(payload, dict):
-            payload = payload.get("named_tensors", payload.get("state_dict"))
-        if isinstance(payload, dict):
-            payload = list(payload.items())
-        if not isinstance(payload, (list, tuple)) or not payload:
-            raise RuntimeError("External Draft publication was requested without a non-empty state snapshot")
+        if not isinstance(payload, dict) or not payload.get("named_tensors"):
+            raise RuntimeError("External Draft publication requires a non-empty named_tensors snapshot")
+
+        # Ascend loads the confidence head atomically and treats a later bucket
+        # without confidence weights as disabling it. Keep one DSpark snapshot
+        # in one model.load_weights call by using one full-snapshot packed buffer.
+        npu = is_npu()
+        single_load = npu and str(payload.get("algorithm", "")).lower() == "dspark"
+        named_tensors = payload["named_tensors"]
 
         bucket_limit = int(getattr(self.args, "update_weight_buffer_size", 0) or (512 << 20))
         bucket: list[tuple[str, torch.Tensor]] = []
         bucket_bytes = 0
+        device = torch.npu.current_device() if npu else torch.cuda.current_device()
 
-        def send_bucket() -> None:
-            nonlocal bucket, bucket_bytes
-            if not bucket:
-                return
+        def send(
+            tensors: Sequence[tuple[str, torch.Tensor]],
+            *,
+            packed: bool = False,
+            packed_buffer_size_bytes: int | None = None,
+        ) -> None:
             while not ray.get(self.rollout_engine_lock.acquire.remote()):
                 time.sleep(0.1)
             try:
@@ -226,17 +231,36 @@ class UpdateWeightFromDistributed:
                     self._model_update_groups,
                     self.weight_version,
                     self.rollout_engines,
-                    bucket,
-                    packed=False,
+                    tensors,
+                    packed=packed,
+                    packed_buffer_size_bytes=packed_buffer_size_bytes,
                 )
                 ray.get(refs)
             finally:
                 ray.get(self.rollout_engine_lock.release.remote())
+
+        if single_load:
+            snapshot = []
+            snapshot_bytes = 0
+            for name, value in named_tensors:
+                if not torch.is_tensor(value):
+                    raise TypeError(f"External Draft state {name!r} is not a tensor")
+                tensor = value.detach().to(device=device, non_blocking=False).contiguous()
+                snapshot.append((str(name), tensor))
+                snapshot_bytes += tensor.numel() * tensor.element_size()
+            send(snapshot, packed=True, packed_buffer_size_bytes=max(snapshot_bytes, 1))
+            torch.npu.synchronize()
+            return
+
+        def send_bucket() -> None:
+            nonlocal bucket, bucket_bytes
+            if not bucket:
+                return
+            send(bucket)
             bucket = []
             bucket_bytes = 0
 
-        device = torch.npu.current_device() if is_npu() else torch.cuda.current_device()
-        for name, value in payload:
+        for name, value in named_tensors:
             if not torch.is_tensor(value):
                 raise TypeError(f"External Draft state {name!r} is not a tensor")
             tensor = value.detach().to(device=device, non_blocking=False).contiguous()
@@ -246,7 +270,7 @@ class UpdateWeightFromDistributed:
             bucket.append((str(name), tensor))
             bucket_bytes += tensor_bytes
         send_bucket()
-        (torch.npu.synchronize() if is_npu() else torch.cuda.synchronize())
+        (torch.npu.synchronize() if npu else torch.cuda.synchronize())
 
     def _send_weights(self, pbar: tqdm | None) -> None:
         """
@@ -542,6 +566,7 @@ def update_weights_from_distributed(
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
     *,
     packed: bool = False,
+    packed_buffer_size_bytes: int | None = None,
 ) -> list[ObjectRef]:
     """
     Send metadata (Ray), broadcast tensors (NCCL rank 0 → engines).
@@ -549,14 +574,19 @@ def update_weights_from_distributed(
     The *group* is a vLLM ``PyNcclCommunicator`` from ``trainer_init``
     in the Megatron trainer process.
     """
+    update_kwargs = {
+        "names": [name for name, _ in converted_named_tensors],
+        "dtypes": [param.dtype for _, param in converted_named_tensors],
+        "shapes": [param.shape for _, param in converted_named_tensors],
+        "group_name": group_name,
+        "weight_version": str(weight_version),
+        "packed": packed,
+    }
+    if packed_buffer_size_bytes is not None:
+        update_kwargs["packed_buffer_size_bytes"] = int(packed_buffer_size_bytes)
     refs = [
         engine.update_weights_from_distributed.remote(
-            names=[name for name, _ in converted_named_tensors],
-            dtypes=[param.dtype for _, param in converted_named_tensors],
-            shapes=[param.shape for _, param in converted_named_tensors],
-            group_name=group_name,
-            weight_version=str(weight_version),
-            packed=packed,
+            **update_kwargs,
         )
         for engine in rollout_engines
     ]
@@ -565,15 +595,28 @@ def update_weights_from_distributed(
         (name, (param.data if hasattr(param, "data") else param).contiguous())
         for name, param in converted_named_tensors
     )
+    trainer_kwargs = {
+        "group": group,
+        "packed": packed,
+    }
+    if packed_buffer_size_bytes is not None:
+        trainer_kwargs["packed_buffer_size_bytes"] = int(packed_buffer_size_bytes)
     if is_npu():
+        # Keep vllm-ascend optional for CUDA installations. Importing this at
+        # module load time prevents the NCCL path from starting without it.
+        from vllm_ascend.distributed.weight_transfer.hccl_engine import (
+            HCCLTrainerSendWeightsArgs,
+            HCCLWeightTransferEngine,
+        )
+
         HCCLWeightTransferEngine.trainer_send_weights(
             named_gpu_iter,
-            HCCLTrainerSendWeightsArgs(group=group, packed=packed),
+            HCCLTrainerSendWeightsArgs(**trainer_kwargs),
         )
     else:
         NCCLWeightTransferEngine.trainer_send_weights(
             named_gpu_iter,
-            NCCLTrainerSendWeightsArgs(group=group, packed=packed),
+            NCCLTrainerSendWeightsArgs(**trainer_kwargs),
         )
 
     return refs

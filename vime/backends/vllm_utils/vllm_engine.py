@@ -936,6 +936,7 @@ class VLLMEngine(RayActor):
         flush_cache=False,
         weight_version: str | None = None,
         packed: bool = True,
+        packed_buffer_size_bytes: int | None = None,
     ):
         """NCCL path: ``POST /update_weights`` with packed tensor metadata.
 
@@ -953,6 +954,8 @@ class VLLMEngine(RayActor):
             "shapes": [list(s) for s in shapes],
             "packed": bool(packed),
         }
+        if packed_buffer_size_bytes is not None:
+            update_info["packed_buffer_size_bytes"] = int(packed_buffer_size_bytes)
         return self._post_vllm_update_weights_http(update_info)
 
     def update_weights_from_disk(self, model_path: str, load_format: str | None = None):

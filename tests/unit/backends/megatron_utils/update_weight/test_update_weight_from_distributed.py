@@ -29,6 +29,7 @@ _STUBBED_MODULES = (
     "megatron.core.transformer.transformer_layer",
     "ray",
     "ray.actor",
+    "vime.backends.megatron_utils.megatron_to_hf",
     "vime.utils.distributed_utils",
     "vllm",
     "vllm.distributed",
@@ -94,6 +95,10 @@ def _install_stubs():
     ray_mod._private = types.SimpleNamespace(services=types.SimpleNamespace(get_node_ip_address=lambda: "127.0.0.1"))
     sys.modules.setdefault("ray", ray_mod)
     sys.modules.setdefault("ray.actor", ray_mod.actor)
+
+    megatron_to_hf = types.ModuleType("vime.backends.megatron_utils.megatron_to_hf")
+    megatron_to_hf.convert_to_hf = MagicMock()
+    sys.modules.setdefault("vime.backends.megatron_utils.megatron_to_hf", megatron_to_hf)
 
     vime_utils = types.ModuleType("vime.utils.distributed_utils")
     vime_utils.get_gloo_group = MagicMock(return_value="gloo")
