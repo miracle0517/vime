@@ -4,8 +4,7 @@ from copy import deepcopy
 
 import torch
 
-from ..config import load_draft_checkpoint_config
-
+from ..config import load_draft_checkpoint_config, normalize_dspark_compat_args
 
 _TARGET_OWNED_PREFIXES = (
     "embed_tokens.",
@@ -117,6 +116,10 @@ def _load_model(model_type, args, config):
 
 def build_model(args, device: torch.device) -> torch.nn.Module:
     """Load the canonical Speculators DSpark training model."""
+
+    # Factories are also used directly by downstream integrations; normalize
+    # the compatibility namespace even when no top-level VIME parser ran.
+    normalize_dspark_compat_args(args)
 
     config_type, model_type = _load_speculators_types()
     config = _build_config(args, config_type)

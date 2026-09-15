@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from argparse import Namespace
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
@@ -11,9 +12,22 @@ _DRAFT_CAPTURE_LAYER_ID_KEYS = (
     "eagle_aux_hidden_state_layer_ids",
     "target_hidden_layer_ids",
 )
+_DSPARK_LOSS_DEFAULTS = {"ce": 0.1, "tv": 0.9}
+_DSPARK_NATIVE_ONLY_ALIASES = (
+    "dspark_num_draft_layers",
+    "dspark_markov_rank",
+    "dspark_markov_head_type",
+    "dspark_mask_token_id",
+    "dspark_draft_loss_weight",
+    "dspark_intermediate_size",
+)
 
 
 def external_draft_enabled(args: Namespace) -> bool:
+    # The compatibility flag is normalized into this canonical switch before
+    # runtime components are constructed.  Keeping this predicate canonical
+    # prevents an unvalidated native/compatibility Namespace from allocating
+    # an external Draft worker prematurely.
     return bool(getattr(args, "enable_external_draft_training", False))
 
 
@@ -42,6 +56,46 @@ def _looks_like_local_path(value: str, path: Path) -> bool:
     return path.exists() or path.is_absolute() or PurePosixPath(value).is_absolute() or value.startswith(("./", "../"))
 
 
+def _normalize_model_reference(value: object) -> str | None:
+    """Normalize a Speculators checkpoint reference.
+
+    ``from_pretrained`` consumes a directory (or a Hub id), while many DSpark
+    launch scripts point at the directory's ``model.safetensors`` file.  The
+    latter is unambiguous for a local checkpoint, so accept it and use its
+    parent directory.  Other references are returned unchanged and are
+    resolved by Hugging Face/Speculators later.
+    """
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return text
+    path = Path(text).expanduser()
+    if path.suffix.lower() != ".safetensors":
+        return text
+    # Only reinterpret a path that is clearly local.  A Hub id containing a
+    # dot should continue through the normal transformers resolver.
+    is_local = (
+        path.exists() or path.is_absolute() or PurePosixPath(text).is_absolute() or text.startswith(("./", "../"))
+    )
+    if not is_local:
+        return text
+    if not path.exists():
+        raise ValueError(
+            f"DSpark weights file {text!r} does not exist on the VIME driver; "
+            "mount the checkpoint or pass its directory"
+        )
+    if not path.is_file():
+        raise ValueError(f"DSpark checkpoint reference {text!r} is not a file")
+    parent = path.parent
+    if not (parent / "config.json").is_file():
+        raise ValueError(
+            f"DSpark weights file {text!r} has no sibling config.json; pass the Speculators checkpoint directory"
+        )
+    return str(parent)
+
+
 def load_draft_checkpoint_config(args: Namespace) -> dict:
     cached = getattr(args, _DRAFT_CONFIG_CACHE_ATTR, None)
     if isinstance(cached, dict):
@@ -53,6 +107,13 @@ def load_draft_checkpoint_config(args: Namespace) -> dict:
     model_id = str(model_path)
     local_path = Path(model_id).expanduser()
     if _looks_like_local_path(model_id, local_path):
+        # Keep direct callers (without the compatibility alias) consistent
+        # with --dspark-pretrained-model handling.
+        if local_path.is_file() and local_path.suffix.lower() == ".safetensors":
+            normalized = _normalize_model_reference(model_id)
+            assert normalized is not None
+            model_id = normalized
+            local_path = Path(normalized).expanduser()
         if not local_path.exists():
             raise ValueError(
                 f"DSpark checkpoint path {model_id!r} does not exist on the VIME driver. "
@@ -171,6 +232,259 @@ def _speculative_config(args: Namespace) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _values_equal(left: object, right: object) -> bool:
+    """Compare alias values after normalizing common list/float spellings."""
+
+    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
+        try:
+            return list(left) == list(right)  # type: ignore[arg-type]
+        except TypeError:
+            return False
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return float(left) == float(right)
+    return str(left) == str(right)
+
+
+def _merge_dspark_scalar_alias(
+    args: Namespace,
+    *,
+    alias_name: str,
+    canonical_name: str,
+    canonical_default: object,
+    transform=lambda value: value,
+) -> bool:
+    """Merge one ``--dspark-*`` alias into the external ``draft_*`` option."""
+
+    alias_value = getattr(args, alias_name, None)
+    if alias_value is None:
+        return False
+    value = transform(alias_value)
+    current = getattr(args, canonical_name, None)
+    # The canonical parser defaults are not user intent.  Permit an alias to
+    # replace those defaults, but reject two genuinely different settings.
+    if current is not None and not _values_equal(current, canonical_default) and not _values_equal(current, value):
+        raise ValueError(
+            f"Conflicting DSpark options: --{alias_name.replace('_', '-')}={alias_value!r} and "
+            f"--{canonical_name.replace('_', '-')}={current!r}"
+        )
+    setattr(args, canonical_name, value)
+    return True
+
+
+def _merge_dspark_loss_aliases(args: Namespace) -> bool:
+    """Translate CE/L1 aliases to Speculators' ``ce``/``tv`` loss JSON."""
+
+    ce = getattr(args, "dspark_ce_loss_alpha", None)
+    l1 = getattr(args, "dspark_l1_loss_alpha", None)
+    if ce is None and l1 is None:
+        return False
+
+    raw = getattr(args, "draft_dspark_loss_fn", None)
+    if raw is None:
+        loss_config = dict(_DSPARK_LOSS_DEFAULTS)
+    else:
+        try:
+            loss_config = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "--dspark-ce-loss-alpha/--dspark-l1-loss-alpha require " "--draft-dspark-loss-fn to be a JSON object"
+            ) from exc
+        if not isinstance(loss_config, dict):
+            raise ValueError(
+                "--dspark-ce-loss-alpha/--dspark-l1-loss-alpha require " "--draft-dspark-loss-fn to be a JSON object"
+            )
+        loss_config = dict(loss_config)
+
+    # ``tv`` is Speculators' name for the L1/total-variation term.  Accept
+    # ``l1`` in a hand-written canonical JSON config as a convenience, and make
+    # omitted terms explicit before applying one-sided aliases.
+    if "tv" not in loss_config and "l1" in loss_config:
+        loss_config["tv"] = loss_config.pop("l1")
+    for key, default in _DSPARK_LOSS_DEFAULTS.items():
+        loss_config.setdefault(key, default)
+
+    for alias_name, key, value in (
+        ("dspark_ce_loss_alpha", "ce", ce),
+        ("dspark_l1_loss_alpha", "tv", l1),
+    ):
+        if value is None:
+            continue
+        value = float(value)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"--{alias_name.replace('_', '-')} must be non-negative")
+        current = loss_config.get(key, _DSPARK_LOSS_DEFAULTS[key])
+        if (
+            key in loss_config
+            and not _values_equal(current, _DSPARK_LOSS_DEFAULTS[key])
+            and not _values_equal(current, value)
+        ):
+            raise ValueError(
+                f"Conflicting DSpark loss settings for {key!r}: alias={value} vs "
+                f"--draft-dspark-loss-fn value={current}"
+            )
+        loss_config[key] = value
+    args.draft_dspark_loss_fn = json.dumps(loss_config, sort_keys=True, separators=(",", ":"))
+    return True
+
+
+def normalize_dspark_compat_args(args: Namespace) -> bool:
+    """Normalize the supported Speculators DSpark compatibility options.
+
+    Returns ``True`` when the compatibility namespace requested DSpark.  The
+    native Megatron-only architecture options are deliberately rejected here;
+    Speculators loads those values from ``config.json`` and cannot safely
+    override tensor shapes at trainer construction time.
+    """
+
+    native_values = {
+        name: getattr(args, name, None)
+        for name in _DSPARK_NATIVE_ONLY_ALIASES
+        if getattr(args, name, None) is not None
+    }
+    if native_values:
+        options = ", ".join(f"--{name.replace('_', '-')}" for name in native_values)
+        raise ValueError(
+            f"{options} are not runtime options for external Speculators DSpark training; they belong to native "
+            "Megatron DSpark (or the checkpoint config.json). Remove these flags when using Speculators."
+        )
+
+    alias_names = (
+        "dspark_enabled",
+        "dspark_block_size",
+        "dspark_target_layer_ids",
+        "dspark_num_anchors",
+        "dspark_ce_loss_alpha",
+        "dspark_l1_loss_alpha",
+        "dspark_confidence_head_alpha",
+        "dspark_loss_decay_gamma",
+        "dspark_pretrained_model",
+    )
+    requested = bool(getattr(args, "dspark_enabled", False)) or any(
+        getattr(args, name, None) is not None for name in alias_names[1:]
+    )
+    if not requested:
+        return False
+
+    existing_external = bool(getattr(args, "enable_external_draft_training", False))
+    existing_algorithm = str(getattr(args, "draft_algorithm", "eagle3")).lower()
+    if existing_external and existing_algorithm != "dspark":
+        raise ValueError(
+            "The --dspark-* compatibility options cannot be combined with external EAGLE3 training; "
+            "use --draft-algorithm dspark"
+        )
+    args.dspark_enabled = True
+    args.enable_external_draft_training = True
+    args.draft_algorithm = "dspark"
+
+    # Namespaces assembled by integrations/tests may not have gone through the
+    # full argparse provider.  Seed the external defaults in that case so the
+    # same normalization contract applies to CLI, YAML, and programmatic use.
+    if not hasattr(args, "draft_dspark_block_size"):
+        args.draft_dspark_block_size = None
+    if getattr(args, "draft_dspark_max_anchors", None) is None:
+        args.draft_dspark_max_anchors = 64
+    if getattr(args, "draft_dspark_loss_fn", None) is None:
+        args.draft_dspark_loss_fn = json.dumps(_DSPARK_LOSS_DEFAULTS, separators=(",", ":"))
+    if getattr(args, "draft_dspark_confidence_head_alpha", None) is None:
+        args.draft_dspark_confidence_head_alpha = 1.0
+    if getattr(args, "draft_dspark_decay_gamma", None) is None:
+        args.draft_dspark_decay_gamma = 4.0
+
+    _merge_dspark_scalar_alias(
+        args,
+        alias_name="dspark_block_size",
+        canonical_name="draft_dspark_block_size",
+        canonical_default=None,
+        transform=int,
+    )
+    dense_layer_ids = getattr(args, "dspark_target_layer_ids", None)
+    if dense_layer_ids is not None:
+        dense_layer_ids = parse_int_list(dense_layer_ids)
+        if not dense_layer_ids:
+            raise ValueError("--dspark-target-layer-ids must contain at least one layer id")
+        # Speculators feature capture names the hidden state after the decoder
+        # layer, whereas the dense DSpark config names the preceding layer.
+        capture_layer_ids = [int(layer_id) + 1 for layer_id in dense_layer_ids]
+        current = getattr(args, "draft_feature_layer_ids", None)
+        current_ids = parse_int_list(current)
+        if current_ids is not None and current_ids != capture_layer_ids:
+            raise ValueError(
+                "Conflicting DSpark layer settings: --dspark-target-layer-ids maps to "
+                f"{capture_layer_ids}, but --draft-feature-layer-ids is {current_ids}"
+            )
+        args.draft_feature_layer_ids = capture_layer_ids
+    _merge_dspark_scalar_alias(
+        args,
+        alias_name="dspark_num_anchors",
+        canonical_name="draft_dspark_max_anchors",
+        canonical_default=64,
+        transform=int,
+    )
+    _merge_dspark_loss_aliases(args)
+    _merge_dspark_scalar_alias(
+        args,
+        alias_name="dspark_confidence_head_alpha",
+        canonical_name="draft_dspark_confidence_head_alpha",
+        canonical_default=1.0,
+        transform=float,
+    )
+    _merge_dspark_scalar_alias(
+        args,
+        alias_name="dspark_loss_decay_gamma",
+        canonical_name="draft_dspark_decay_gamma",
+        canonical_default=4.0,
+        transform=float,
+    )
+    confidence_alpha = float(getattr(args, "draft_dspark_confidence_head_alpha", 1.0))
+    decay_gamma = float(getattr(args, "draft_dspark_decay_gamma", 4.0))
+    if not math.isfinite(confidence_alpha) or confidence_alpha < 0:
+        raise ValueError("--dspark-confidence-head-alpha must be finite and non-negative")
+    if not math.isfinite(decay_gamma) or decay_gamma <= 0:
+        raise ValueError("--dspark-loss-decay-gamma must be finite and positive")
+
+    pretrained = getattr(args, "dspark_pretrained_model", None)
+    if pretrained is not None:
+        normalized = _normalize_model_reference(pretrained)
+        current = getattr(args, "draft_model_path", None)
+        current_normalized = _normalize_model_reference(current) if current is not None else None
+        if current_normalized is not None and current_normalized != normalized:
+            raise ValueError(
+                "Conflicting DSpark checkpoint settings: "
+                f"--dspark-pretrained-model={pretrained!r} vs --draft-model-path={current!r}"
+            )
+        if current != normalized:
+            args.draft_model_path = normalized
+            if hasattr(args, _DRAFT_CONFIG_CACHE_ATTR):
+                delattr(args, _DRAFT_CONFIG_CACHE_ATTR)
+    elif getattr(args, "draft_model_path", None) is not None:
+        normalized = _normalize_model_reference(args.draft_model_path)
+        if normalized != args.draft_model_path:
+            args.draft_model_path = normalized
+            if hasattr(args, _DRAFT_CONFIG_CACHE_ATTR):
+                delattr(args, _DRAFT_CONFIG_CACHE_ATTR)
+
+    # A checkpoint file reference is not accepted by vLLM's speculative model
+    # loader either. Keep the serving-side config in sync when it is a mutable
+    # dict (the usual parser result), or serialize a JSON-string config back to
+    # the same representation for callers that pass the raw CLI value through.
+    spec_value = getattr(args, "vllm_speculative_config", None)
+    spec_config = _speculative_config(args)
+    configured_model = spec_config.get("model")
+    normalized_configured_model = _normalize_model_reference(configured_model) if configured_model else None
+    if normalized_configured_model and normalized_configured_model != configured_model:
+        if isinstance(spec_value, dict):
+            spec_value["model"] = normalized_configured_model
+        elif isinstance(spec_value, str):
+            try:
+                parsed_spec = json.loads(spec_value)
+            except (TypeError, ValueError):
+                parsed_spec = None
+            if isinstance(parsed_spec, dict):
+                parsed_spec["model"] = normalized_configured_model
+                args.vllm_speculative_config = json.dumps(parsed_spec, separators=(",", ":"))
+    return True
+
+
 def _activate_dspark_training_for_export(args: Namespace) -> None:
     """Turn a DSpark inference export request into an explicit training setup."""
 
@@ -194,6 +508,10 @@ def _activate_dspark_training_for_export(args: Namespace) -> None:
 
 
 def validate_external_draft_args(args: Namespace) -> None:
+    # Normalize the Speculators-compatible ``--dspark-*`` spelling before the
+    # existing external-Draft validation/activation logic runs.  This is also
+    # what turns --dspark-enabled into the legacy external-training switch.
+    normalize_dspark_compat_args(args)
     _activate_dspark_training_for_export(args)
     if not external_draft_enabled(args):
         return
@@ -244,11 +562,17 @@ def validate_external_draft_args(args: Namespace) -> None:
         expected = "'eagle' or 'eagle3'" if algorithm == "eagle3" else "'dspark'"
         raise ValueError(f"External {algorithm} training requires vLLM speculative method {expected}")
     configured_model = spec_config.get("model")
-    if configured_model and str(configured_model) != str(args.draft_model_path):
+    normalized_configured_model = _normalize_model_reference(configured_model) if configured_model else None
+    normalized_draft_model = _normalize_model_reference(getattr(args, "draft_model_path", None))
+    if normalized_configured_model and normalized_draft_model != normalized_configured_model:
         raise ValueError(
             "vLLM speculative model and --draft-model-path must identify the same checkpoint: "
             f"{configured_model!r} != {args.draft_model_path!r}"
         )
+    if normalized_draft_model is not None and normalized_draft_model != getattr(args, "draft_model_path", None):
+        args.draft_model_path = normalized_draft_model
+        if hasattr(args, _DRAFT_CONFIG_CACHE_ATTR):
+            delattr(args, _DRAFT_CONFIG_CACHE_ATTR)
     acceptance_method = str(spec_config.get("acceptance_method", "")).strip().lower()
     if acceptance_method in {"typical_acceptance_sampler", "typical", "topk"}:
         raise ValueError("External Draft RL rollout requires a lossless speculative acceptance method")

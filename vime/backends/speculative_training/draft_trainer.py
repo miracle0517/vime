@@ -21,7 +21,7 @@ from vime.utils.misc import load_function
 
 from .backends.dspark import collate_dspark_samples, compute_dspark_loss, dspark_trainer_kwargs, sync_dspark_lm_heads
 from .backends.eagle3 import collate_eagle3_samples, compute_eagle3_loss
-from .config import load_draft_checkpoint_config
+from .config import load_draft_checkpoint_config, normalize_dspark_compat_args
 from .feature_schema import DraftFeatureSample, VersionedFeatureQueue
 
 logger = logging.getLogger(__name__)
@@ -218,6 +218,10 @@ def _load_target_embedding(model: torch.nn.Module, args: Namespace) -> None:
 
 class ExternalDraftTrainer:
     def __init__(self, args: Namespace, *, distributed: bool = True) -> None:
+        # Programmatic callers may construct the trainer without going through
+        # ``vime.utils.arguments.parse_args``. Apply the same compatibility
+        # normalization here so the Speculators spelling is not CLI-only.
+        normalize_dspark_compat_args(args)
         self.args = args
         self.algorithm = str(getattr(args, "draft_algorithm", "eagle3")).lower()
         self.device_type = "npu" if is_npu() else "cuda"

@@ -1482,6 +1482,119 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_speculators_dspark_compat_arguments(parser):
+            """Add the DSpark spelling used by Speculators training examples.
+
+            The external Draft implementation predates the native Megatron
+            DSpark implementation and exposes the same knobs with a
+            ``draft-*`` prefix.  Keep the user-facing ``dspark-*`` spelling as
+            a thin compatibility layer; values are normalized in
+            :func:`validate_external_draft_args` before any worker is created.
+            Defaults are ``None`` intentionally, so an alias never silently
+            overwrites an explicitly configured ``draft-*`` value.
+            """
+            group = parser.add_argument_group("Speculators DSpark compatibility")
+            group.add_argument(
+                "--dspark-enabled",
+                action="store_true",
+                default=False,
+                help="Enable external Speculators DSpark Draft training.",
+            )
+            group.add_argument(
+                "--dspark-block-size",
+                type=int,
+                default=None,
+                help="Alias for --draft-dspark-block-size.",
+            )
+            group.add_argument(
+                "--dspark-target-layer-ids",
+                type=str,
+                default=None,
+                help=(
+                    "Dense DSpark Target layer ids (comma-separated). Speculators feature capture uses the "
+                    "corresponding 1-based layer ids, so these are converted by +1."
+                ),
+            )
+            group.add_argument(
+                "--dspark-num-anchors",
+                type=int,
+                default=None,
+                help="Alias for --draft-dspark-max-anchors.",
+            )
+            group.add_argument(
+                "--dspark-ce-loss-alpha",
+                type=float,
+                default=None,
+                help="CE component in the Speculators DSpark loss (alias; key `ce`).",
+            )
+            group.add_argument(
+                "--dspark-l1-loss-alpha",
+                type=float,
+                default=None,
+                help="L1/TV component in the Speculators DSpark loss (alias; key `tv`).",
+            )
+            group.add_argument(
+                "--dspark-confidence-head-alpha",
+                type=float,
+                default=None,
+                help="Alias for --draft-dspark-confidence-head-alpha.",
+            )
+            group.add_argument(
+                "--dspark-loss-decay-gamma",
+                type=float,
+                default=None,
+                help="Alias for --draft-dspark-decay-gamma.",
+            )
+            group.add_argument(
+                "--dspark-pretrained-model",
+                type=str,
+                default=None,
+                help=(
+                    "Alias for --draft-model-path. Pass a Speculators/HuggingFace DSpark directory (or a "
+                    "model.safetensors file inside that directory)."
+                ),
+            )
+
+            # These names belong to the native Megatron DSpark model.  Register
+            # them so the two-phase parser cannot silently discard them, then
+            # fail with an actionable message during validation.  Speculators
+            # obtains these architecture values from the checkpoint config and
+            # has no runtime training override for them.
+            for option, option_type, help_text in (
+                (
+                    "--dspark-num-draft-layers",
+                    int,
+                    "Not supported by external Speculators training; configure it in checkpoint config or use native Megatron DSpark.",
+                ),
+                (
+                    "--dspark-markov-rank",
+                    int,
+                    "Not supported by external Speculators training; configure it in checkpoint config or use native Megatron DSpark.",
+                ),
+                (
+                    "--dspark-markov-head-type",
+                    str,
+                    "Not supported by external Speculators training; configure it in checkpoint config or use native Megatron DSpark.",
+                ),
+                (
+                    "--dspark-mask-token-id",
+                    int,
+                    "Not supported by external Speculators training; configure it in checkpoint config or use native Megatron DSpark.",
+                ),
+                (
+                    "--dspark-draft-loss-weight",
+                    float,
+                    "Not supported by external Speculators training; it does not add Draft loss to policy loss.",
+                ),
+                (
+                    "--dspark-intermediate-size",
+                    int,
+                    "Not supported by external Speculators training; configure it in checkpoint config or use native Megatron DSpark.",
+                ),
+            ):
+                group.add_argument(option, type=option_type, default=None, help=help_text)
+            return parser
+
         def add_ci_arguments(parser):
             parser.add_argument(
                 "--ci-test",
@@ -1524,6 +1637,7 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
         parser = add_rollout_buffer_arguments(parser)
         parser = add_mtp_training_arguments(parser)
         parser = add_external_draft_training_arguments(parser)
+        parser = add_speculators_dspark_compat_arguments(parser)
         parser = add_ci_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
         reset_arg(

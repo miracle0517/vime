@@ -1,11 +1,17 @@
 """Online training support for external speculative draft models."""
 
-from .config import external_draft_enabled, should_run_draft_interval, validate_external_draft_args
+from .config import (
+    external_draft_enabled,
+    normalize_dspark_compat_args,
+    should_run_draft_interval,
+    validate_external_draft_args,
+)
 
 __all__ = [
     "DraftFeatureSample",
     "VersionedFeatureQueue",
     "external_draft_enabled",
+    "normalize_dspark_compat_args",
     "should_run_draft_interval",
     "validate_external_draft_args",
 ]

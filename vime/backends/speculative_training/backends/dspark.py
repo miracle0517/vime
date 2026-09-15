@@ -65,6 +65,11 @@ def collate_dspark_samples(
 
 
 def dspark_trainer_kwargs(model: torch.nn.Module, args: Any) -> dict[str, Any]:
+    # Keep direct/programmatic trainer use consistent with the CLI path. The
+    # normalizer is idempotent and is a no-op for the canonical draft-* args.
+    from ..config import normalize_dspark_compat_args
+
+    normalize_dspark_compat_args(args)
     resolver = getattr(model, "get_trainer_kwargs", None)
     if not callable(resolver):
         raise TypeError("Speculators DSpark model must implement get_trainer_kwargs()")

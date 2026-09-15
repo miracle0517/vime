@@ -4,6 +4,7 @@ from argparse import Namespace
 import pytest
 
 from vime.backends.speculative_training.config import (
+    normalize_dspark_compat_args,
     resolve_feature_layer_ids,
     should_run_draft_interval,
     validate_external_draft_args,
@@ -87,6 +88,77 @@ def test_external_draft_validation_resolves_layers():
     args = _args(draft_feature_layer_ids="2,10,29")
     validate_external_draft_args(args)
     assert args.draft_feature_layer_ids == [2, 10, 29]
+
+
+@pytest.mark.unit
+def test_speculators_dspark_compat_aliases_are_normalized(tmp_path):
+    """The user-facing dspark spelling reaches the existing Speculators path."""
+
+    checkpoint = tmp_path / "dspark"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "speculators_model_type": "dspark",
+                "block_size": 7,
+                "aux_hidden_state_layer_ids": [2, 10, 18, 26, 34],
+                "transformer_layer_config": {"model_type": "qwen3"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    weights = checkpoint / "model.safetensors"
+    weights.write_bytes(b"placeholder")
+    args = _args(
+        enable_external_draft_training=False,
+        draft_algorithm="eagle3",
+        draft_model_path=None,
+        vllm_speculative_config={"method": "dspark", "model": str(weights)},
+        num_layers=36,
+        draft_feature_layer_ids=None,
+        dspark_enabled=True,
+        dspark_block_size=7,
+        dspark_target_layer_ids="1,9,17,25,33",
+        dspark_num_anchors=512,
+        dspark_ce_loss_alpha=0.5,
+        dspark_l1_loss_alpha=0.5,
+        dspark_confidence_head_alpha=0.1,
+        dspark_loss_decay_gamma=4.0,
+        dspark_pretrained_model=str(weights),
+    )
+
+    assert normalize_dspark_compat_args(args) is True
+    assert args.enable_external_draft_training is True
+    assert args.draft_algorithm == "dspark"
+    assert args.draft_model_path == str(checkpoint)
+    assert args.draft_dspark_block_size == 7
+    assert args.draft_dspark_max_anchors == 512
+    assert args.draft_feature_layer_ids == [2, 10, 18, 26, 34]
+    assert json.loads(args.draft_dspark_loss_fn) == {"ce": 0.5, "tv": 0.5}
+    assert args.draft_dspark_confidence_head_alpha == 0.1
+    assert args.draft_dspark_decay_gamma == 4.0
+
+    # The normalized values must also pass the regular external-Draft checks.
+    validate_external_draft_args(args)
+
+
+@pytest.mark.unit
+def test_native_only_dspark_aliases_fail_fast():
+    args = _args(dspark_num_draft_layers="5")
+    with pytest.raises(ValueError, match="native Megatron"):
+        normalize_dspark_compat_args(args)
+
+
+@pytest.mark.unit
+def test_speculators_dspark_alias_conflict_is_rejected():
+    args = _args(
+        dspark_enabled=True,
+        draft_algorithm="dspark",
+        draft_dspark_max_anchors=128,
+        dspark_num_anchors=512,
+    )
+    with pytest.raises(ValueError, match="Conflicting DSpark options"):
+        normalize_dspark_compat_args(args)
 
 
 @pytest.mark.unit
