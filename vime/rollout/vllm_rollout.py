@@ -41,6 +41,28 @@ logger = logging.getLogger(__name__)
 
 _PROCESSOR_PROMPT_KEYS = {"input_ids", "attention_mask"}
 
+_GENERATION_META_KEYS = (
+    "spec_accept_token_num",
+    "spec_draft_token_num",
+    "spec_verify_ct",
+    "weight_version",
+)
+
+
+def _copy_vllm_generation_meta(meta: dict[str, Any], *sources: Any) -> None:
+    """Copy speculative counters from supported vLLM response shapes."""
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for candidate in (source, source.get("meta_info"), source.get("metrics")):
+            if not isinstance(candidate, dict):
+                continue
+            for key in _GENERATION_META_KEYS:
+                value = candidate.get(key)
+                if value is not None:
+                    meta[key] = str(value) if key == "weight_version" else value
+
+
 # Re-sweep interval while draining; bounds how long a late straggler can run.
 _ABORT_RESWEEP_INTERVAL_S = 3.0
 
@@ -431,6 +453,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         meta["prompt_tokens"] = usage.get("prompt_tokens", 0)
         meta["completion_tokens"] = usage.get("completion_tokens", 0)
         meta["cached_tokens"] = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+    _copy_vllm_generation_meta(meta, output, usage, choice)
     spec_stats = output.get("request_spec_decode_stats")
     if spec_stats:
         meta["spec_accept_token_num"] = spec_stats.get(

@@ -1647,6 +1647,122 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_external_draft_training_arguments(parser):
+            """Add online external speculative Draft training arguments."""
+            group = parser.add_argument_group("external draft training")
+            group.add_argument(
+                "--enable-external-draft-training",
+                action="store_true",
+                default=False,
+                help="Train an external EAGLE3 or Qwen DSpark speculative Draft model during RL.",
+            )
+            group.add_argument("--draft-algorithm", choices=["eagle3", "dspark"], default="eagle3")
+            group.add_argument("--draft-model-path", type=str, default=None)
+            group.add_argument(
+                "--draft-target-embedding-path",
+                type=str,
+                default=None,
+                help="Target HF checkpoint used to initialize Draft embeddings; defaults to --hf-checkpoint.",
+            )
+            group.add_argument(
+                "--draft-target-embedding-key",
+                type=str,
+                default="model.embed_tokens.weight",
+            )
+            group.add_argument(
+                "--draft-model-factory-path",
+                type=str,
+                default=None,
+                help=(
+                    "Optional import path to a Draft model factory. The callable receives "
+                    "(args, device) and must return a compatible trainable Draft module. "
+                    "Qwen DSpark uses VIME's Speculators factory by default."
+                ),
+            )
+            # Kept so older launch scripts continue to parse. Actor-colocated
+            # Draft training no longer allocates a separate Draft worker group.
+            group.add_argument(
+                "--draft-num-nodes",
+                type=int,
+                default=1,
+                help="Deprecated and ignored; Draft training runs on Actor rank zero.",
+            )
+            group.add_argument(
+                "--draft-num-gpus-per-node",
+                type=int,
+                default=1,
+                help="Deprecated and ignored; Draft training runs on Actor rank zero.",
+            )
+            group.add_argument(
+                "--draft-feature-layer-ids",
+                type=str,
+                default=None,
+                help="Comma-separated or JSON list of zero-based Target transformer layer ids.",
+            )
+            group.add_argument("--draft-collect-interval", type=int, default=1)
+            group.add_argument("--draft-collection-sample-rate", type=float, default=1.0)
+            group.add_argument("--draft-max-samples-per-rollout-per-dp", type=int, default=16)
+            group.add_argument("--draft-max-tokens-per-rollout-per-dp", type=int, default=16384)
+            group.add_argument("--draft-hidden-window-mode", choices=["front", "random"], default="front")
+            group.add_argument("--draft-hidden-window-tokens", type=int, default=512)
+            group.add_argument("--draft-train-interval", type=int, default=1)
+            group.add_argument("--draft-train-steps-per-trigger", type=int, default=10)
+            group.add_argument("--draft-batch-size-per-gpu", type=int, default=4)
+            group.add_argument("--draft-learning-rate", type=float, default=1e-5)
+            group.add_argument("--draft-weight-decay", type=float, default=0.0)
+            group.add_argument("--draft-lr-scheduler-type", choices=["constant", "cosine"], default="constant")
+            group.add_argument("--draft-lr-warmup-steps", type=int, default=0)
+            group.add_argument(
+                "--draft-lr-total-steps",
+                type=int,
+                default=0,
+                help="Total Draft optimizer steps for cosine decay; 0 derives it from the rollout schedule.",
+            )
+            group.add_argument("--draft-max-grad-norm", type=float, default=1.0)
+            group.add_argument("--draft-temporal-decay", type=float, default=0.8)
+            group.add_argument("--draft-ttt-length", type=int, default=1)
+            group.add_argument(
+                "--draft-dspark-block-size",
+                type=int,
+                default=None,
+                help="DSpark block size; inferred from the checkpoint config when omitted.",
+            )
+            group.add_argument("--draft-dspark-max-anchors", type=int, default=64)
+            group.add_argument("--draft-dspark-loss-fn", type=str, default='{"ce": 0.1, "tv": 0.9}')
+            group.add_argument("--draft-dspark-decay-gamma", type=float, default=4.0)
+            group.add_argument("--draft-dspark-confidence-head-alpha", type=float, default=1.0)
+            group.add_argument(
+                "--draft-dspark-per-position-loss-weight",
+                choices=["fixed-exp-decay", "dpace"],
+                default="fixed-exp-decay",
+            )
+            group.add_argument("--draft-dspark-dpace-alpha", type=float, default=0.5)
+            group.add_argument("--draft-publish-interval", type=int, default=1)
+            group.add_argument("--draft-publish-dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
+            group.add_argument("--draft-checkpoint-path", type=str, default=None)
+            group.add_argument("--draft-save-interval", type=int, default=None)
+            group.add_argument(
+                "--draft-save-hf",
+                type=str,
+                default=None,
+                help=(
+                    "Path template used to export a trained DSpark model in HuggingFace/Speculators format "
+                    "with Draft checkpoint saves and at the final rollout. Supports {rollout_id} formatting "
+                    "and must not resolve to "
+                    "--draft-model-path. With vLLM method=dspark, this option also enables the external "
+                    "Draft training replica and infers --draft-model-path from the speculative model."
+                ),
+            )
+            group.add_argument("--draft-queue-max-samples", type=int, default=2048)
+            group.add_argument("--draft-vocab-mapping-path", type=str, default=None)
+            group.add_argument("--draft-random-seed", type=int, default=1234)
+            group.add_argument(
+                "--draft-freeze-embeddings",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+            )
+            return parser
+
         def add_ci_arguments(parser):
             parser.add_argument(
                 "--ci-test",
@@ -1697,6 +1813,7 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
         parser = add_rollout_buffer_arguments(parser)
         parser = add_mtp_training_arguments(parser)
         parser = add_dspark_training_arguments(parser)
+        parser = add_external_draft_training_arguments(parser)
         parser = add_ci_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
         reset_arg(
@@ -1898,7 +2015,6 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 def vime_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
-    args.dspark_enabled = (getattr(args, "vllm_speculative_config", None) or {}).get("method") == "dspark"
 
     if args.rollout_temperature <= 0:
         raise ValueError(
@@ -2164,9 +2280,14 @@ def vime_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
-    from vime.backends.speculative_training.config import validate_external_draft_args
+    from vime.backends.speculative_training.config import external_draft_enabled, validate_external_draft_args
 
     validate_external_draft_args(args)
+    # External Draft optimization owns its model and feature capture; only the
+    # inline Megatron path attaches a Draft module to the policy model.
+    args.dspark_enabled = (getattr(args, "vllm_speculative_config", None) or {}).get(
+        "method"
+    ) == "dspark" and not external_draft_enabled(args)
 
     if args.eval_max_context_len is None:
         logger.info(

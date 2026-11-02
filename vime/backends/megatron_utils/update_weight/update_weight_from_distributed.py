@@ -1,6 +1,8 @@
+import os
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
+from typing import Any
 
 import ray
 import torch
@@ -10,7 +12,7 @@ from ray.actor import ActorHandle
 from vime.utils.distributed_utils import get_gloo_group
 
 from ..dspark.export import export_dspark_model_weights
-from .common import HfWeightSource, VimeRayWeightSyncClient, create_nccl_trainer
+from .common import HfWeightSource, VimeRayWeightSyncClient, create_nccl_trainer, send_external_draft_weights
 from .hf_weight_iterator_direct import HfWeightIteratorDirect
 
 
@@ -30,6 +32,8 @@ class UpdateWeightFromDistributed:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self.update_weight_metrics: dict[str, float] = {}
+        self._external_draft_named_tensors = None
+        self._external_draft_version = None
         iterator = HfWeightIteratorDirect(
             args=args,
             model=model,
@@ -82,13 +86,6 @@ class UpdateWeightFromDistributed:
         metrics, self.update_weight_metrics = self.update_weight_metrics, {}
         return metrics
 
-    def pop_metrics(self) -> dict[str, float]:
-        """
-        Return and clear ``update_weight_metrics``. Drained by the actor onto the rollout/step log.
-        """
-        out, self.update_weight_metrics = self.update_weight_metrics, {}
-        return out
-
     def set_external_draft_weights(self, payload: dict[str, Any] | None, draft_version: str | None) -> None:
         """Stage a CPU Draft state for publication in the next Target update pause."""
         self._external_draft_named_tensors = payload
@@ -98,7 +95,7 @@ class UpdateWeightFromDistributed:
     def update_weights(self) -> None:
         assert self._trainer is not None
         self.weight_version += 1
-        external_draft_pending = self._external_draft_version is not None
+        external_draft_pending = getattr(self, "_external_draft_version", None) is not None
         smoke_draft_only = (
             external_draft_pending and os.environ.get("VIME_EXTERNAL_DRAFT_SMOKE_SKIP_ACTOR_UPDATE", "0") == "1"
         )
@@ -116,16 +113,29 @@ class UpdateWeightFromDistributed:
 
         client = self._trainer.client
         client.draft = False
-        self._trainer.send_weights()
+        if not smoke_draft_only:
+            self._trainer.send_weights()
         update_draft = self.args.dspark_enabled or (
             self.args.enable_mtp_training and (self.args.vllm_speculative_config or {}).get("method") == "mtp"
         )
         if update_draft:
             self._source.draft = self.args.dspark_enabled
             client.draft = True
-            self._trainer.send_weights()
-            self._source.draft = False
-            client.draft = False
+            try:
+                self._trainer.send_weights()
+            finally:
+                self._source.draft = False
+                client.draft = False
+
+        if external_draft_pending:
+            try:
+                payload = self._external_draft_named_tensors
+                if dist.get_rank() == 0 and (not isinstance(payload, dict) or not payload.get("named_tensors")):
+                    raise RuntimeError("External Draft publication requires a non-empty named_tensors snapshot")
+                send_external_draft_weights(self._trainer, payload)
+            finally:
+                self._external_draft_named_tensors = None
+                self._external_draft_version = None
 
         if dist.get_rank() == 0:
             if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:

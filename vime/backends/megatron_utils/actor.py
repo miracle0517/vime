@@ -347,15 +347,17 @@ class MegatronTrainRayActor(TrainRayActor):
         collect_draft_features: bool = False,
         rollout_id: int | None = None,
     ) -> dict[str, list[torch.Tensor]]:
-        with timer(f"{store_prefix}log_probs"):
-            return forward_only(
-                get_log_probs_and_entropy,
+        collector = None
+        if collect_draft_features:
+            if rollout_id is None:
+                raise ValueError("rollout_id is required when collecting external Draft features")
+            from vime.backends.speculative_training.feature_collector import DraftFeatureCollector
+
+            collector = DraftFeatureCollector(
                 self.args,
                 self.model,
-                data_iterator,
-                num_microbatches,
-                store_prefix=store_prefix,
-                use_rollout_top_p_replay=True,
+                rollout_id=rollout_id,
+                target_weight_version=str(self.weight_updater.weight_version),
             )
 
         try:
@@ -367,6 +369,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     data_iterator,
                     num_microbatches,
                     store_prefix=store_prefix,
+                    use_rollout_top_p_replay=True,
                     feature_collector=collector,
                 )
         finally:
@@ -558,34 +561,40 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_data,
             )
 
-            # Train
-            if self.args.use_routing_replay:
-                os.environ["ROUTING_REPLAY_STAGE"] = "replay_backward"
-            # When dumping train debug data but the actor log_probs were not
-            # recomputed separately (can_reuse_log_probs_in_loss / use_rollout_logprobs),
-            # snapshot them from the training forward so the dump still carries
-            # per-sample log_probs — at no extra forward pass.
-            capture_log_probs = self.args.save_debug_train_data is not None and "log_probs" not in rollout_data
-            if capture_log_probs:
-                enable_log_prob_capture()
-            with timer("actor_train"):
-                train(
-                    rollout_id,
-                    self.model,
-                    self.optimizer,
-                    self.opt_param_scheduler,
-                    data_iterator,
-                    num_microbatches,
-                    global_batch_sizes,
-                )
-            if capture_log_probs:
-                captured = drain_captured_log_probs()
-                # `captured` is non-empty only on the last PP stage running a loss
-                # that snapshots log_probs (policy_loss), and then covers every
-                # local sample. Key it by this rank's `partition` to land in local
-                # sample order; skip otherwise (nothing to place).
-                if captured:
-                    rollout_data["log_probs"] = [captured[pos] for pos in rollout_data["partition"]]
+            # A Draft-only smoke run exercises collection and publication without
+            # updating Target weights. Normal runs retain the Actor update and
+            # the training-forward log-prob capture used by debug data dumps.
+            skip_actor_update = (
+                bool(getattr(self.args, "enable_external_draft_training", False))
+                and os.environ.get("VIME_EXTERNAL_DRAFT_SMOKE_SKIP_ACTOR_UPDATE", "0") == "1"
+            )
+            if skip_actor_update:
+                if dist.get_rank() == 0:
+                    logger.warning("Skipping Actor update for external Draft smoke validation")
+            else:
+                if self.args.use_routing_replay:
+                    os.environ["ROUTING_REPLAY_STAGE"] = "replay_backward"
+                # When dumping train debug data but actor log_probs were not
+                # recomputed separately, capture them from the training forward.
+                capture_log_probs = self.args.save_debug_train_data is not None and "log_probs" not in rollout_data
+                if capture_log_probs:
+                    enable_log_prob_capture()
+                with timer("actor_train"):
+                    train(
+                        rollout_id,
+                        self.model,
+                        self.optimizer,
+                        self.opt_param_scheduler,
+                        data_iterator,
+                        num_microbatches,
+                        global_batch_sizes,
+                    )
+                if capture_log_probs:
+                    captured = drain_captured_log_probs()
+                    # Only the last PP stage running a compatible loss returns
+                    # captured values. Restore their local partition order.
+                    if captured:
+                        rollout_data["log_probs"] = [captured[pos] for pos in rollout_data["partition"]]
 
             self.prof.step(rollout_id=rollout_id)
 
@@ -766,7 +775,9 @@ class MegatronTrainRayActor(TrainRayActor):
         if not rollout_engines and not reconnect_rollout_engines:
             if dist.get_rank() == 0:
                 logger.info("No updatable VLLM engines are running; skip weight update.")
-            return
+            self._pending_external_draft_weights = None
+            self._pending_external_draft_version = None
+            return False
 
         if reconnect_rollout_engines:
             self.wake_up()

@@ -50,7 +50,7 @@ def ensure_nonzero_grpo_signal(args, samples):
     raw_rewards = [_as_float(sample.get_reward_value(args)) for sample in samples]
 
     groups: dict[int, list[tuple[int, float]]] = defaultdict(list)
-    for position, (sample, raw_reward) in enumerate(zip(samples, raw_rewards)):
+    for position, (sample, raw_reward) in enumerate(zip(samples, raw_rewards, strict=True)):
         group_index = sample.group_index if sample.group_index is not None else position
         groups[int(group_index)].append((position, raw_reward))
 
@@ -68,19 +68,19 @@ def ensure_nonzero_grpo_signal(args, samples):
             metadata["smoke_original_raw_reward"] = raw_rewards[position]
 
     rewards_out = [0.0] * len(samples)
-    normalize = (
-        getattr(args, "advantage_estimator", None) in ["grpo", "gspo", "reinforce_plus_plus_baseline"]
-        and getattr(args, "rewards_normalization", True)
-    )
-    std_normalize = (
-        getattr(args, "advantage_estimator", None) in ["grpo", "gspo"]
-        and getattr(args, "grpo_std_normalization", True)
+    normalize = getattr(args, "advantage_estimator", None) in [
+        "grpo",
+        "gspo",
+        "reinforce_plus_plus_baseline",
+    ] and getattr(args, "rewards_normalization", True)
+    std_normalize = getattr(args, "advantage_estimator", None) in ["grpo", "gspo"] and getattr(
+        args, "grpo_std_normalization", True
     )
     for indexed in groups.values():
         positions = [position for position, _ in indexed]
         values = [synthetic_raw[position] for position in positions]
         normalized_values = _normalize_group(values, normalize=normalize, std_normalize=std_normalize)
-        for position, reward in zip(positions, normalized_values):
+        for position, reward in zip(positions, normalized_values, strict=True):
             rewards_out[position] = reward
 
     return synthetic_raw, rewards_out

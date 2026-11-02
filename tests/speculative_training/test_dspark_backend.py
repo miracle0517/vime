@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -141,7 +143,7 @@ def _trainer_args():
 @pytest.mark.parametrize(("npu", "implementation"), [(True, "eager"), (False, "fused")])
 def test_dspark_selects_native_loss_implementation(monkeypatch, npu, implementation):
     model = _TrainerKwargsModel({})
-    monkeypatch.setattr(dspark, "is_npu", lambda: npu)
+    monkeypatch.setattr(dspark, "current_platform", lambda: SimpleNamespace(is_npu=npu))
 
     train_kwargs = dspark_trainer_kwargs(model, _trainer_args())
 
@@ -152,7 +154,7 @@ def test_dspark_selects_native_loss_implementation(monkeypatch, npu, implementat
 @pytest.mark.unit
 def test_dspark_rejects_legacy_fused_loss_resolver_on_npu(monkeypatch):
     model = _TrainerKwargsModel({}, supports_explicit_loss=False)
-    monkeypatch.setattr(dspark, "is_npu", lambda: True)
+    monkeypatch.setattr(dspark, "current_platform", lambda: SimpleNamespace(is_npu=True))
 
     with pytest.raises(RuntimeError, match="explicit eager DSpark losses"):
         dspark_trainer_kwargs(model, _trainer_args())

@@ -38,9 +38,7 @@ def build_model(args, device: torch.device) -> torch.nn.Module:
     config_path = checkpoint_dir / "config.json"
     weights_path = checkpoint_dir / "model.safetensors"
     if not config_path.is_file() or not weights_path.is_file():
-        raise FileNotFoundError(
-            f"Expected config.json and model.safetensors under {checkpoint_dir}"
-        )
+        raise FileNotFoundError(f"Expected config.json and model.safetensors under {checkpoint_dir}")
 
     with config_path.open(encoding="utf-8") as handle:
         config_dict = json.load(handle)

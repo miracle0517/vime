@@ -4,7 +4,7 @@ from typing import Any
 
 import torch
 
-from vime.utils.common import is_npu
+from vime.platforms import current_platform
 
 from ..feature_schema import DraftFeatureSample
 
@@ -68,7 +68,7 @@ def dspark_trainer_kwargs(model: torch.nn.Module, args: Any) -> dict[str, Any]:
     resolver = getattr(model, "get_trainer_kwargs", None)
     if not callable(resolver):
         raise TypeError("Speculators DSpark model must implement get_trainer_kwargs()")
-    loss_implementation = "eager" if is_npu() else "fused"
+    loss_implementation = "eager" if current_platform().is_npu else "fused"
     train_kwargs, _ = resolver(
         loss_fn=str(args.draft_dspark_loss_fn),
         dflash_decay_gamma=float(args.draft_dspark_decay_gamma),

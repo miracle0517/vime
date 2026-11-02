@@ -340,19 +340,28 @@ def test_mm_render_response_empty_engine_prompts_raises():
 
 
 @pytest.mark.unit
-def test_generate_text_path_updates_sample(patch_generate_state, monkeypatch):
-    post_mock = AsyncMock(
-        return_value=_generate_response(
-            [50, 51],
-            weight_version="step-7",
-            sampling_mask=[[1, 50], [2, 3, 51]],
-            request_spec_decode_stats={
-                "num_accepted_draft_tokens": 6,
-                "num_draft_tokens": 8,
-                "num_spec_steps": 2,
-            },
-        )
+@pytest.mark.parametrize("meta_shape", ["request_spec_decode_stats", "meta_info", "metrics"])
+def test_generate_text_path_updates_sample(patch_generate_state, monkeypatch, meta_shape):
+    response = _generate_response(
+        [50, 51],
+        weight_version="step-7",
+        sampling_mask=[[1, 50], [2, 3, 51]],
+        request_spec_decode_stats={
+            "num_accepted_draft_tokens": 6,
+            "num_draft_tokens": 8,
+            "num_spec_steps": 2,
+        },
     )
+    if meta_shape != "request_spec_decode_stats":
+        response.pop("request_spec_decode_stats")
+        response.pop("weight_version")
+        response[meta_shape] = {
+            "weight_version": "step-7",
+            "spec_accept_token_num": 6,
+            "spec_draft_token_num": 8,
+            "spec_verify_ct": 2,
+        }
+    post_mock = AsyncMock(return_value=response)
     monkeypatch.setattr(mod, "post", post_mock)
 
     sample = Sample(index=0, prompt="abc")
@@ -380,7 +389,8 @@ def test_generate_text_path_updates_sample(patch_generate_state, monkeypatch):
 
 
 @pytest.mark.unit
-def test_generate_streaming_records_weight_version(patch_generate_state, monkeypatch):
+@pytest.mark.parametrize("nested_meta", [False, True])
+def test_generate_streaming_records_weight_version(patch_generate_state, monkeypatch, nested_meta):
     from vime.rollout import vllm_streaming_rollout as streaming
 
     class FakeStreamResponse:
@@ -424,6 +434,15 @@ def test_generate_streaming_records_weight_version(patch_generate_state, monkeyp
                     "usage": {"prompt_tokens": 3, "completion_tokens": 2},
                 },
             ]
+            if nested_meta:
+                stats = chunks[0].pop("request_spec_decode_stats")
+                chunks[0]["metrics"] = {
+                    "weight_version": chunks[0].pop("weight_version"),
+                    "spec_accept_token_num": stats["num_accepted_tokens"],
+                    "spec_draft_token_num": stats["num_draft_tokens"],
+                    "spec_verify_ct": stats["num_verify_steps"],
+                }
+                chunks[1].pop("weight_version")
             for chunk in chunks:
                 yield f"data: {json.dumps(chunk)}"
             yield "data: [DONE]"

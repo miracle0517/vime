@@ -353,6 +353,7 @@ def forward_only(
     num_microbatches: Sequence[int],
     store_prefix: str = "",
     use_rollout_top_p_replay: bool = False,
+    feature_collector=None,
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
@@ -412,7 +413,9 @@ def forward_only(
         assert not return_schedule_plan, "forward_only step should never return schedule plan"
 
         # Get the batch.
-        original_indices = list(data_iterator.micro_batch_indices[data_iterator.offset])
+        original_indices = (
+            list(data_iterator.micro_batch_indices[data_iterator.offset]) if feature_collector is not None else []
+        )
         batch = get_batch(
             data_iterator,
             batch_keys,

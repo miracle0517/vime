@@ -312,6 +312,103 @@ def test_failed_transfer_does_not_resume_generation(update_module, monkeypatch):
     assert updater.rollout_engines[0].continue_generation.calls == []
 
 
+@pytest.mark.unit
+def test_external_draft_source_metadata_and_empty_non_sender(update_module, monkeypatch):
+    adapter = sys.modules[update_module.send_external_draft_weights.__module__]
+    base_module = types.ModuleType("vllm.distributed.weight_transfer.base")
+
+    class ParamMeta:
+        def __init__(self, name, dtype, shape):
+            self.name, self.dtype, self.shape = name, dtype, shape
+
+    base_module.ParamMeta = ParamMeta
+    monkeypatch.setitem(sys.modules, base_module.__name__, base_module)
+    device_calls = []
+
+    def device():
+        device_calls.append(True)
+        return torch.device("cpu")
+
+    monkeypatch.setattr(adapter.accelerator, "device", device)
+    source = adapter.ExternalDraftWeightSource({"named_tensors": [("draft.weight", torch.ones(2))]})
+    meta = source.metadata()
+    assert [(item.name, item.dtype, item.shape) for item in meta] == [("draft.weight", torch.float32, (2,))]
+    assert device_calls == []
+    assert [name for name, _ in source] == ["draft.weight"]
+    assert device_calls == [True]
+    non_sender = adapter.ExternalDraftWeightSource(None)
+    assert non_sender.metadata() == []
+    assert list(non_sender) == []
+    assert device_calls == [True]
+
+
+@pytest.mark.unit
+def test_external_draft_uses_native_session_and_restores_policy_source(update_module, monkeypatch):
+    updater = _updater_for_transfer(update_module)
+    original_source = updater._source
+    updater.set_external_draft_weights({"named_tensors": [("draft.weight", torch.ones(2))]}, "4")
+    adapter = sys.modules[update_module.send_external_draft_weights.__module__]
+    monkeypatch.setattr(adapter, "current_platform", lambda: types.SimpleNamespace(is_npu=False))
+    monkeypatch.setattr(update_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(update_module.dist, "barrier", lambda *args, **kwargs: None)
+
+    updater.update_weights()
+
+    assert updater._trainer.draft_states == [False, True]
+    assert updater._trainer.source is original_source
+    assert updater._trainer.client.draft is False
+    assert updater._external_draft_named_tensors is None
+    assert updater._external_draft_version is None
+    assert len(updater.rollout_engines[0].continue_generation.calls) == 1
+
+
+@pytest.mark.unit
+def test_external_draft_smoke_skips_policy_publication(update_module, monkeypatch):
+    updater = _updater_for_transfer(update_module)
+    updater.set_external_draft_weights({"named_tensors": [("draft.weight", torch.ones(2))]}, "4")
+    adapter = sys.modules[update_module.send_external_draft_weights.__module__]
+    monkeypatch.setattr(adapter, "current_platform", lambda: types.SimpleNamespace(is_npu=False))
+    monkeypatch.setattr(update_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(update_module.dist, "barrier", lambda *args, **kwargs: None)
+    monkeypatch.setenv("VIME_EXTERNAL_DRAFT_SMOKE_SKIP_ACTOR_UPDATE", "1")
+
+    updater.update_weights()
+
+    assert updater._trainer.draft_states == [True]
+    assert len(updater.rollout_engines[0].start_weight_update.calls) == 0
+
+
+@pytest.mark.unit
+def test_external_dspark_snapshot_uses_one_npu_buffer_and_restores_on_failure(update_module, monkeypatch):
+    adapter = sys.modules[update_module.send_external_draft_weights.__module__]
+    monkeypatch.setattr(adapter, "current_platform", lambda: types.SimpleNamespace(is_npu=True))
+    monkeypatch.setattr(adapter.accelerator, "device", lambda: torch.device("cpu"))
+    original_source = object()
+    init_info = types.SimpleNamespace(packed=False, packed_buffer_size_bytes=1, packed_num_buffers=3)
+    payload = {"algorithm": "dspark", "named_tensors": [("draft.weight", torch.ones(2))]}
+
+    class Trainer:
+        source = original_source
+        client = types.SimpleNamespace(draft=False)
+
+        def send_weights(self):
+            assert self.client.draft is True
+            assert self.init_info.packed is True
+            assert self.init_info.packed_buffer_size_bytes == 8
+            assert self.init_info.packed_num_buffers == 1
+            assert [name for name, _ in self.source] == ["draft.weight"]
+            raise RuntimeError("draft transfer failed")
+
+    trainer = Trainer()
+    trainer.init_info = init_info
+    with pytest.raises(RuntimeError, match="draft transfer failed"):
+        adapter.send_external_draft_weights(trainer, payload)
+
+    assert trainer.source is original_source
+    assert trainer.client.draft is False
+    assert vars(init_info) == {"packed": False, "packed_buffer_size_bytes": 1, "packed_num_buffers": 3}
+
+
 @pytest.fixture
 def weight_modules():
     module_names = (

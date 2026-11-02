@@ -1,5 +1,6 @@
 import json
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -89,7 +90,7 @@ def test_actor_colocated_trainer_does_not_join_actor_process_group(monkeypatch):
     import vime.backends.speculative_training.draft_trainer as module
 
     model = _Draft()
-    monkeypatch.setattr(module, "is_npu", lambda: False)
+    monkeypatch.setattr(module, "current_platform", lambda: SimpleNamespace(is_npu=False))
     monkeypatch.setattr(module.torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(module, "_load_draft_model", lambda args, device: model)
     monkeypatch.setattr(module, "_load_target_embedding", lambda model, args: None)

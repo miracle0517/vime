@@ -448,6 +448,8 @@ class VLLMEngine(RayActor):
         *,
         flush_cache=False,
         weight_version: str,
+        packed: bool = True,
+        packed_buffer_size_bytes: int | None = None,
     ):
         if flush_cache:
             self.flush_cache()
@@ -456,8 +458,10 @@ class VLLMEngine(RayActor):
             "names": names,
             "dtype_names": dtype_names,
             "shapes": [list(s) for s in shapes],
-            "packed": True,
+            "packed": bool(packed),
         }
+        if packed_buffer_size_bytes is not None:
+            update_info["packed_buffer_size_bytes"] = int(packed_buffer_size_bytes)
         result = self._make_request("update_weights", {"update_info": update_info})
         del weight_version
         return result

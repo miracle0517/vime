@@ -55,7 +55,7 @@ class RayTrainGroup:
         self._disk_weight_version = getattr(args, "update_weight_start_version", 0)
         self._actor_handlers = []
 
-    def _allocate_gpus_for_actor(self, pg, num_gpus_per_actor, actor_cls=None):
+    def _allocate_gpus_for_actor(self, pg, num_gpus_per_actor):
         world_size = self._num_nodes * self._num_gpus_per_node
 
         # Use placement group to lock resources for models of same type

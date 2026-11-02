@@ -299,6 +299,56 @@ def test_vime_validate_args_derives_dspark_from_speculative_method(monkeypatch):
 
 
 @pytest.mark.unit
+def test_external_draft_arguments_coexist_with_inline_dspark_arguments(monkeypatch):
+    module = load_vime_arguments_module(monkeypatch)
+    parser = module.get_vime_extra_args_provider()(argparse.ArgumentParser())
+
+    args = parser.parse_args(
+        [
+            "--rollout-batch-size",
+            "1",
+            "--enable-external-draft-training",
+            "--draft-algorithm",
+            "dspark",
+            "--dspark-block-size",
+            "5",
+        ]
+    )
+
+    assert args.enable_external_draft_training is True
+    assert args.draft_algorithm == "dspark"
+    assert args.dspark_block_size == 5
+    assert args.draft_dspark_block_size is None
+
+
+@pytest.mark.unit
+def test_dspark_export_uses_external_training_without_attaching_inline_draft(monkeypatch, tmp_path):
+    module = load_vime_arguments_module(monkeypatch)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text('{"block_size":7,"aux_hidden_state_layer_ids":[2,14,29]}')
+    defaults = vars(
+        module.get_vime_extra_args_provider()(argparse.ArgumentParser()).parse_args(["--rollout-batch-size", "1"])
+    )
+    args = make_vime_validate_args(
+        **{
+            key: value
+            for key, value in defaults.items()
+            if key.startswith("draft_") or key == "enable_external_draft_training"
+        }
+    )
+    args.vllm_speculative_config = {"method": "dspark", "model": str(checkpoint)}
+    args.draft_save_hf = str(tmp_path / "export-{rollout_id}")
+    args.num_layers = 32
+
+    module.vime_validate_args(args)
+
+    assert args.enable_external_draft_training is True
+    assert args.dspark_enabled is False
+    assert args.draft_model_path == str(checkpoint)
+
+
+@pytest.mark.unit
 def test_vime_validate_args_rejects_equal_debug_data_paths(monkeypatch):
     module = load_vime_arguments_module(monkeypatch)
     args = make_vime_validate_args(

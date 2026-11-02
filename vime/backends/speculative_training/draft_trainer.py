@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
-from vime.utils.common import is_npu
+from vime.platforms import current_platform
 from vime.utils.misc import load_function
 
 from .backends.dspark import collate_dspark_samples, compute_dspark_loss, dspark_trainer_kwargs, sync_dspark_lm_heads
@@ -220,8 +220,8 @@ class ExternalDraftTrainer:
     def __init__(self, args: Namespace, *, distributed: bool = True) -> None:
         self.args = args
         self.algorithm = str(getattr(args, "draft_algorithm", "eagle3")).lower()
-        self.device_type = "npu" if is_npu() else "cuda"
-        self.current_device = torch.npu.current_device() if is_npu() else torch.cuda.current_device()
+        self.device_type = "npu" if current_platform().is_npu else "cuda"
+        self.current_device = torch.npu.current_device() if current_platform().is_npu else torch.cuda.current_device()
         self.device = torch.device(self.device_type, self.current_device)
         # A dedicated Draft group participates in its own torch.distributed
         # process group.  The Actor-colocated mode deliberately runs only on

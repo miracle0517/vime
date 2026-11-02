@@ -11,6 +11,7 @@ ARG MEGATRON_COMMIT=1dcf0dafa884ad52ffb243625717a3471643e087
 ARG MINDSPEED_COMMIT=fc63de5c48426dd019c3b3f39e65f5bdf56e4086
 ARG MEGATRON_ADAPTOR_COMMIT=15582addff3f3d4680e350826fa70d012b475509
 ARG TRANSFORMER_ENGINE_NPU_COMMIT=d743c83d060d5edc48867ecb9e93ec80d81860e4
+ARG SPECULATORS_REF=c05b95b303f7d4f21e8d7624e0ffa1c2d9b4d73b
 ARG SOC_VERSION="ascend910_9391"
 ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 ARG APTMIRROR=""
@@ -143,11 +144,10 @@ RUN git clone https://github.com/vllm-project/speculators.git /root/speculators 
     pip install --force-reinstall --no-deps --no-build-isolation \
       /root/speculators
 
-# Import the training stack and verify the DSpark API semantically. Older
-# Speculators versions accept loss_implementation via **kwargs but ignore it,
-# which would silently select a Triton fused loss on Ascend.
+# Import the training stack with the pinned Speculators package.
 RUN source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
-    python3 -c 'import megatron, mindspeed, megatron_adaptor, transformer_engine, torch_memory_saver, vime, vllm, vllm_ascend;'
+    test "$(git -C /root/speculators rev-parse HEAD)" = "${SPECULATORS_REF}" && \
+    python3 -c 'import hs_connectors, megatron, mindspeed, megatron_adaptor, transformer_engine, torch_memory_saver, vime, vllm, vllm_ascend;'
 
 WORKDIR /root/vime
 ENTRYPOINT []

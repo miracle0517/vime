@@ -158,6 +158,7 @@ async def generate_streaming(args: Namespace, sample: Sample, sampling_params: d
     call_log_probs: list[float] = []
     last_choice: dict[str, Any] | None = None
     last_usage: dict[str, Any] | None = None
+    generation_meta: dict[str, Any] = {}
     weight_version: str | None = None
     request_spec_decode_stats: dict[str, int] | None = None
     sampling_mask: list[list[int]] | None = None
@@ -182,7 +183,7 @@ async def generate_streaming(args: Namespace, sample: Sample, sampling_params: d
                 except json.JSONDecodeError:
                     logger.warning("vllm_streaming: skipping non-JSON chunk: %r", data_str[:120])
                     continue
-                last_chunk = chunk
+                _copy_vllm_generation_meta(generation_meta, chunk, chunk.get("usage"), *(chunk.get("choices") or []))
 
                 if chunk.get("weight_version") is not None:
                     weight_version = str(chunk["weight_version"])
@@ -260,6 +261,7 @@ async def generate_streaming(args: Namespace, sample: Sample, sampling_params: d
         else:
             finish = {"type": "stop"}
         meta: dict[str, Any] = {"finish_reason": finish}
+        meta.update(generation_meta)
         if weight_version is not None:
             meta["weight_version"] = weight_version
         if last_usage:

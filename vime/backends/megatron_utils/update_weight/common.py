@@ -11,6 +11,7 @@ from megatron.core import mpu
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
 from vime.platforms import current_platform
+from vime.utils import accelerator
 from vime.utils.distributed_utils import get_gloo_group
 from vime.utils.types import ParamInfo
 
@@ -240,6 +241,53 @@ class HfWeightSource:
             return
         for chunk in self.iterator.get_hf_weight_chunks(self.weights_getter()):
             yield from chunk
+
+
+class ExternalDraftWeightSource:
+    """Rank-zero CPU snapshot exposed through the native trainer source API."""
+
+    def __init__(self, payload: dict[str, Any] | None) -> None:
+        self.named_tensors = [] if payload is None else payload.get("named_tensors")
+        if payload is not None and not self.named_tensors:
+            raise RuntimeError("External Draft publication requires a non-empty named_tensors snapshot")
+        for name, tensor in self.named_tensors:
+            if not torch.is_tensor(tensor):
+                raise TypeError(f"External Draft state {name!r} is not a tensor")
+        self.size_bytes = sum(tensor.numel() * tensor.element_size() for _, tensor in self.named_tensors)
+
+    def metadata(self):
+        from vllm.distributed.weight_transfer.base import ParamMeta
+
+        return [ParamMeta(str(name), tensor.dtype, tuple(tensor.shape)) for name, tensor in self.named_tensors]
+
+    def __iter__(self):
+        for name, tensor in self.named_tensors:
+            yield str(name), tensor.detach().to(device=accelerator.device(), non_blocking=False).contiguous()
+
+
+def send_external_draft_weights(trainer, payload: dict[str, Any] | None) -> None:
+    """Publish a snapshot through the existing native draft update session."""
+    source = ExternalDraftWeightSource(payload)
+    original_source = trainer.source
+    original_draft = trainer.client.draft
+    init_info = getattr(trainer, "init_info", None)
+    overrides = {}
+    if current_platform().is_npu and payload is not None and str(payload.get("algorithm", "")).lower() == "dspark":
+        # Ascend's DSpark loader resets confidence state on each load_weights
+        # call. One snapshot must therefore fit in a single packed buffer.
+        overrides = {"packed": True, "packed_buffer_size_bytes": max(source.size_bytes, 1), "packed_num_buffers": 1}
+    originals = {name: getattr(init_info, name) for name in overrides}
+    trainer.source = source
+    trainer.client.draft = True
+    try:
+        for name, value in overrides.items():
+            setattr(init_info, name, value)
+        trainer.send_weights()
+    finally:
+        trainer.source = original_source
+        trainer.client.draft = original_draft
+        for name, value in originals.items():
+            setattr(init_info, name, value)
 
 
 class VimeRayWeightSyncClient:

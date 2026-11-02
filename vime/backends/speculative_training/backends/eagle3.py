@@ -117,7 +117,9 @@ def compute_eagle3_loss(
         dtype=batch["last_hidden_states"].dtype,
     )
     if draft_to_target_ids is not None:
-        target_weight = target_weight.index_select(0, draft_to_target_ids.to(device=target_weight.device, dtype=torch.long))
+        target_weight = target_weight.index_select(
+            0, draft_to_target_ids.to(device=target_weight.device, dtype=torch.long)
+        )
     with torch.no_grad():
         target_logits = F.linear(batch["last_hidden_states"], target_weight)
         target_probabilities = F.softmax(target_logits.float(), dim=-1)
